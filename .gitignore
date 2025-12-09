@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+venv/
+qwen_env/
+.qwen_env/
+
+# Checkpoints and training artifacts (HUGE)
+**/optimizer.pt
+**/scheduler.pt
+**/rng_state.pth
+**/trainer_state.json
+**/training_args.bin
+
+# HuggingFace tokenizer cache copies
+**/tokenizer.json
+**/tokenizer_config.json
+**/special_tokens_map.json
+**/vocab.json
+**/merges.txt
+
+# UNLESS inside a tokenizer folder:
+# For now, we skip them globally to prevent massive uploads.
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb~
+
+# Logs
+*.log
+logs/
+
+# Python build
+*.egg-info/
