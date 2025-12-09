@@ -3,10 +3,16 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, List
+from pathlib import Path
 import math
 import torch
 import torch.nn.functional as F
 
+try:
+    from reward_model import LocalCritic as RewardLocalCritic, LocalCriticConfig
+except ImportError:
+    RewardLocalCritic = None
+    LocalCriticConfig = None
 
 # =========================
 #  Data Structures
@@ -198,3 +204,26 @@ def build_line_features(
         length_prior_logprob=length_prior_logprob,
         syllable_match_score=syllable_match_score,
     )
+
+
+# =========================
+#  Local Critic Exposure
+# =========================
+
+class OfflineCritic:
+    """
+    Thin wrapper exposed via scoring.py to keep integration centralized.
+    """
+
+    def __init__(self, head_path: str, siamese_model_dir: str, device: Optional[str] = None):
+        if RewardLocalCritic is None or LocalCriticConfig is None:
+            raise ImportError("reward_model module not available.")
+        cfg = LocalCriticConfig(
+            head_path=Path(head_path),
+            siamese_model_dir=Path(siamese_model_dir),
+            device=device or ("cuda" if torch.cuda.is_available() else "cpu"),
+        )
+        self.impl = RewardLocalCritic(cfg)
+
+    def score(self, text: str) -> Dict[str, float]:
+        return self.impl.score(text)

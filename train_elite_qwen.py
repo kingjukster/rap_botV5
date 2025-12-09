@@ -17,11 +17,6 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 # === DEFAULT CONFIG (can be overridden by CLI) ===============================
 
-BASE_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-CORPUS_PATH = "/workspace/rap-botV4/data/elite_kaggle_corpus_clean.txt"
-OUTPUT_DIR = "/workspace/rap-botV4/checkpoints/elite_qwen_siamese"
-TOKENIZER_SAVE_DIR = "/workspace/rap-botV4/elite_tokenizer"
-
 MAX_SEQ_LENGTH = 512
 LEARNING_RATE = 2e-4
 NUM_TRAIN_EPOCHS = 3
@@ -53,6 +48,7 @@ SPECIAL_TOKENS: List[str] = (
 # === CLI ARGS ================================================================
 
 import argparse
+from config.settings import load_settings
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -60,20 +56,26 @@ def parse_args():
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default=BASE_MODEL_NAME,
-        help="Base Qwen model to use.",
+        default=None,
+        help="Base Qwen model to use (default from config).",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=OUTPUT_DIR,
-        help="Where to save the LoRA adapter.",
+        default=None,
+        help="Where to save the LoRA adapter (default from config).",
     )
     parser.add_argument(
         "--text_path",
         type=str,
-        default=CORPUS_PATH,
-        help="Path to cleaned elite corpus text file.",
+        default=None,
+        help="Path to cleaned elite corpus text file (default from config).",
+    )
+    parser.add_argument(
+        "--tokenizer_save_dir",
+        type=str,
+        default=None,
+        help="Directory for saving tokenizer vocab (default from config).",
     )
     parser.add_argument(
         "--batch_size",
@@ -100,13 +102,19 @@ def parse_args():
         type=int,
         default=MAX_SEQ_LENGTH,
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional path to JSON/YAML config overriding defaults.",
+    )
 
     return parser.parse_args()
 
 
 # === TOKENIZER + MODEL (4-BIT QLoRA) ========================================
 
-def load_tokenizer_and_model(base_model_name: str) -> tuple[AutoTokenizer, AutoModelForCausalLM]:
+def load_tokenizer_and_model(base_model_name: str, tokenizer_save_dir: str) -> tuple[AutoTokenizer, AutoModelForCausalLM]:
     print(f"[INFO] Loading tokenizer from {base_model_name}")
     tokenizer = AutoTokenizer.from_pretrained(
         base_model_name,
@@ -132,9 +140,9 @@ def load_tokenizer_and_model(base_model_name: str) -> tuple[AutoTokenizer, AutoM
         print("[INFO] No new special tokens to add.")
 
     # Save tokenizer so inference and future training use the same vocab
-    os.makedirs(TOKENIZER_SAVE_DIR, exist_ok=True)
-    tokenizer.save_pretrained(TOKENIZER_SAVE_DIR)
-    print(f"[INFO] Tokenizer saved to {TOKENIZER_SAVE_DIR}")
+    os.makedirs(tokenizer_save_dir, exist_ok=True)
+    tokenizer.save_pretrained(tokenizer_save_dir)
+    print(f"[INFO] Tokenizer saved to {tokenizer_save_dir}")
 
     # 4-bit quantization config for QLoRA
     quant_config = BitsAndBytesConfig(
@@ -240,13 +248,18 @@ def load_rap_dataset(tokenizer: AutoTokenizer, text_path: str, max_seq_length: i
 def main():
     args = parse_args()
 
-    output_dir = args.output_dir
+    settings = load_settings(args.config)
+    model_name = args.model_name_or_path or settings.base_model_name
+    text_path = args.text_path or str(settings.elite_corpus_path)
+    output_dir = args.output_dir or str(settings.lora_output_dir)
+    tokenizer_save_dir = args.tokenizer_save_dir or str(settings.tokenizer_save_dir)
+
     os.makedirs(output_dir, exist_ok=True)
 
-    tokenizer, model = load_tokenizer_and_model(args.model_name_or_path)
+    tokenizer, model = load_tokenizer_and_model(model_name, tokenizer_save_dir)
     train_dataset = load_rap_dataset(
         tokenizer,
-        text_path=args.text_path,
+        text_path=text_path,
         max_seq_length=args.max_seq_length,
     )
 

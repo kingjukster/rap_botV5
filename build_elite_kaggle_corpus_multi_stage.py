@@ -16,6 +16,8 @@ Multi-stage pipeline to:
         - CSV: one bar per row + metadata + song_score + annotations.
         - TXT: corpus with <ARTIST=...> tags, annotated [BAR] lines,
           and <END_SONG> markers.
+  5) Optional: auto-expand rhymes_grouped.csv with update_rhyme_groups.py
+     so rhyme planning inherits new slang discovered in the corpus.
 
 Usage example (all passes):
 
@@ -1382,6 +1384,41 @@ def parse_args():
         default=32,
         help="Batch size for Siamese embed_batch in Pass B.",
     )
+    parser.add_argument(
+        "--auto_expand_rhyme_groups",
+        action="store_true",
+        help="After export, run update_rhyme_groups.py to refresh rhymes_grouped.csv.",
+    )
+    parser.add_argument(
+        "--rhyme_update_corpus",
+        type=str,
+        default=None,
+        help="Optional override for the corpus fed to the rhyme updater (defaults to output_txt).",
+    )
+    parser.add_argument(
+        "--rhyme_update_min_count",
+        type=int,
+        default=4,
+        help="Minimum frequency for a new ending when auto-expanding rhyme groups.",
+    )
+    parser.add_argument(
+        "--rhyme_update_max_new",
+        type=int,
+        default=None,
+        help="Optional cap on the number of endings to examine when auto-expanding.",
+    )
+    parser.add_argument(
+        "--rhyme_update_output",
+        type=str,
+        default=None,
+        help="Optional destination for the expanded rhyme CSV (defaults to --rhyme_groups_csv).",
+    )
+    parser.add_argument(
+        "--rhyme_update_threshold",
+        type=float,
+        default=0.72,
+        help="Siamese similarity threshold used during auto-expansion.",
+    )
     return parser.parse_args()
 
 
@@ -1456,6 +1493,36 @@ def main():
             target_num_songs=args.target_num_songs,
         )
 
+    if args.auto_expand_rhyme_groups:
+        if not args.rhyme_groups_csv:
+            print("[AUTO-RHYME][WARN] --rhyme_groups_csv is required to auto-expand rhyme entries.")
+        else:
+            corpus_for_update = args.rhyme_update_corpus or args.output_txt
+            if not corpus_for_update or not os.path.exists(corpus_for_update):
+                print(
+                    "[AUTO-RHYME][WARN] Corpus for rhyme update is missing. "
+                    "Provide --rhyme_update_corpus or ensure --output_txt exists."
+                )
+            else:
+                try:
+                    from update_rhyme_groups import expand_rhyme_groups
+                except ImportError as exc:
+                    print(f"[AUTO-RHYME][ERROR] Failed to import update_rhyme_groups: {exc}")
+                else:
+                    output_csv = args.rhyme_update_output or args.rhyme_groups_csv
+                    print(
+                        f"[AUTO-RHYME] Expanding rhyme groups using corpus {corpus_for_update} "
+                        f"-> {output_csv}"
+                    )
+                    expand_rhyme_groups(
+                        corpus_path=corpus_for_update,
+                        existing_csv=args.rhyme_groups_csv,
+                        output_csv=output_csv,
+                        min_count=args.rhyme_update_min_count,
+                        max_new_words=args.rhyme_update_max_new,
+                        siamese_model_dir=args.siamese_model_dir,
+                        siamese_threshold=args.rhyme_update_threshold,
+                    )
 
 if __name__ == "__main__":
     main()

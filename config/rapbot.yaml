@@ -1,0 +1,10 @@
+base_model_name: Qwen/Qwen2.5-7B-Instruct
+adapter_dir: lora_elite_v2
+tokenizer_dir: elite_tokenizer
+rhyme_groups_csv: rhymes_grouped.csv
+siamese_model_dir: rhyme_siamese
+elite_corpus_path: data/elite_kaggle_corpus_clean.txt
+generation_log_path: data/generated_raw.jsonl
+scored_dataset_path: data/scored_dataset.jsonl
+weighted_corpus_path: data/weighted_corpus_stage3.txt
+local_critic_dir: models/local_critic

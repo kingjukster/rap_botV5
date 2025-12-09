@@ -4,7 +4,7 @@ test.py – structure-aware generation sanity check
 
 Modes:
   --mode base  : Qwen2.5-7B-Instruct base only (no LoRA)
-  --mode lora  : Base + LoRA from /workspace/rap-botV4/lora_elite
+  --mode lora  : Base + LoRA from configured adapter directory
   --mode both  : Run base first, then LoRA, same prompt
 
 Prompt pattern matches training corpus:
@@ -17,21 +17,14 @@ import argparse
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
+from config.settings import load_settings
 
 DEVICE = "cuda:0"
 
-BASE_MODEL   = "Qwen/Qwen2.5-7B-Instruct"
-ADAPTER_DIR  = "/workspace/rap-botV4/lora_elite_v2"
-TOKENIZER_DIR = "/workspace/rap-botV4/elite_tokenizer"
-
-
-# --------------------------------------------------------------------
-# Model loader
-# --------------------------------------------------------------------
-def load_model(use_lora: bool):
+def load_model(use_lora: bool, base_model: str, adapter_dir: str, tokenizer_dir: str):
     print("[STEP 1] Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(
-        TOKENIZER_DIR,
+        tokenizer_dir,
         use_fast=False,
         trust_remote_code=True,
     )
@@ -47,7 +40,7 @@ def load_model(use_lora: bool):
         bnb_4bit_compute_dtype=torch.float16,
     )
     model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL,
+        base_model,
         device_map={"": DEVICE},
         torch_dtype=torch.float16,
         quantization_config=quant_config,
@@ -62,7 +55,7 @@ def load_model(use_lora: bool):
         print("[STEP 3] Attaching LoRA adapter...")
         model = PeftModel.from_pretrained(
             model,
-            ADAPTER_DIR,
+            adapter_dir,
             device_map={"": DEVICE},
             torch_dtype=torch.float16,
         )
@@ -175,18 +168,38 @@ def parse_args():
         default="lora",
         help="Which model(s) to test: base (no LoRA), lora, or both.",
     )
+    ap.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional path to JSON/YAML config describing paths.",
+    )
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
+    settings = load_settings(args.config)
+    base_model = settings.base_model_name
+    adapter_dir = str(settings.adapter_dir)
+    tokenizer_dir = str(settings.tokenizer_dir)
 
     if args.mode in ("base", "both"):
-        tokenizer_base, model_base = load_model(use_lora=False)
+        tokenizer_base, model_base = load_model(
+            use_lora=False,
+            base_model=base_model,
+            adapter_dir=adapter_dir,
+            tokenizer_dir=tokenizer_dir,
+        )
         run_once("BASE MODEL", tokenizer_base, model_base)
 
     if args.mode in ("lora", "both"):
-        tokenizer_lora, model_lora = load_model(use_lora=True)
+        tokenizer_lora, model_lora = load_model(
+            use_lora=True,
+            base_model=base_model,
+            adapter_dir=adapter_dir,
+            tokenizer_dir=tokenizer_dir,
+        )
         run_once("BASE + LoRA", tokenizer_lora, model_lora)
 
 
