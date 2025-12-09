@@ -33,3 +33,12 @@ logs/
 
 # Python build
 *.egg-info/
+# Large training data and artifacts (local only)
+data/elite_kaggle_lines_clean_top_tier_bars.csv
+elite_ngrams.tsv
+elite_w2v.model
+elite_tokenizer/
+lora_adapter_elite/
+lora_elite/
+lora_elite_v2/
+rhyme_siamese/
