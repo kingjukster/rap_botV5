@@ -42,3 +42,61 @@ lora_adapter_elite/
 lora_elite/
 lora_elite_v2/
 rhyme_siamese/
+# ============================
+# Project: rap-bot
+# ML / NLP Large Files Exclusion
+# ============================
+
+# --- MODEL CHECKPOINTS (Do NOT store in Git) ---
+models/
+*/adapter_model.safetensors
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# --- TOKENIZERS / VOCAB / Merges (Local Artifacts) ---
+elite_tokenizer/
+tokenizer.json
+added_tokens.json
+merges.txt
+vocab.json
+special_tokens_map.json
+tokenizer_config.json
+
+# --- LORA ADAPTERS (Large & Non-versioned) ---
+lora_adapter_elite/
+lora_elite/
+lora_elite_v2/
+lora_elite_v2b/
+
+# --- SIAMESE RHYME MODEL (Large Checkpoints) ---
+rhyme_siamese/
+
+# --- TRAINING ARTIFACTS ---
+optimizer.pt
+scheduler.pt
+training_args.bin
+trainer_state.json
+rng_state.pth
+
+# --- LARGE EMBEDDINGS / N-GRAM MODELS ---
+elite_w2v.model
+elite_ngrams.tsv
+
+# --- RAW / UNPROCESSED DATA (Local Only) ---
+data_kaggle/
+artifacts/
+artifacts/*
+*.pickle
+*.pkl
+
+# --- LARGE CSVs (Avoid GitHub 100MB limit) ---
+artifacts/*.csv
+data/*top_tier*.csv
+
+# --- TEMP / CACHE / JUNK FILES ---
+*.log
+*.tmp
+*.cache
+__pyca
