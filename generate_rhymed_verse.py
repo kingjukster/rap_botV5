@@ -20,13 +20,18 @@ Toggle hybrid LM-related scoring with:
 """
 
 import argparse
+import json
 import math
 import os
 import re
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
+from config.settings import load_settings
 from rhyme_planner import load_rhyme_groups as load_rhyme_groups_planner, plan_rhyme_endings
 from meter_utils import meter_score
 from topic_utils import TopicScorer
@@ -60,13 +65,6 @@ from scoring import (
 # -----------------------------------------------------------------------------
 # Paths / constants
 # -----------------------------------------------------------------------------
-
-BASE_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-ADAPTER_DIR = "/workspace/rap-botV4/lora_elite_v2"
-TOKENIZER_DIR = "/workspace/rap-botV4/elite_tokenizer"
-
-RHYME_GROUP_CSV = "/workspace/rap-botV4/rhymes_grouped.csv"
-SIAMESE_MODEL_DIR = "/workspace/rap-botV4/rhyme_siamese"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -156,6 +154,11 @@ META_REGEXES = [
 
 BAR_SPAN_RE = re.compile(r"\[BAR\]\s*(.*?)\s*\[RHY=", re.DOTALL)
 
+RHYME_GROUPS: Dict[str, int] = {}
+SIAMESE_SCORER = None
+
+DEFAULT_LOG_FILENAME = "generated_raw.jsonl"
+
 # -----------------------------------------------------------------------------
 # Rhyme groups (word -> group_id mapping, for structural scoring)
 # -----------------------------------------------------------------------------
@@ -185,9 +188,6 @@ def load_word_rhyme_groups(csv_path: str) -> Dict[str, int]:
             mapping[w] = g
     print(f"__ Loaded {len(mapping)} word->group rhyme entries from {csv_path}")
     return mapping
-
-
-RHYME_GROUPS: Dict[str, int] = load_word_rhyme_groups(RHYME_GROUP_CSV)
 
 
 def get_rhyme_group(word: str):
@@ -483,7 +483,10 @@ class SiameseRhymeScorer:
         return float(torch.dot(ea, eb).item())
 
 
-SIAMESE_SCORER = SiameseRhymeScorer(SIAMESE_MODEL_DIR, device=DEVICE)
+def get_siamese_scorer() -> SiameseRhymeScorer:
+    if SIAMESE_SCORER is None:
+        raise RuntimeError("Siamese rhyme scorer not initialized. Call load_settings() first.")
+    return SIAMESE_SCORER
 
 
 # -----------------------------------------------------------------------------
@@ -595,7 +598,7 @@ def coherence_score(
     seed: str,
     siamese_scorer: SiameseRhymeScorer | None = None,
 ) -> float:
-    scorer = siamese_scorer if siamese_scorer is not None else SIAMESE_SCORER
+    scorer = siamese_scorer if siamese_scorer is not None else get_siamese_scorer()
     if not getattr(scorer, "enabled", False):
         return 0.0
     context = seed
@@ -650,7 +653,7 @@ def candidate_score(
                         if not (overlap_len >= min_chars and sim >= min_sim):
                             return -1e9
 
-    scorer = siamese_scorer if siamese_scorer is not None else SIAMESE_SCORER
+    scorer = siamese_scorer if siamese_scorer is not None else get_siamese_scorer()
     theme_sim = 0.0
     if getattr(scorer, "enabled", False) and seed:
         theme_sim = scorer.score_pair(seed, bar)
@@ -777,7 +780,7 @@ def filter_candidates_by_rhyme_letter(
 # Model loading / generation
 # -----------------------------------------------------------------------------
 
-def load_rap_model(adapter_dir: str):
+def load_rap_model(adapter_dir: str, tokenizer_dir: str):
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import PeftModel, PeftConfig
 
@@ -789,9 +792,9 @@ def load_rap_model(adapter_dir: str):
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available, but GPU is expected for Qwen2.5-7B.")
 
-    print(f"__ Loading tokenizer from: {TOKENIZER_DIR}")
+    print(f"__ Loading tokenizer from: {tokenizer_dir}")
     tokenizer = AutoTokenizer.from_pretrained(
-        TOKENIZER_DIR,
+        tokenizer_dir,
         trust_remote_code=True,
     )
 
@@ -947,7 +950,7 @@ def select_best_bar(
     meter_target_syllables: int,
     meter_sigma: float,
     anchor_words: List[str] | None,
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
     filtered = filter_candidates_by_rhyme_letter(
         letter=letter,
         candidates=candidates,
@@ -956,9 +959,9 @@ def select_best_bar(
     if not filtered:
         filtered = [c for c in candidates if c and not is_meta_bar(c)]
     if not filtered:
-        return ""
+        return "", {}
 
-    scored: List[Tuple[str, float]] = []
+    scored: List[Tuple[str, float, Dict[str, Any]]] = []
     model_device = next(model.parameters()).device
 
     # Normalise anchors for comparison
@@ -978,6 +981,7 @@ def select_best_bar(
 
         # Optional hybrid LM + length + theme scoring (your existing pipeline)
         hybrid_component = 0.0
+        theme_similarity = 0.0
         if use_hybrid:
             lm_logprob = compute_lm_logprob(
                 model=model,
@@ -988,8 +992,7 @@ def select_best_bar(
 
             internal_hits = count_internal_hits(bar)
             internal_rhyme_score = math.log(1 + internal_hits)
-
-            line_emb = SIAMESE_SCORER.embed(bar)
+            line_emb = get_siamese_scorer().embed(bar)
             theme_similarity = compute_theme_similarity(line_emb, theme_ctx)
 
             length = len(bar.split())
@@ -1052,13 +1055,34 @@ def select_best_bar(
             anchor_bonus = 0.2  # small but meaningful extra
 
         final_score = struct_score + hybrid_component + hernandez_component + anchor_bonus
-        scored.append((bar, final_score))
+        diagnostics = {
+            "bar": bar,
+            "letter": letter,
+            "struct_score": struct_score,
+            "hybrid_component": hybrid_component,
+            "hernandez_component": hernandez_component,
+            "anchor_bonus": anchor_bonus,
+            "rhyme_alignment": rhyme_alignment,
+            "topic_score": topic_score,
+            "meter_score": meter_score_val,
+            "ngram_score": ngram_score_val,
+            "final_score": final_score,
+            "anchor_hit": bool(end_word and anchor_set and end_word.lower() in anchor_set),
+            "theme_similarity": theme_similarity,
+            "candidate_pool": len(candidates),
+            "filtered_pool": len(filtered),
+            "end_word": end_word,
+            "length": len(bar.split()),
+        }
+        scored.append((bar, final_score, diagnostics))
 
     if not scored:
-        return ""
+        return "", {}
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[0][0]
+    best_bar, _, diag = scored[0]
+    diag["selected"] = True
+    return best_bar, diag
 
 
 def verse_siamese_rhyme_score(
@@ -1121,6 +1145,45 @@ def analyse_verse(verse_bars: List[Tuple[str, str]]):
 
 
 # -----------------------------------------------------------------------------
+# Logging helpers
+# -----------------------------------------------------------------------------
+
+def verse_to_text(verse_bars: List[Tuple[str, str]]) -> str:
+    lines = []
+    for _, bar in verse_bars:
+        if bar:
+            lines.append(bar.rstrip())
+    lines.append("<END_SONG>")
+    return "\n".join(lines)
+
+
+def bars_payload(verse_bars: List[Tuple[str, str]]) -> List[Dict[str, str]]:
+    return [{"letter": letter, "text": bar} for letter, bar in verse_bars]
+
+
+def resolve_log_path(args, settings) -> Path | None:
+    if args.log_json:
+        return Path(args.log_json)
+    if args.log_dir:
+        return Path(args.log_dir) / DEFAULT_LOG_FILENAME
+    return settings.generation_log_path
+
+
+def append_generation_log(log_path: Path | None, entry: Dict[str, Any]):
+    if log_path is None:
+        return
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        json.dump(entry, f, ensure_ascii=False)
+        f.write("\n")
+
+
+def utc_timestamp() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+# -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 
@@ -1138,6 +1201,24 @@ def parse_args():
     p.add_argument("--repetition_penalty", type=float, default=DEFAULT_REPETITION_PENALTY)
     p.add_argument("--attempts", type=int, default=4)
     p.add_argument("--verse_accept_threshold", type=float, default=0.35)
+    p.add_argument(
+        "--log_json",
+        type=str,
+        default=None,
+        help="Optional path to append generation logs (JSONL). Defaults to config path.",
+    )
+    p.add_argument(
+        "--log_dir",
+        type=str,
+        default=None,
+        help="Optional directory to place generated_raw.jsonl (overrides config).",
+    )
+    p.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional path to a JSON/YAML config overriding default paths.",
+    )
 
     # Hybrid scoring toggle
     p.add_argument(
@@ -1152,14 +1233,14 @@ def parse_args():
     p.add_argument(
         "--topic_model_path",
         type=str,
-        default="/workspace/rap-botV4/elite_w2v.model",
-        help="Path to Word2Vec topic model for TopicScorer.",
+        default=None,
+        help="Path to Word2Vec topic model for TopicScorer (default from config).",
     )
     p.add_argument(
         "--ngram_path",
         type=str,
-        default="/workspace/rap-botV4/elite_ngrams.tsv",
-        help="Path to n-gram critic data.",
+        default=None,
+        help="Path to n-gram critic data (default from config).",
     )
     p.add_argument(
         "--target_syllables",
@@ -1184,6 +1265,29 @@ def parse_args():
 
 def main():
     args = parse_args()
+    settings = load_settings(args.config)
+    adapter_dir = str(settings.adapter_dir)
+    tokenizer_dir = str(settings.tokenizer_dir)
+    rhyme_csv = str(settings.rhyme_groups_csv)
+    siamese_dir = str(settings.siamese_model_dir)
+    topic_model_path = args.topic_model_path or str(settings.topic_model_path)
+    ngram_path = args.ngram_path or str(settings.ngram_output_path)
+    log_path = resolve_log_path(args, settings)
+
+    global RHYME_GROUPS, SIAMESE_SCORER
+    RHYME_GROUPS = load_word_rhyme_groups(rhyme_csv)
+    print(f"__ Using word->group rhyme entries from {rhyme_csv} (count={len(RHYME_GROUPS)})")
+
+    print(f"__ Loading Siamese rhyme model from {siamese_dir} ...")
+    SIAMESE_SCORER = SiameseRhymeScorer(siamese_dir, device=DEVICE)
+    siamese_scorer = get_siamese_scorer()
+    if siamese_scorer.enabled:
+        print("__ Siamese rhyme scorer ready.\n")
+    else:
+        print("__ Siamese rhyme scorer disabled (structural filters only).\n")
+
+    if log_path:
+        print(f"__ Generation logs will be appended to: {log_path}")
 
     artist_token = args.artist.strip().lower().replace(" ", "_")
     section_token = args.section.strip().upper()
@@ -1191,17 +1295,12 @@ def main():
     scheme = args.scheme.strip().upper()
     scheme_letters = build_scheme_letters(scheme, args.num_bars)
 
-    print(f"__ Using word->group rhyme entries from {RHYME_GROUP_CSV} (count={len(RHYME_GROUPS)})")
-    print(f"__ Loading Siamese rhyme model from {SIAMESE_MODEL_DIR} ...")
-    if SIAMESE_SCORER.enabled:
-        print("__ Siamese rhyme scorer ready.\n")
-
     print(f"__ Loading model for artist '{artist_token}' with scheme '{scheme}' ...")
-    tokenizer, model = load_rap_model(ADAPTER_DIR)
+    tokenizer, model = load_rap_model(adapter_dir=adapter_dir, tokenizer_dir=tokenizer_dir)
 
     # Load group->words mapping for rhyme planner
     try:
-        group_to_words = load_rhyme_groups_planner(RHYME_GROUP_CSV)
+        group_to_words = load_rhyme_groups_planner(rhyme_csv)
         print(f"__ Rhyme planner loaded {len(group_to_words)} groups for anchor planning.")
     except Exception as e:
         print(f"[WARN] Failed to load planner rhyme groups: {e}")
@@ -1209,7 +1308,7 @@ def main():
 
     # Topic scorer (Word2Vec)
     try:
-        topic_scorer = TopicScorer(args.topic_model_path)
+        topic_scorer = TopicScorer(topic_model_path)
         print("__ Topic scorer (Word2Vec) ready.")
     except Exception as e:
         print(f"[WARN] Topic model not available: {e}")
@@ -1217,7 +1316,7 @@ def main():
 
     # N-gram critic
     try:
-        ngram_critic = NgramCritic(args.ngram_path)
+        ngram_critic = NgramCritic(ngram_path)
         print("__ n-gram critic ready.")
     except Exception as e:
         print(f"[WARN] n-gram critic not available: {e}")
@@ -1259,7 +1358,7 @@ def main():
         syllable_match=0.6,
     )
 
-    theme_emb = SIAMESE_SCORER.embed(seed)
+    theme_emb = siamese_scorer.embed(seed)
     theme_ctx = ThemeContext(embedding=theme_emb)
 
     print(f"\n=== Target: {args.num_bars} bars ({''.join(scheme_letters)}) ===")
@@ -1277,6 +1376,8 @@ def main():
         rhyme_memory = defaultdict(list)
         verse_bars: List[Tuple[str, str]] = []
         prev_bars_text: List[str] = []
+        bar_metrics: List[Dict[str, Any]] = []
+        verse_id = uuid.uuid4().hex
 
         for idx, letter in enumerate(scheme_letters, start=1):
             print(f"[Bar {idx}/{len(scheme_letters)}] Rhyme letter: {letter}")
@@ -1303,13 +1404,13 @@ def main():
                 end_words_hint=line_anchors,
             )
 
-            bar = select_best_bar(
+            bar, bar_diag = select_best_bar(
                 letter=letter,
                 candidates=candidates,
                 rhyme_memory=rhyme_memory,
                 prev_bars=prev_bars_text,
                 seed=seed,
-                siamese_scorer=SIAMESE_SCORER,
+                siamese_scorer=siamese_scorer,
                 tokenizer=tokenizer,
                 model=model,
                 verse_length_model=verse_length_model,
@@ -1323,13 +1424,63 @@ def main():
                 anchor_words=line_anchors,
             )
 
+            if not bar_diag:
+                bar_diag = {"bar": bar, "letter": letter, "final_score": None}
+            bar_metrics.append(bar_diag)
+
             update_rhyme_memory(letter, bar, rhyme_memory)
             verse_bars.append((letter, bar))
             prev_bars_text.append(bar)
             print(f"  -> Selected: {bar}\n")
 
-        verse_score = verse_siamese_rhyme_score(verse_bars, SIAMESE_SCORER)
+        verse_score = verse_siamese_rhyme_score(verse_bars, siamese_scorer)
         print(f"--> Verse-level Siamese rhyme score: {verse_score:.3f}")
+
+        log_entry = {
+            "log_version": 1,
+            "verse_id": verse_id,
+            "timestamp": utc_timestamp(),
+            "artist": args.artist,
+            "artist_token": artist_token,
+            "seed": seed,
+            "scheme": "".join(scheme_letters),
+            "num_bars": len(scheme_letters),
+            "attempt_index": attempt,
+            "attempts_total": args.attempts,
+            "hybrid_mode": args.hybrid,
+            "generation_params": {
+                "candidates": args.candidates,
+                "max_new_tokens": args.max_new_tokens,
+                "temperature": args.temperature,
+                "top_p": args.top_p,
+                "repetition_penalty": args.repetition_penalty,
+                "target_syllables": args.target_syllables,
+                "meter_sigma": args.meter_sigma,
+                "scheme": scheme,
+            },
+            "bars": bars_payload(verse_bars),
+            "bar_metrics": bar_metrics,
+            "verse_text": verse_to_text(verse_bars),
+            "verse_score": verse_score,
+            "verse_accept_threshold": args.verse_accept_threshold,
+            "accepted": verse_score >= args.verse_accept_threshold,
+            "topic_model_path": topic_model_path,
+            "ngram_path": ngram_path,
+            "rhyme_groups_csv": rhyme_csv,
+            "siamese_model_dir": siamese_dir,
+            "settings_snapshot": settings.as_dict(),
+        }
+        if bar_metrics:
+            meter_vals = [bm.get("meter_score") for bm in bar_metrics if isinstance(bm.get("meter_score"), (int, float))]
+            final_vals = [bm.get("final_score") for bm in bar_metrics if isinstance(bm.get("final_score"), (int, float))]
+            summary = {}
+            if meter_vals:
+                summary["avg_meter"] = float(np.mean(meter_vals))
+            if final_vals:
+                summary["avg_final_score"] = float(np.mean(final_vals))
+            if summary:
+                log_entry["metrics_summary"] = summary
+        append_generation_log(log_path, log_entry)
 
         if verse_score > best_score:
             best_score = verse_score
