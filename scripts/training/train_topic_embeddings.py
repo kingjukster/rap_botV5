@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 # train_topic_embeddings.py
 from gensim.models import Word2Vec
 from pathlib import Path

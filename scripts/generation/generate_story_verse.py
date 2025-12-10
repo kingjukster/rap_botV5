@@ -13,7 +13,7 @@ Story-focused verse generator built on top of generate_rhymed_verse.py.
 
 Example:
 
-  python generate_story_verse.py \
+  python scripts/generation/generate_story_verse.py \
     --artist kendrick \
     --seed "demons in the mirror and pressure on my chest" \
     --scheme AAAA \
@@ -24,12 +24,18 @@ Example:
     --top_p 0.9
 """
 
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import argparse
 import math
 from collections import defaultdict
 from typing import List, Tuple
 
-import generate_rhymed_verse as grv
+from scripts.generation import generate_rhymed_verse as grv
 
 
 # ---------------------------------------------------------------------------

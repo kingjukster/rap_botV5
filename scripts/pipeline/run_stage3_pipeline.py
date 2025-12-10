@@ -13,15 +13,20 @@ This lets you fire off the end-to-end loop with a single command.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import argparse
 import shlex
 import subprocess
-import sys
-from pathlib import Path
 from typing import List
 
 from config.settings import load_settings
-from update_rhyme_groups import expand_rhyme_groups
+from scripts.tools.update_rhyme_groups import expand_rhyme_groups
 
 
 def run_cmd(cmd: List[str]):
@@ -105,7 +110,7 @@ def main():
             for sample_idx in range(args.samples_per_seed):
                 cmd = [
                     python_bin,
-                    "generate_rhymed_verse.py",
+                    "scripts/generation/generate_rhymed_verse.py",
                     "--artist",
                     args.artist,
                     "--seed",
@@ -136,14 +141,14 @@ def main():
     head_path = args.local_critic_head or str(settings.local_critic_dir / "reward_head.pt")
 
     if args.train_local_critic:
-        cmd = [python_bin, "train_local_critic.py"]
+        cmd = [python_bin, "scripts/training/train_local_critic.py"]
         if args.config:
             cmd.extend(["--config", args.config])
         cmd.extend(["--output_dir", str(settings.local_critic_dir)])
         run_cmd(cmd)
 
     if not args.skip_consolidate:
-        cmd = [python_bin, "consolidate_stage3.py"]
+        cmd = [python_bin, "scripts/pipeline/consolidate_stage3.py"]
         if args.config:
             cmd.extend(["--config", args.config])
         if args.critic_scores:

@@ -7,7 +7,7 @@ Combine generation logs + critic scores into:
   2) weighted_corpus_stage3.txt (duplicate verses proportional to critic score)
 
 Usage:
-    python consolidate_stage3.py \
+    python scripts/pipeline/consolidate_stage3.py \
         --critic_scores data/critic_scores.jsonl \
         --log_path data/generated_raw.jsonl \
         --scored_output data/scored_dataset.jsonl \
@@ -16,9 +16,15 @@ Usage:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import argparse
 import json
-from pathlib import Path
 from typing import Dict, Iterable, List
 
 from config.settings import load_settings

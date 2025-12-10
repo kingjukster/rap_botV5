@@ -7,10 +7,16 @@ Uses frozen Siamese encoder embeddings + MLP regression head.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import argparse
 import json
 import random
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -19,8 +25,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from config.settings import load_settings
-from reward_model import CriticHead, save_head, SCORE_KEYS
-from rhyme_scorer import SiameseRhymeScorer
+from rapbot.reward_model import CriticHead, save_head, SCORE_KEYS
+from rapbot.rhyme_scorer import SiameseRhymeScorer
 
 
 class CriticDataset(Dataset):
