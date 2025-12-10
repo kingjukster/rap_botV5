@@ -23,3 +23,5 @@ pronouncing
 
 fasttext
 bitsandbytes
+papermill
+openai

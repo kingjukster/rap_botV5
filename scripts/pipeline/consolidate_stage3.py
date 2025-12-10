@@ -24,8 +24,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import argparse
+import csv
 import json
+from collections import Counter, defaultdict
 from typing import Dict, Iterable, List
+
+import numpy as np
 
 from config.settings import load_settings
 
@@ -62,13 +66,19 @@ def parse_args():
         "--local_critic_head",
         type=str,
         default=None,
-        help="Path to trained local critic head (reward_head.pt). When provided, missing critic scores are predicted offline.",
+        help="Path (or comma-separated paths) to trained local critic head(s). When provided, missing critic scores are predicted offline.",
     )
     parser.add_argument(
         "--local_critic_siamese",
         type=str,
         default=None,
         help="Siamese model dir for the local critic (defaults to config).",
+    )
+    parser.add_argument(
+        "--local_critic_calibration",
+        type=str,
+        default=None,
+        help="Optional JSON file with calibration params for local critic predictions.",
     )
     parser.add_argument(
         "--min_score",
@@ -93,6 +103,42 @@ def parse_args():
         type=float,
         default=2.4,
         help="Exponent applied to normalized score before scaling.",
+    )
+    parser.add_argument(
+        "--min_overall",
+        type=float,
+        default=None,
+        help="Drop verses whose overall_score is below this threshold.",
+    )
+    parser.add_argument(
+        "--min_average",
+        type=float,
+        default=None,
+        help="Drop verses whose average critic score is below this threshold.",
+    )
+    parser.add_argument(
+        "--stats_output",
+        type=str,
+        default=None,
+        help="Optional JSON path for summary stats (defaults to config.stats.summary_path).",
+    )
+    parser.add_argument(
+        "--per_seed_csv",
+        type=str,
+        default=None,
+        help="Optional CSV path with per-seed metrics (defaults to config.stats.per_seed_csv).",
+    )
+    parser.add_argument(
+        "--hist_output",
+        type=str,
+        default=None,
+        help="Optional JSON path for histogram data (defaults to config.stats.histogram_path).",
+    )
+    parser.add_argument(
+        "--hist_bins",
+        type=int,
+        default=None,
+        help="Number of bins to use for score histograms.",
     )
     parser.add_argument(
         "--config",
@@ -144,15 +190,52 @@ def verse_block(text: str) -> str:
     return text
 
 
+def describe(values: List[float]) -> Dict[str, float]:
+    if not values:
+        return {"count": 0}
+    arr = np.array(values, dtype=np.float32)
+    return {
+        "count": int(arr.size),
+        "mean": float(arr.mean()),
+        "std": float(arr.std(ddof=0)),
+        "min": float(arr.min()),
+        "p25": float(np.percentile(arr, 25)),
+        "median": float(np.percentile(arr, 50)),
+        "p75": float(np.percentile(arr, 75)),
+        "max": float(arr.max()),
+    }
+
+
+def histogram(values: List[float], bins: int, value_range: tuple[float, float] | None = None) -> Dict[str, List[float]]:
+    if not values or bins <= 0:
+        return {"counts": [], "edges": []}
+    hist, edges = np.histogram(values, bins=bins, range=value_range)
+    return {"counts": hist.astype(int).tolist(), "edges": edges.tolist()}
+
+
 def main():
     args = parse_args()
     settings = load_settings(args.config)
+    stats_cfg = settings.stats
+    stage3_cfg = settings.stage3
 
     log_paths = args.log_path or [str(settings.generation_log_path)]
     log_paths = [Path(p) for p in log_paths]
     critic_path = Path(args.critic_scores) if args.critic_scores else None
     scored_output = Path(args.scored_output or settings.scored_dataset_path)
     weighted_output = Path(args.weighted_output or settings.weighted_corpus_path)
+    stats_output = Path(args.stats_output or stats_cfg.get("summary_path"))
+    per_seed_csv_path = args.per_seed_csv or stats_cfg.get("per_seed_csv")
+    hist_output_path = args.hist_output or stats_cfg.get("histogram_path")
+    per_seed_csv = Path(per_seed_csv_path) if per_seed_csv_path else None
+    hist_output = Path(hist_output_path) if hist_output_path else None
+    hist_bins = args.hist_bins or int(stage3_cfg.get("hist_bins", 20))
+    min_overall = args.min_overall
+    if min_overall is None:
+        min_overall = float(stage3_cfg.get("min_overall_score", 0.0))
+    min_average = args.min_average
+    if min_average is None:
+        min_average = float(stage3_cfg.get("min_average_score", 0.0))
 
     logs = load_logs(log_paths)
     print(f"[INFO] Loaded {len(logs):,} generation log entries from {len(log_paths)} file(s).")
@@ -172,17 +255,26 @@ def main():
 
     local_critic = None
     if args.local_critic_head:
-        from scoring import OfflineCritic  # lazy import to avoid circular issues
+        from rapbot.scoring import OfflineCritic  # lazy import to avoid circular issues
 
         siamese_dir = args.local_critic_siamese or str(settings.siamese_model_dir)
-        local_critic = OfflineCritic(args.local_critic_head, siamese_dir)
+        calibration_path = args.local_critic_calibration
+        local_critic = OfflineCritic(args.local_critic_head, siamese_dir, calibration_path=calibration_path)
         print("[INFO] Local critic ready for offline scoring.")
-
     if not critic_lookup and local_critic is None:
         raise RuntimeError("No critic scores provided and local critic head not specified.")
 
     scored_count = 0
     total_weight = 0
+    rejection_counts = {"missing_critic": 0, "below_overall": 0, "below_average": 0}
+    score_tracker = {field: [] for field in SCORE_FIELDS}
+    verse_scores: List[float] = []
+    bar_counts: List[int] = []
+    timestamps: List[str] = []
+    per_seed = defaultdict(lambda: {"count": 0, "overall": [], "accepted": 0, "verse_scores": []})
+    per_scheme = defaultdict(lambda: {"count": 0, "overall": []})
+    critic_sources = Counter()
+    tag_counter = Counter()
 
     with open(scored_output, "w", encoding="utf-8") as scored_f, open(
         weighted_output, "w", encoding="utf-8"
@@ -194,12 +286,35 @@ def main():
                 critic_record = {"verse_id": verse_id, "source": "local", **predictions}
 
             if critic_record is None:
+                rejection_counts["missing_critic"] += 1
+                continue
+
+            critic_sources[critic_record.get("source", "remote")] += 1
+
+            overall_score = critic_record.get("overall_score")
+            if overall_score is None:
+                rejection_counts["missing_critic"] += 1
+                continue
+            field_values = [float(critic_record.get(field, 0.0)) for field in SCORE_FIELDS if critic_record.get(field) is not None]
+            avg_score = sum(field_values) / len(field_values) if field_values else None
+            if min_overall and overall_score < min_overall:
+                rejection_counts["below_overall"] += 1
+                continue
+            if min_average and avg_score is not None and avg_score < min_average:
+                rejection_counts["below_average"] += 1
                 continue
 
             combined = {
                 "verse_id": verse_id,
                 "artist": log_entry.get("artist"),
                 "seed": log_entry.get("seed"),
+                "seed_id": log_entry.get("seed_id"),
+                "seed_tags": log_entry.get("seed_tags"),
+                "persona": log_entry.get("persona"),
+                "theme_hint": log_entry.get("theme_hint"),
+                "style_hint": log_entry.get("style_hint"),
+                "topic_hint": log_entry.get("topic_hint"),
+                "vocab_hint": log_entry.get("vocab_hint"),
                 "scheme": log_entry.get("scheme"),
                 "verse_score": log_entry.get("verse_score"),
                 "accepted": log_entry.get("accepted"),
@@ -215,6 +330,36 @@ def main():
             }
             scored_f.write(json.dumps(combined, ensure_ascii=False) + "\n")
             scored_count += 1
+
+            for field in SCORE_FIELDS:
+                value = critic_record.get(field)
+                if value is not None:
+                    score_tracker[field].append(float(value))
+
+            verse_score = log_entry.get("verse_score")
+            if verse_score is not None:
+                verse_scores.append(float(verse_score))
+            bar_counts.append(len(log_entry.get("bars") or []))
+            timestamp = log_entry.get("timestamp")
+            if timestamp:
+                timestamps.append(timestamp)
+
+            seed_key = log_entry.get("seed") or "<unknown>"
+            seed_entry = per_seed[seed_key]
+            seed_entry["count"] += 1
+            seed_entry["overall"].append(float(overall_score))
+            seed_entry["verse_scores"].append(float(verse_score) if verse_score is not None else 0.0)
+            if log_entry.get("accepted"):
+                seed_entry["accepted"] += 1
+
+            scheme_key = log_entry.get("scheme") or "<unknown>"
+            scheme_entry = per_scheme[scheme_key]
+            scheme_entry["count"] += 1
+            scheme_entry["overall"].append(float(overall_score))
+
+            tags = log_entry.get("seed_tags") or []
+            for tag in tags:
+                tag_counter[tag] += 1
 
             scores = [
                 normalize(float(critic_record.get(field, args.min_score)), args.min_score, args.max_score)
@@ -235,6 +380,73 @@ def main():
 
     print(f"[DONE] Wrote {scored_count:,} records to {scored_output}")
     print(f"[DONE] Weighted corpus total verses written: {total_weight:,} (file: {weighted_output})")
+
+    summary = {
+        "generated_entries": len(logs),
+        "scored_entries": scored_count,
+        "total_weight": total_weight,
+        "rejections": rejection_counts,
+        "critic_sources": dict(critic_sources),
+        "min_overall_applied": min_overall,
+        "min_average_applied": min_average,
+        "score_summary": {field: describe(values) for field, values in score_tracker.items()},
+        "verse_score_summary": describe(verse_scores),
+        "bar_count_summary": describe(bar_counts),
+        "timestamp_range": {"min": min(timestamps) if timestamps else None, "max": max(timestamps) if timestamps else None},
+        "top_seeds": [],
+        "bottom_seeds": [],
+        "scheme_summary": [],
+        "tag_counts": tag_counter.most_common(25),
+    }
+
+    seed_rows = []
+    for seed, data in per_seed.items():
+        avg_overall = sum(data["overall"]) / data["count"] if data["count"] else 0.0
+        seed_rows.append(
+            {
+                "seed": seed,
+                "count": data["count"],
+                "avg_overall": avg_overall,
+                "accept_rate": data["accepted"] / data["count"] if data["count"] else 0.0,
+                "avg_verse_score": sum(data["verse_scores"]) / data["count"] if data["count"] else 0.0,
+            }
+        )
+
+    if seed_rows:
+        summary["top_seeds"] = sorted(seed_rows, key=lambda row: row["avg_overall"], reverse=True)[:10]
+        summary["bottom_seeds"] = sorted(seed_rows, key=lambda row: row["avg_overall"])[:10]
+
+    scheme_rows = []
+    for scheme, data in per_scheme.items():
+        avg_overall = sum(data["overall"]) / data["count"] if data["count"] else 0.0
+        scheme_rows.append({"scheme": scheme, "count": data["count"], "avg_overall": avg_overall})
+    summary["scheme_summary"] = sorted(scheme_rows, key=lambda row: row["avg_overall"], reverse=True)
+
+    summary["histograms"] = {
+        field: histogram(values, hist_bins, (args.min_score, args.max_score))
+        for field, values in score_tracker.items()
+        if values
+    }
+    if verse_scores:
+        summary["histograms"]["verse_score"] = histogram(verse_scores, hist_bins, None)
+
+    stats_output.parent.mkdir(parents=True, exist_ok=True)
+    stats_output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"[STATS] Summary written to {stats_output}")
+
+    if per_seed_csv:
+        per_seed_csv.parent.mkdir(parents=True, exist_ok=True)
+        with open(per_seed_csv, "w", encoding="utf-8", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=["seed", "count", "avg_overall", "accept_rate", "avg_verse_score"])
+            writer.writeheader()
+            for row in sorted(seed_rows, key=lambda r: r["avg_overall"], reverse=True):
+                writer.writerow(row)
+        print(f"[STATS] Per-seed CSV written to {per_seed_csv}")
+
+    if hist_output:
+        hist_output.parent.mkdir(parents=True, exist_ok=True)
+        hist_output.write_text(json.dumps(summary.get("histograms", {}), indent=2), encoding="utf-8")
+        print(f"[STATS] Histogram data written to {hist_output}")
 
 
 if __name__ == "__main__":

@@ -39,8 +39,12 @@ class Settings:
     scored_dataset_path: Path
     weighted_corpus_path: Path
     local_critic_dir: Path
+    generation_defaults: Dict[str, Any]
+    stage3: Dict[str, Any]
+    critic: Dict[str, Any]
+    stats: Dict[str, Any]
 
-    def as_dict(self) -> Dict[str, str]:
+    def as_dict(self) -> Dict[str, Any]:
         """
         Convenience helper for logging / introspection.
         """
@@ -59,6 +63,10 @@ class Settings:
             "scored_dataset_path": str(self.scored_dataset_path),
             "weighted_corpus_path": str(self.weighted_corpus_path),
             "local_critic_dir": str(self.local_critic_dir),
+            "generation_defaults": _stringify_section(self.generation_defaults),
+            "stage3": _stringify_section(self.stage3),
+            "critic": _stringify_section(self.critic),
+            "stats": _stringify_section(self.stats),
         }
 
 
@@ -94,6 +102,58 @@ PATH_FIELDS = {
     "weighted_corpus_path",
     "local_critic_dir",
 }
+
+GENERATION_SECTION_DEFAULTS: Dict[str, Any] = {
+    "scheme": "AABB",
+    "num_bars": 16,
+    "candidates": 8,
+    "max_new_tokens": 40,
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "repetition_penalty": 1.05,
+    "attempts": 4,
+    "verse_accept_threshold": 0.3,
+    "log_json": "data/generated_raw.jsonl",
+    "persona": None,
+    "theme_hint": None,
+    "style_hint": None,
+    "topic_hint": None,
+    "vocab_hint": None,
+    "syllable_map": None,
+}
+
+STAGE3_SECTION_DEFAULTS: Dict[str, Any] = {
+    "samples_per_seed": 4,
+    "parallel_workers": 1,
+    "refresh_rhymes": True,
+    "min_overall_score": 0.0,
+    "min_average_score": 0.0,
+    "hist_bins": 20,
+    "seed_manifest": None,
+}
+
+CRITIC_SECTION_DEFAULTS: Dict[str, Any] = {
+    "model": "gpt-4o-mini",
+    "sleep": 0.5,
+    "concurrency": 2,
+    "max_per_run": None,
+    "retry_backoff": 5.0,
+    "max_retries": 6,
+    "manifest_path": "data/critic_manifests/run_manifest.jsonl",
+    "input_cost_per_mtok": 0.0,
+    "output_cost_per_mtok": 0.0,
+}
+
+STATS_SECTION_DEFAULTS: Dict[str, Any] = {
+    "summary_path": "data/stats/stage3_summary.json",
+    "per_seed_csv": "data/stats/stage3_per_seed.csv",
+    "histogram_path": "data/stats/stage3_histograms.json",
+}
+
+GEN_SECTION_PATHS = {"log_json"}
+STAGE3_SECTION_PATHS = {"seed_manifest"}
+CRITIC_SECTION_PATHS = {"manifest_path"}
+STATS_SECTION_PATHS = {"summary_path", "per_seed_csv", "histogram_path"}
 
 ENV_MAP = {
     "base_model_name": "RAPBOT_BASE_MODEL",
@@ -151,6 +211,35 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
         else:
             resolved[field] = str(value)
 
+    generation_defaults = _resolve_section(
+        "generation",
+        GENERATION_SECTION_DEFAULTS,
+        cfg_data,
+        base_dir,
+        GEN_SECTION_PATHS,
+    )
+    stage3_defaults = _resolve_section(
+        "stage3",
+        STAGE3_SECTION_DEFAULTS,
+        cfg_data,
+        base_dir,
+        STAGE3_SECTION_PATHS,
+    )
+    critic_defaults = _resolve_section(
+        "critic",
+        CRITIC_SECTION_DEFAULTS,
+        cfg_data,
+        base_dir,
+        CRITIC_SECTION_PATHS,
+    )
+    stats_defaults = _resolve_section(
+        "stats",
+        STATS_SECTION_DEFAULTS,
+        cfg_data,
+        base_dir,
+        STATS_SECTION_PATHS,
+    )
+
     return Settings(
         base_model_name=str(resolved["base_model_name"]),
         adapter_dir=Path(resolved["adapter_dir"]),
@@ -166,6 +255,10 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
         scored_dataset_path=Path(resolved["scored_dataset_path"]),
         weighted_corpus_path=Path(resolved["weighted_corpus_path"]),
         local_critic_dir=Path(resolved["local_critic_dir"]),
+        generation_defaults=generation_defaults,
+        stage3=stage3_defaults,
+        critic=critic_defaults,
+        stats=stats_defaults,
     )
 
 
@@ -198,3 +291,29 @@ def _load_config_file(path: Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("Config file must define a dictionary at the top level.")
     return data
+
+
+def _resolve_section(
+    name: str,
+    defaults: Dict[str, Any],
+    cfg_data: Dict[str, Any],
+    base_dir: Path,
+    path_keys: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    section = cfg_data.get(name) if isinstance(cfg_data.get(name), dict) else {}
+    merged: Dict[str, Any] = {**defaults, **(section or {})}
+    if path_keys:
+        for key in path_keys:
+            if merged.get(key):
+                merged[key] = _resolve_path(merged[key], base_dir)
+    return merged
+
+
+def _stringify_section(section: Dict[str, Any]) -> Dict[str, Any]:
+    rendered = {}
+    for key, value in section.items():
+        if isinstance(value, Path):
+            rendered[key] = str(value)
+        else:
+            rendered[key] = value
+    return rendered

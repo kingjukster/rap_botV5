@@ -9,10 +9,10 @@ for rhyme-group metadata and Siamese coherence scoring.
 """
 
 import os
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import torch
-import numpy as np
 import pandas as pd
 from transformers import AutoTokenizer, AutoModel
 
@@ -21,8 +21,31 @@ from transformers import AutoTokenizer, AutoModel
 # Paths / constants
 # ---------------------------------------------------------------------
 
-RHYME_CSV_PATH = "/workspace/rap-botV4/rhymes_grouped.csv"
-SIAMESE_MODEL_DIR = "/workspace/rap-botV4/rhyme_siamese"
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_settings_paths() -> Tuple[Path, Path]:
+    """
+    Try to pull canonical paths from config/settings so every script
+    agrees on where rhyme assets live. Falls back to repo-relative paths
+    if the config module is unavailable (e.g., lightweight tooling).
+    """
+    try:
+        from config.settings import load_settings
+
+        cfg = load_settings(os.environ.get("RAPBOT_CONFIG"))
+        return Path(cfg.rhyme_groups_csv), Path(cfg.siamese_model_dir)
+    except Exception:
+        # Repo-relative defaults keep the legacy behaviour but avoid
+        # hard-coded /workspace paths that break on other machines.
+        return ROOT / "data" / "rhymes_grouped.csv", ROOT / "rhyme_siamese"
+
+
+_DEFAULT_RHYME_CSV, _DEFAULT_SIAMESE_DIR = _load_settings_paths()
+
+RHYME_CSV_PATH = Path(os.environ.get("RAPBOT_RHYME_CSV", str(_DEFAULT_RHYME_CSV)))
+SIAMESE_MODEL_DIR = Path(os.environ.get("RAPBOT_SIAMESE_DIR", str(_DEFAULT_SIAMESE_DIR)))
+
 DEVICE = "cpu"  # keep this on CPU to avoid fighting Qwen for VRAM
 
 
@@ -30,11 +53,12 @@ DEVICE = "cpu"  # keep this on CPU to avoid fighting Qwen for VRAM
 # Rhyme groups
 # ---------------------------------------------------------------------
 
-def load_rhyme_groups(csv_path: str) -> Dict[str, int]:
+def load_rhyme_groups(csv_path: str | Path) -> Dict[str, int]:
     """
     Load a mapping word -> group_id from rhymes_grouped.csv.
     """
-    if not os.path.exists(csv_path):
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
         print(f"[WARN] Rhyme CSV not found at {csv_path}, continuing with empty mapping.")
         return {}
     df = pd.read_csv(csv_path)
@@ -98,7 +122,7 @@ class SiameseRhymeScorer:
       - Computing embeddings for Pass B scoring
     """
 
-    def __init__(self, model_dir: str, device: str = "cuda", batch_size: int = 64, max_len: int = 16):
+    def __init__(self, model_dir: str | Path, device: str = "cuda", batch_size: int = 64, max_len: int = 16):
         import torch
         from transformers import AutoTokenizer, AutoModel
 
@@ -108,9 +132,10 @@ class SiameseRhymeScorer:
         else:
             self.device = torch.device("cpu")
 
+        model_dir = Path(model_dir)
         print(f"[INFO] Loading Siamese encoder from {model_dir} on {self.device} ...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        self.encoder = AutoModel.from_pretrained(model_dir)
+        self.tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        self.encoder = AutoModel.from_pretrained(str(model_dir))
         self.encoder.to(self.device)
         self.encoder.eval()
 

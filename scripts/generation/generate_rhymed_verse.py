@@ -700,6 +700,28 @@ def candidate_score(
     return total * base_penalty * length_factor * repeat_factor * phrase_factor
 
 
+def vocab_alignment_score(bar: str, targets: List[str]) -> Tuple[float, int]:
+    if not targets:
+        return 0.0, 0
+    text = bar.lower()
+    hits = 0
+    for token in targets:
+        token_norm = token.lower().strip()
+        if not token_norm:
+            continue
+        if " " in token_norm:
+            if token_norm in text:
+                hits += 1
+        else:
+            pattern = rf"\b{re.escape(token_norm)}\b"
+            if re.search(pattern, text):
+                hits += 1
+    bonus = 0.0
+    if hits:
+        bonus = min(0.6, 0.3 * hits)
+    return bonus, hits
+
+
 # -----------------------------------------------------------------------------
 # Rhyme memory
 # -----------------------------------------------------------------------------
@@ -862,6 +884,13 @@ def build_prompt(
     bar_index: int,
     scheme: str,
     end_words_hint: List[str] | None = None,
+    seed_tags: List[str] | None = None,
+    persona: str | None = None,
+    theme_hint: str | None = None,
+    style_hint: str | None = None,
+    topic_hint: str | None = None,
+    vocab_hint: str | None = None,
+    syllable_target: int | None = None,
 ) -> str:
     hint_block = ""
     if end_words_hint:
@@ -872,9 +901,29 @@ def build_prompt(
             f"Try to end the bar with a word that rhymes with one of these.\n"
         )
 
+    control_lines = []
+    if persona:
+        control_lines.append(f"Persona: {persona}.")
+    if seed_tags:
+        control_lines.append(f"Tag palette: {', '.join(seed_tags)}.")
+    if theme_hint:
+        control_lines.append(f"Theme focus: {theme_hint}.")
+    if style_hint:
+        control_lines.append(f"Style cues: {style_hint}.")
+    if topic_hint:
+        control_lines.append(f"Topic anchor: {topic_hint}.")
+    if vocab_hint:
+        control_lines.append(f"Preferred vocab: {vocab_hint}.")
+    if syllable_target:
+        control_lines.append(f"Aim for roughly {syllable_target} syllables.")
+    control_block = ""
+    if control_lines:
+        control_block = "\n".join(control_lines) + "\n"
+
     return (
         f"<|artist:{artist_token}|><|section:{section_token}|>\n"
         f"Theme: {seed}\n"
+        f"{control_block}"
         f"{hint_block}"
         f"Instruction: Write one dense, original rap bar that advances this theme. "
         f"Use a multi-syllable end rhyme (3–5 sounds) and echo that sound inside the bar "
@@ -902,6 +951,13 @@ def generate_bar_candidates(
     bar_index: int = 1,
     scheme: str = "AAAA",
     end_words_hint: List[str] | None = None,
+    seed_tags: List[str] | None = None,
+    persona: str | None = None,
+    theme_hint: str | None = None,
+    style_hint: str | None = None,
+    topic_hint: str | None = None,
+    vocab_hint: str | None = None,
+    syllable_target: int | None = None,
 ) -> List[str]:
     prompt = build_prompt(
         artist_token=artist_token,
@@ -910,6 +966,13 @@ def generate_bar_candidates(
         bar_index=bar_index,
         scheme=scheme,
         end_words_hint=end_words_hint,
+        seed_tags=seed_tags,
+        persona=persona,
+        theme_hint=theme_hint,
+        style_hint=style_hint,
+        topic_hint=topic_hint,
+        vocab_hint=vocab_hint,
+        syllable_target=syllable_target,
     )
     inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
     input_len = inputs["input_ids"].shape[1]
@@ -955,6 +1018,7 @@ def select_best_bar(
     meter_target_syllables: int,
     meter_sigma: float,
     anchor_words: List[str] | None,
+    vocab_targets: List[str] | None = None,
 ) -> Tuple[str, Dict[str, Any]]:
     filtered = filter_candidates_by_rhyme_letter(
         letter=letter,
@@ -1032,6 +1096,10 @@ def select_best_bar(
         topic_score = 0.0
         if topic_scorer is not None:
             topic_score = topic_scorer.similarity(bar, seed)
+        vocab_bonus = 0.0
+        vocab_hits = 0
+        if vocab_targets:
+            vocab_bonus, vocab_hits = vocab_alignment_score(bar, vocab_targets)
 
         # 3) Meter score (syllable control for whole bar)
         meter_score_val = meter_score(
@@ -1059,7 +1127,7 @@ def select_best_bar(
         if end_word and anchor_set and end_word.lower() in anchor_set:
             anchor_bonus = 0.2  # small but meaningful extra
 
-        final_score = struct_score + hybrid_component + hernandez_component + anchor_bonus
+        final_score = struct_score + hybrid_component + hernandez_component + anchor_bonus + vocab_bonus
         diagnostics = {
             "bar": bar,
             "letter": letter,
@@ -1067,6 +1135,8 @@ def select_best_bar(
             "hybrid_component": hybrid_component,
             "hernandez_component": hernandez_component,
             "anchor_bonus": anchor_bonus,
+            "vocab_bonus": vocab_bonus,
+            "vocab_hits": vocab_hits,
             "rhyme_alignment": rhyme_alignment,
             "topic_score": topic_score,
             "meter_score": meter_score_val,
@@ -1164,6 +1234,60 @@ def verse_to_text(verse_bars: List[Tuple[str, str]]) -> str:
 
 def bars_payload(verse_bars: List[Tuple[str, str]]) -> List[Dict[str, str]]:
     return [{"letter": letter, "text": bar} for letter, bar in verse_bars]
+
+
+def parse_seed_tags_arg(raw: str | None) -> List[str]:
+    if not raw:
+        return []
+    tags = [segment.strip() for segment in raw.split(",")]
+    tags = [tag for tag in tags if tag]
+    seen = set()
+    ordered: List[str] = []
+    for tag in tags:
+        if tag not in seen:
+            ordered.append(tag)
+            seen.add(tag)
+    return ordered
+
+
+def parse_vocab_targets(raw: str | None) -> List[str]:
+    if not raw:
+        return []
+    cleaned = raw.replace(";", ",")
+    tokens = [segment.strip() for segment in cleaned.split(",")]
+    vocab = []
+    seen = set()
+    for token in tokens:
+        if not token:
+            continue
+        lower = token.lower()
+        if lower not in seen:
+            vocab.append(token)
+            seen.add(lower)
+    return vocab
+
+
+def build_syllable_targets(map_str: str | None, default_value: int, num_bars: int) -> List[int]:
+    if not map_str:
+        return [default_value] * num_bars
+    cleaned = map_str.replace(";", ",")
+    tokens = [tok.strip() for tok in cleaned.split(",")]
+    values: List[int] = []
+    for token in tokens:
+        if not token:
+            continue
+        try:
+            values.append(int(token))
+        except ValueError:
+            continue
+    if not values:
+        return [default_value] * num_bars
+    out: List[int] = []
+    idx = 0
+    while len(out) < num_bars:
+        out.append(values[idx % len(values)])
+        idx += 1
+    return out
 
 
 def resolve_log_path(args, settings) -> Path | None:
@@ -1265,6 +1389,24 @@ def parse_args():
         default=6,
         help="Number of planned anchor end-words per line (for rhyme planner).",
     )
+    p.add_argument("--seed_id", type=str, default=None, help="Optional identifier for structured seed manifests.")
+    p.add_argument(
+        "--seed_tags",
+        type=str,
+        default=None,
+        help="Comma-separated descriptive tags (e.g., villain,food,underground).",
+    )
+    p.add_argument("--persona", type=str, default=None, help="Persona hint (e.g., masked tactician).")
+    p.add_argument("--theme_hint", type=str, default=None, help="High-level theme descriptor.")
+    p.add_argument("--style_hint", type=str, default=None, help="Style descriptor (e.g., noir multis).")
+    p.add_argument("--topic_hint", type=str, default=None, help="Topic or subject hint for scoring/logging.")
+    p.add_argument("--vocab_hint", type=str, default=None, help="Optional vocabulary guidance snippet.")
+    p.add_argument(
+        "--syllable_map",
+        type=str,
+        default=None,
+        help="Comma-separated syllable targets per bar (wraps if shorter than verse).",
+    )
     return p.parse_args()
 
 
@@ -1299,6 +1441,14 @@ def main():
     seed = args.seed.strip()
     scheme = args.scheme.strip().upper()
     scheme_letters = build_scheme_letters(scheme, args.num_bars)
+    seed_tags = parse_seed_tags_arg(args.seed_tags)
+    seed_id = args.seed_id.strip() if args.seed_id else None
+    persona_hint = args.persona.strip() if args.persona else None
+    theme_hint = args.theme_hint.strip() if args.theme_hint else None
+    style_hint = args.style_hint.strip() if args.style_hint else None
+    topic_hint = args.topic_hint.strip() if args.topic_hint else None
+    vocab_hint = args.vocab_hint.strip() if args.vocab_hint else None
+    vocab_targets = parse_vocab_targets(vocab_hint)
 
     print(f"__ Loading model for artist '{artist_token}' with scheme '{scheme}' ...")
     tokenizer, model = load_rap_model(adapter_dir=adapter_dir, tokenizer_dir=tokenizer_dir)
@@ -1366,11 +1516,29 @@ def main():
     theme_emb = siamese_scorer.embed(seed)
     theme_ctx = ThemeContext(embedding=theme_emb)
 
+    per_bar_syllables = build_syllable_targets(args.syllable_map, args.target_syllables, len(scheme_letters))
+
     print(f"\n=== Target: {args.num_bars} bars ({''.join(scheme_letters)}) ===")
     print(f"Artist   : {artist_token}")
     print(f"Section  : {section_token}")
     print(f"Seed     : {seed}")
     print(f"Scheme   : {''.join(scheme_letters)}")
+    if seed_id:
+        print(f"Seed ID  : {seed_id}")
+    if seed_tags:
+        print(f"Seed tags: {', '.join(seed_tags)}")
+    if persona_hint:
+        print(f"Persona  : {persona_hint}")
+    if theme_hint:
+        print(f"Theme    : {theme_hint}")
+    if style_hint:
+        print(f"Style    : {style_hint}")
+    if topic_hint:
+        print(f"Topic    : {topic_hint}")
+    if vocab_hint:
+        print(f"Vocab    : {vocab_hint}")
+    if args.syllable_map:
+        print(f"Syllable map: {per_bar_syllables}")
     print(f"Hybrid   : {'ON' if args.hybrid else 'OFF'}\n")
 
     best_verse = None
@@ -1407,6 +1575,13 @@ def main():
                 bar_index=idx,
                 scheme=scheme,
                 end_words_hint=line_anchors,
+                seed_tags=seed_tags,
+                persona=persona_hint,
+                theme_hint=theme_hint,
+                style_hint=style_hint,
+                topic_hint=topic_hint,
+                vocab_hint=vocab_hint,
+                syllable_target=per_bar_syllables[idx - 1],
             )
 
             bar, bar_diag = select_best_bar(
@@ -1424,9 +1599,10 @@ def main():
                 use_hybrid=args.hybrid,
                 topic_scorer=topic_scorer,
                 ngram_critic=ngram_critic,
-                meter_target_syllables=args.target_syllables,
+                meter_target_syllables=per_bar_syllables[idx - 1],
                 meter_sigma=args.meter_sigma,
                 anchor_words=line_anchors,
+                vocab_targets=vocab_targets,
             )
 
             if not bar_diag:
@@ -1448,6 +1624,15 @@ def main():
             "artist": args.artist,
             "artist_token": artist_token,
             "seed": seed,
+            "seed_id": seed_id,
+            "seed_tags": seed_tags,
+            "persona": persona_hint,
+            "theme_hint": theme_hint,
+            "style_hint": style_hint,
+            "topic_hint": topic_hint,
+            "vocab_hint": vocab_hint,
+            "vocab_targets": vocab_targets,
+            "syllable_map": per_bar_syllables,
             "scheme": "".join(scheme_letters),
             "num_bars": len(scheme_letters),
             "attempt_index": attempt,
@@ -1462,6 +1647,7 @@ def main():
                 "target_syllables": args.target_syllables,
                 "meter_sigma": args.meter_sigma,
                 "scheme": scheme,
+                "syllable_map": per_bar_syllables,
             },
             "bars": bars_payload(verse_bars),
             "bar_metrics": bar_metrics,

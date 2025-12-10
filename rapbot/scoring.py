@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Sequence
 from pathlib import Path
+import json
 import math
 import torch
 import torch.nn.functional as F
 
 try:
-    from reward_model import LocalCritic as RewardLocalCritic, LocalCriticConfig
+    from rapbot.reward_model import LocalCritic as RewardLocalCritic, LocalCriticConfig
 except ImportError:
     RewardLocalCritic = None
     LocalCriticConfig = None
@@ -213,17 +214,77 @@ def build_line_features(
 class OfflineCritic:
     """
     Thin wrapper exposed via scoring.py to keep integration centralized.
+    Supports optional ensembles (comma-separated head paths) and calibration.
     """
 
-    def __init__(self, head_path: str, siamese_model_dir: str, device: Optional[str] = None):
+    def __init__(
+        self,
+        head_path: str | Sequence[str],
+        siamese_model_dir: str,
+        device: Optional[str] = None,
+        calibration_path: Optional[str] = None,
+    ):
         if RewardLocalCritic is None or LocalCriticConfig is None:
             raise ImportError("reward_model module not available.")
-        cfg = LocalCriticConfig(
-            head_path=Path(head_path),
-            siamese_model_dir=Path(siamese_model_dir),
-            device=device or ("cuda" if torch.cuda.is_available() else "cpu"),
-        )
-        self.impl = RewardLocalCritic(cfg)
+
+        head_paths = self._normalize_head_paths(head_path)
+        device_label = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.critics: List[RewardLocalCritic] = []
+        for hp in head_paths:
+            cfg = LocalCriticConfig(
+                head_path=Path(hp),
+                siamese_model_dir=Path(siamese_model_dir),
+                device=device_label,
+            )
+            self.critics.append(RewardLocalCritic(cfg))
+        self.calibration = self._load_calibration(calibration_path)
+
+    def _normalize_head_paths(self, head_path: str | Sequence[str]) -> List[str]:
+        if isinstance(head_path, (list, tuple, set)):
+            paths = [str(p).strip() for p in head_path if str(p).strip()]
+        else:
+            parts = str(head_path).split(",")
+            paths = [part.strip() for part in parts if part.strip()]
+        if not paths:
+            raise ValueError("At least one local critic head must be provided.")
+        return paths
+
+    def _load_calibration(self, calibration_path: Optional[str]) -> Optional[Dict[str, Dict[str, float]]]:
+        if not calibration_path:
+            return None
+        path = Path(calibration_path)
+        if not path.exists():
+            print(f"[WARN] Local critic calibration file not found: {path}")
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data
+        except json.JSONDecodeError as exc:
+            print(f"[WARN] Failed to parse calibration file {path}: {exc}")
+            return None
+
+    def _apply_calibration(self, scores: Dict[str, float]) -> Dict[str, float]:
+        if not self.calibration:
+            return scores
+        adjusted = {}
+        for key, value in scores.items():
+            params = self.calibration.get(key, {})
+            slope = float(params.get("slope", 1.0))
+            intercept = float(params.get("intercept", 0.0))
+            adjusted[key] = slope * value + intercept
+        return adjusted
 
     def score(self, text: str) -> Dict[str, float]:
-        return self.impl.score(text)
+        if not self.critics:
+            raise RuntimeError("OfflineCritic has no initialized critics.")
+        if len(self.critics) == 1:
+            scores = self.critics[0].score(text)
+            return self._apply_calibration(scores)
+
+        agg: Dict[str, float] = {}
+        for critic in self.critics:
+            scores = critic.score(text)
+            for key, value in scores.items():
+                agg[key] = agg.get(key, 0.0) + float(value)
+        averaged = {key: value / len(self.critics) for key, value in agg.items()}
+        return self._apply_calibration(averaged)
