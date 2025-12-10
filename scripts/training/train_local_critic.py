@@ -62,9 +62,24 @@ def parse_args():
         help="Directory to store trained reward head (default config.local_critic_dir).",
     )
     parser.add_argument("--hidden_dim", type=int, default=512)
+    parser.add_argument(
+        "--layers",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional explicit hidden layer sizes (e.g., --layers 768 512 256).",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--activation",
+        type=str,
+        default="gelu",
+        choices=["gelu", "relu", "silu", "tanh"],
+        help="Activation used between critic head layers.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train_split", type=float, default=0.9, help="Fraction of data for training.")
     parser.add_argument(
@@ -189,20 +204,40 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
     input_dim = embeddings.size(1)
+    hidden_layers = [int(dim) for dim in (args.layers or []) if dim is not None]
+    if not hidden_layers:
+        hidden_layers = [args.hidden_dim]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CriticHead(input_dim=input_dim, hidden_dim=args.hidden_dim, output_dim=len(SCORE_KEYS)).to(device)
+    model = CriticHead(
+        input_dim=input_dim,
+        hidden_layers=hidden_layers,
+        output_dim=len(SCORE_KEYS),
+        activation=args.activation,
+        dropout=args.dropout,
+    ).to(device)
 
     train_loop(model, train_loader, val_loader, args.epochs, device, args.lr)
 
     head_path = output_dir / "reward_head.pt"
-    save_head(model.cpu(), head_path, input_dim=input_dim, hidden_dim=args.hidden_dim, score_keys=SCORE_KEYS)
+    save_head(
+        model.cpu(),
+        head_path,
+        input_dim=input_dim,
+        hidden_layers=hidden_layers,
+        score_keys=SCORE_KEYS,
+        activation=args.activation,
+        dropout=args.dropout,
+    )
     meta = {
         "scored_dataset": str(scored_path),
         "siamese_model_dir": str(siamese_dir),
         "score_keys": SCORE_KEYS,
-        "hidden_dim": args.hidden_dim,
+        "hidden_layers": hidden_layers,
+        "hidden_dim": hidden_layers[0],
         "epochs": args.epochs,
         "batch_size": args.batch_size,
+        "activation": args.activation,
+        "dropout": args.dropout,
     }
     with open(output_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)

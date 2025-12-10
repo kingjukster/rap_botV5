@@ -308,7 +308,7 @@ def parse_args():
     p.add_argument(
         "--siamese_model_dir",
         type=str,
-        default="/workspace/rap-botV4/rhyme_siamese",
+        default=str(ROOT / "rhyme_siamese"),
         help="Path to Siamese encoder for similarity clustering.",
     )
     p.add_argument("--siamese_threshold", type=float, default=0.72, help="Cosine similarity threshold for Siamese assignments.")

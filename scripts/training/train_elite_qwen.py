@@ -5,6 +5,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import os
+import json
+import subprocess
+from datetime import datetime
 from typing import List
 
 import torch
@@ -109,6 +112,12 @@ def parse_args():
         default=MAX_SEQ_LENGTH,
     )
     parser.add_argument(
+        "--metadata_out",
+        type=str,
+        default=None,
+        help="Optional path to write metadata JSON for this run.",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default=None,
@@ -116,6 +125,21 @@ def parse_args():
     )
 
     return parser.parse_args()
+
+
+def current_git_commit() -> str | None:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT)).decode().strip()
+    except Exception:
+        return None
+
+
+def count_lines(path: Path) -> int:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return sum(1 for _ in f)
+    except FileNotFoundError:
+        return 0
 
 
 # === TOKENIZER + MODEL (4-BIT QLoRA) ========================================
@@ -256,16 +280,17 @@ def main():
 
     settings = load_settings(args.config)
     model_name = args.model_name_or_path or settings.base_model_name
-    text_path = args.text_path or str(settings.elite_corpus_path)
-    output_dir = args.output_dir or str(settings.lora_output_dir)
-    tokenizer_save_dir = args.tokenizer_save_dir or str(settings.tokenizer_save_dir)
+    text_path = Path(args.text_path or settings.elite_corpus_path)
+    output_dir = Path(args.output_dir or settings.lora_output_dir)
+    tokenizer_save_dir = Path(args.tokenizer_save_dir or settings.tokenizer_save_dir)
 
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_save_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer, model = load_tokenizer_and_model(model_name, tokenizer_save_dir)
+    tokenizer, model = load_tokenizer_and_model(model_name, str(tokenizer_save_dir))
     train_dataset = load_rap_dataset(
         tokenizer,
-        text_path=text_path,
+        text_path=str(text_path),
         max_seq_length=args.max_seq_length,
     )
 
@@ -275,7 +300,7 @@ def main():
     )
 
     training_args = TrainingArguments(
-        output_dir=output_dir,
+        output_dir=str(output_dir),
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum_steps,
         num_train_epochs=args.num_epochs,
@@ -305,11 +330,34 @@ def main():
     print("[INFO] Starting training...")
     trainer.train()
     print("[INFO] Training complete. Saving final adapter...")
-    trainer.save_model(output_dir)
+    trainer.save_model(str(output_dir))
 
-    # Save tokenizer alongside the adapter as well
-    tokenizer.save_pretrained(output_dir)
+    # Save tokenizer snapshot
+    tokenizer.save_pretrained(str(tokenizer_save_dir))
     print(f"[INFO] Done. LoRA + tokenizer saved to: {output_dir}")
+
+    dataset_blocks = len(train_dataset)
+    approx_tokens = dataset_blocks * args.max_seq_length
+    metadata_path = Path(args.metadata_out) if args.metadata_out else output_dir / "metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "model_name": model_name,
+        "text_path": str(text_path),
+        "output_dir": str(output_dir),
+        "tokenizer_dir": str(tokenizer_save_dir),
+        "dataset_lines": count_lines(text_path),
+        "dataset_blocks": dataset_blocks,
+        "approx_tokens": approx_tokens,
+        "num_epochs": args.num_epochs,
+        "learning_rate": args.learning_rate,
+        "batch_size": args.batch_size,
+        "grad_accum_steps": args.grad_accum_steps,
+        "max_seq_length": args.max_seq_length,
+        "git_commit": current_git_commit(),
+    }
+    metadata_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"[INFO] Metadata saved to {metadata_path}")
 
 
 if __name__ == "__main__":
