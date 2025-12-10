@@ -19,6 +19,12 @@ Toggle hybrid LM-related scoring with:
   --no_hybrid    # disables hybrid LM-based scoring and uses structural + Hernandez-style only.
 """
 
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import argparse
 import json
 import math
@@ -28,14 +34,13 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from config.settings import load_settings
-from rhyme_planner import load_rhyme_groups as load_rhyme_groups_planner, plan_rhyme_endings
-from meter_utils import meter_score
-from topic_utils import TopicScorer
-from ngram_critic import NgramCritic
+from rapbot.rhyme_planner import load_rhyme_groups as load_rhyme_groups_planner, plan_rhyme_endings
+from rapbot.meter_utils import meter_score
+from rapbot.topic_utils import TopicScorer
+from rapbot.ngram_critic import NgramCritic
 
 import numpy as np
 import torch
@@ -51,7 +56,7 @@ import pronouncing
 import pandas as pd
 
 # --- Hybrid scoring imports ---
-from scoring import (
+from rapbot.scoring import (
     ScoreWeights,
     LengthModel,
     ThemeContext,
@@ -69,7 +74,7 @@ from scoring import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 DEFAULT_CANDIDATES_PER_BAR = 8
-DEFAULT_MAX_NEW_TOKENS = 32
+DEFAULT_MAX_NEW_TOKENS = 40
 DEFAULT_TEMPERATURE = 0.8
 DEFAULT_TOP_P = 0.9
 DEFAULT_REPETITION_PENALTY = 1.05
@@ -79,7 +84,7 @@ MAX_VERSE_ATTEMPTS = 4
 # Structural weights
 END_CHAIN_WEIGHT = 2.2
 END_RHYME_WEIGHT = 1.6
-INTERNAL_RHYME_WEIGHT = 2.8
+INTERNAL_RHYME_WEIGHT = 3.4
 COHERENCE_WEIGHT = 0.7
 THEME_SIM_WEIGHT = 0.7
 FILLER_PENALTY = 0.8

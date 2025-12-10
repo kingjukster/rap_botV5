@@ -15,7 +15,7 @@ Steps:
 
 Usage example:
 
-    python update_rhyme_groups.py \
+    python scripts/tools/update_rhyme_groups.py \
         --corpus_path data/elite_kaggle_corpus_clean.txt \
         --existing_csv rhymes_grouped.csv \
         --output_csv rhymes_grouped.csv \
@@ -24,6 +24,13 @@ Usage example:
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import argparse
 import csv
@@ -36,7 +43,7 @@ import pandas as pd
 import pronouncing
 import torch
 
-from rhyme_scorer import SiameseRhymeScorer
+from rapbot.rhyme_scorer import SiameseRhymeScorer
 
 
 WORD_RE = re.compile(r"[A-Za-z']+")

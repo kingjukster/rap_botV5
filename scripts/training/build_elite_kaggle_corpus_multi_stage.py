@@ -36,6 +36,12 @@ Usage example (all passes):
       --progress_every 50
 """
 
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import os
 import re
 import csv
@@ -53,7 +59,7 @@ import string
 import pronouncing
 from functools import lru_cache
 
-from rhyme_scorer import SiameseRhymeScorer
+from rapbot.rhyme_scorer import SiameseRhymeScorer
 
 
 # ---------------------------------------------------------------------------
@@ -1505,7 +1511,7 @@ def main():
                 )
             else:
                 try:
-                    from update_rhyme_groups import expand_rhyme_groups
+                    from scripts.tools.update_rhyme_groups import expand_rhyme_groups
                 except ImportError as exc:
                     print(f"[AUTO-RHYME][ERROR] Failed to import update_rhyme_groups: {exc}")
                 else:

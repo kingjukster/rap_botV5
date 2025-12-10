@@ -46,16 +46,29 @@ The system combines:
 ```
 rap-botV4/
 │
-├── generate_rhymed_verse.py         # Main structured generation engine
-├── generate_story_verse.py          # Narrative & story-focused generator
+├── scripts/
+│   ├── generation/
+│   │   ├── generate_rhymed_verse.py   # Main structured generation engine
+│   │   └── generate_story_verse.py    # Narrative & story-focused generator
+│   ├── pipeline/
+│   │   ├── run_stage3_pipeline.py     # End-to-end Stage-3 orchestration
+│   │   └── consolidate_stage3.py      # Merge generation logs + critic scores into Stage-3 datasets
+│   ├── tools/
+│   │   ├── update_rhyme_groups.py     # Auto expands rhyme CSV via pronouncing + Siamese
+│   │   └── score_with_openai.py       # Queries OpenAI for critic scores
+│   └── training/
+│       ├── build_elite_kaggle_corpus_multi_stage.py
+│       ├── clean_elite_corpus.py
+│       ├── train_elite_qwen.py
+│       ├── train_local_critic.py
+│       ├── train_ngram_critic.py
+│       ├── train_topic_embeddings.py
+│       ├── train_siamese_rhyme_model.py
+│       └── train_siamese_rhyme_model_pairs.py
 ├── rap_structure_qwen.py            # Song structure experiments
 ├── config/                          # Shared portable config loader
 │   └── settings.py                  # Resolves model/data paths via env/config files
-├── consolidate_stage3.py            # Merges generation logs + critic scores into Stage-3 datasets
 ├── reward_model.py                  # Local reward model (Siamese encoder + MLP head)
-├── train_local_critic.py            # Fine-tunes the local critic head on scored_dataset.jsonl
-├── update_rhyme_groups.py           # Auto expands rhyme CSV via pronouncing + Siamese
-├── train_elite_qwen.py              # Stage 1–2 LoRA training script
 ├── test_interface.py                # Model load / smoke test
 │
 ├── rhyme_siamese/                   # Local rhyme scorer (Siamese model)
@@ -151,14 +164,14 @@ Push the model beyond imitation into *consistently high-quality lyricism*, guide
 Pipeline:
 
 1. **Generate thousands of verses**  
-   - `generate_rhymed_verse.py` now supports `--log_json` / `--log_dir` (defaults to `data/generated_raw.jsonl`) so every attempt is captured with rhyme/meter metrics, candidate scores, and scheme metadata.
+   - `scripts/generation/generate_rhymed_verse.py` now supports `--log_json` / `--log_dir` (defaults to `data/generated_raw.jsonl`) so every attempt is captured with rhyme/meter metrics, candidate scores, and scheme metadata.
 2. **Score each verse using an OpenAI-based harsh critic**  
    - Depth  
    - Coherence  
    - Originality  
    - Line-by-line quality  
-3. **Optional: Train the local critic head (`train_local_critic.py`)** using `data/scored_dataset.jsonl` to distill OpenAI judgments into a Siamese+MLP reward model stored under `models/local_critic`.
-4. **Run `consolidate_stage3.py`** to merge generation logs + critic outputs *or* local-critic predictions into:
+3. **Optional: Train the local critic head (`scripts/training/train_local_critic.py`)** using `data/scored_dataset.jsonl` to distill OpenAI judgments into a Siamese+MLP reward model stored under `models/local_critic`.
+4. **Run `scripts/pipeline/consolidate_stage3.py`** to merge generation logs + critic outputs *or* local-critic predictions into:
    - `data/scored_dataset.jsonl`
    - `data/weighted_corpus_stage3.txt` (verses repeated per critic-normalized weights)  
 5. **Train Stage‑3 refined model**  
@@ -249,7 +262,7 @@ The generation engine:
 
 # 8. Generation Engine (Detailed)
 
-## File: `generate_rhymed_verse.py`
+## File: `scripts/generation/generate_rhymed_verse.py`
 
 ### CLI Parameters
 ```
@@ -322,11 +335,11 @@ Need n-gram blocking.
 
 ## Rhyme Gaps
 Improve rhyme-group coverage for slang.
-Run `update_rhyme_groups.py` (optionally via `build_elite_kaggle_corpus_multi_stage.py --auto_expand_rhyme_groups`)
+Run `scripts/tools/update_rhyme_groups.py` (optionally via `scripts/training/build_elite_kaggle_corpus_multi_stage.py --auto_expand_rhyme_groups`)
 to mine the latest corpus endings and append confidence-weighted entries.
 
 ## Critic Bottleneck
-Mitigated via `train_local_critic.py` + `reward_model.py`: train a Siamese+MLP head on the scored dataset and run `consolidate_stage3.py --local_critic_head models/local_critic/reward_head.pt` to score verses offline. Use OpenAI critic periodically for calibration.
+Mitigated via `scripts/training/train_local_critic.py` + `reward_model.py`: train a Siamese+MLP head on the scored dataset and run `scripts/pipeline/consolidate_stage3.py --local_critic_head models/local_critic/reward_head.pt` to score verses offline. Use OpenAI critic periodically for calibration.
 
 ---
 
@@ -355,6 +368,6 @@ Mitigated via `train_local_critic.py` + `reward_model.py`: train a Siamese+MLP h
 
 # END OF FILE
 ### Stage-3 Logging & Consolidation
-- `generate_rhymed_verse.py --log_json data/generated_raw.jsonl` (default) records every attempt with bar-level metrics, rhyme/meter stats, Siamese verse score, and scheme metadata.
-- After critic scoring, run `python consolidate_stage3.py --critic_scores data/critic_scores.jsonl` (plus any custom `--log_path` inputs). You may also pass `--local_critic_head models/local_critic/reward_head.pt` to fill in missing scores entirely offline.
+- `python scripts/generation/generate_rhymed_verse.py --log_json data/generated_raw.jsonl` (default) records every attempt with bar-level metrics, rhyme/meter stats, Siamese verse score, and scheme metadata.
+- After critic scoring, run `python scripts/pipeline/consolidate_stage3.py --critic_scores data/critic_scores.jsonl` (plus any custom `--log_path` inputs). You may also pass `--local_critic_head models/local_critic/reward_head.pt` to fill in missing scores entirely offline.
 - The consolidator applies the documented weighting formula `(score_norm ** 2.4) * scaling_factor`, ensuring high-scoring verses dominate the Stage-3 corpus without manual spreadsheet work.
