@@ -164,6 +164,15 @@ SIAMESE_SCORER = None
 
 DEFAULT_LOG_FILENAME = "generated_raw.jsonl"
 
+# Resource caches so multi-verse sessions reuse expensive models in-process.
+_RHYME_GROUP_CACHE: Dict[str, Dict[str, int]] = {}
+_PLANNER_GROUP_CACHE: Dict[str, Dict[str, List[str]]] = {}
+_MODEL_CACHE: Dict[Tuple[str, str], Tuple[Any, Any]] = {}
+_SIAMESE_CACHE: Dict[str, Any] = {}
+_TOPIC_CACHE: Dict[str, TopicScorer | None] = {}
+_NGRAM_CACHE: Dict[str, NgramCritic | None] = {}
+
+
 # -----------------------------------------------------------------------------
 # Rhyme groups (word -> group_id mapping, for structural scoring)
 # -----------------------------------------------------------------------------
@@ -199,6 +208,20 @@ def get_rhyme_group(word: str):
     return RHYME_GROUPS.get(word.lower())
 
 
+def _path_key(path: str | Path) -> str:
+    return str(Path(path).resolve())
+
+
+def get_cached_rhyme_groups(csv_path: str) -> Tuple[Dict[str, int], bool]:
+    key = _path_key(csv_path)
+    cached = _RHYME_GROUP_CACHE.get(key)
+    if cached is not None:
+        return cached, False
+    mapping = load_word_rhyme_groups(key)
+    _RHYME_GROUP_CACHE[key] = mapping
+    return mapping, True
+
+
 def rhyme_key(word: str, max_len: int = 5) -> str:
     w = re.sub(r"[^a-zA-Z]", "", word.lower())
     if not w:
@@ -219,6 +242,48 @@ def rhyme_similarity(key1: str, key2: str) -> float:
         else:
             break
     return matches / max_len
+
+
+def get_cached_planner_groups(csv_path: str) -> Tuple[Dict[str, List[str]] | None, bool]:
+    key = _path_key(csv_path)
+    if key in _PLANNER_GROUP_CACHE:
+        return _PLANNER_GROUP_CACHE[key], False
+    try:
+        groups = load_rhyme_groups_planner(csv_path)
+        _PLANNER_GROUP_CACHE[key] = groups
+        return groups, True
+    except Exception as exc:
+        print(f"[WARN] Failed to load planner rhyme groups: {exc}")
+        _PLANNER_GROUP_CACHE[key] = None
+        return None, True
+
+
+def load_topic_scorer_cached(model_path: str) -> Tuple[TopicScorer | None, bool]:
+    key = _path_key(model_path)
+    if key in _TOPIC_CACHE:
+        return _TOPIC_CACHE[key], False
+    try:
+        scorer = TopicScorer(model_path)
+        print("__ Topic scorer (Word2Vec) ready.")
+    except Exception as exc:
+        print(f"[WARN] Topic model not available: {exc}")
+        scorer = None
+    _TOPIC_CACHE[key] = scorer
+    return scorer, True
+
+
+def load_ngram_critic_cached(ngram_path: str) -> Tuple[NgramCritic | None, bool]:
+    key = _path_key(ngram_path)
+    if key in _NGRAM_CACHE:
+        return _NGRAM_CACHE[key], False
+    try:
+        critic = NgramCritic(ngram_path)
+        print("__ n-gram critic ready.")
+    except Exception as exc:
+        print(f"[WARN] n-gram critic not available: {exc}")
+        critic = None
+    _NGRAM_CACHE[key] = critic
+    return critic, True
 
 
 def get_words(text: str) -> List[str]:
@@ -486,6 +551,16 @@ class SiameseRhymeScorer:
         if ea.numel() == 0 or eb.numel() == 0:
             return 0.0
         return float(torch.dot(ea, eb).item())
+
+
+def load_siamese_scorer(model_dir: str) -> Tuple[SiameseRhymeScorer, bool]:
+    key = _path_key(model_dir)
+    cached = _SIAMESE_CACHE.get(key)
+    if cached is not None:
+        return cached, False
+    scorer = SiameseRhymeScorer(model_dir, device=DEVICE)
+    _SIAMESE_CACHE[key] = scorer
+    return scorer, True
 
 
 def get_siamese_scorer() -> SiameseRhymeScorer:
@@ -811,6 +886,14 @@ def load_rap_model(adapter_dir: str, tokenizer_dir: str):
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import PeftModel, PeftConfig
 
+    adapter_key = _path_key(adapter_dir)
+    tok_key = _path_key(tokenizer_dir)
+    cache_key = (adapter_key, tok_key)
+    cached = _MODEL_CACHE.get(cache_key)
+    if cached:
+        print(f"__ Reusing cached LoRA model from {adapter_dir}")
+        return cached
+
     print(f"__ Loading LoRA adapter from: {adapter_dir}")
     peft_cfg = PeftConfig.from_pretrained(adapter_dir)
     base_model_name = peft_cfg.base_model_name_or_path
@@ -861,6 +944,7 @@ def load_rap_model(adapter_dir: str, tokenizer_dir: str):
     model.eval()
     print("__ Model + adapter ready.")
 
+    _MODEL_CACHE[cache_key] = (tokenizer, model)
     return tokenizer, model
 
 
@@ -1389,6 +1473,18 @@ def parse_args():
         default=6,
         help="Number of planned anchor end-words per line (for rhyme planner).",
     )
+    p.add_argument(
+        "--anchor_groups_per_letter",
+        type=int,
+        default=2,
+        help="Distinct rhyme groups to rotate through for each scheme letter while planning anchors.",
+    )
+    p.add_argument(
+        "--anchor_random_seed",
+        type=int,
+        default=None,
+        help="Optional random seed for the anchor planner (defaults to hash of seed+scheme).",
+    )
     p.add_argument("--seed_id", type=str, default=None, help="Optional identifier for structured seed manifests.")
     p.add_argument(
         "--seed_tags",
@@ -1410,9 +1506,7 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
-    settings = load_settings(args.config)
+def run_generation(args, settings):
     adapter_dir = str(settings.adapter_dir)
     tokenizer_dir = str(settings.tokenizer_dir)
     rhyme_csv = str(settings.rhyme_groups_csv)
@@ -1422,14 +1516,15 @@ def main():
     log_path = resolve_log_path(args, settings)
 
     global RHYME_GROUPS, SIAMESE_SCORER
-    RHYME_GROUPS = load_word_rhyme_groups(rhyme_csv)
-    print(f"__ Using word->group rhyme entries from {rhyme_csv} (count={len(RHYME_GROUPS)})")
+    RHYME_GROUPS, rhyme_fresh = get_cached_rhyme_groups(rhyme_csv)
+    rhyme_label = "Using" if rhyme_fresh else "Reusing cached"
+    print(f"__ {rhyme_label} word->group rhyme entries from {rhyme_csv} (count={len(RHYME_GROUPS)})")
 
-    print(f"__ Loading Siamese rhyme model from {siamese_dir} ...")
-    SIAMESE_SCORER = SiameseRhymeScorer(siamese_dir, device=DEVICE)
-    siamese_scorer = get_siamese_scorer()
+    siamese_scorer, siamese_fresh = load_siamese_scorer(siamese_dir)
+    SIAMESE_SCORER = siamese_scorer
+    siamese_label = "" if siamese_fresh else " (cached)"
     if siamese_scorer.enabled:
-        print("__ Siamese rhyme scorer ready.\n")
+        print(f"__ Siamese rhyme scorer ready{siamese_label}.\n")
     else:
         print("__ Siamese rhyme scorer disabled (structural filters only).\n")
 
@@ -1453,29 +1548,20 @@ def main():
     print(f"__ Loading model for artist '{artist_token}' with scheme '{scheme}' ...")
     tokenizer, model = load_rap_model(adapter_dir=adapter_dir, tokenizer_dir=tokenizer_dir)
 
-    # Load group->words mapping for rhyme planner
-    try:
-        group_to_words = load_rhyme_groups_planner(rhyme_csv)
-        print(f"__ Rhyme planner loaded {len(group_to_words)} groups for anchor planning.")
-    except Exception as e:
-        print(f"[WARN] Failed to load planner rhyme groups: {e}")
-        group_to_words = None
+    group_to_words, planner_fresh = get_cached_planner_groups(rhyme_csv)
+    if group_to_words is not None:
+        label = "" if planner_fresh else " (cached)"
+        print(f"__ Rhyme planner loaded {len(group_to_words)} groups for anchor planning{label}.")
+    else:
+        print("[WARN] Rhyme planner unavailable; skipping anchor planning.")
 
-    # Topic scorer (Word2Vec)
-    try:
-        topic_scorer = TopicScorer(topic_model_path)
-        print("__ Topic scorer (Word2Vec) ready.")
-    except Exception as e:
-        print(f"[WARN] Topic model not available: {e}")
-        topic_scorer = None
+    topic_scorer, topic_fresh = load_topic_scorer_cached(topic_model_path)
+    if topic_scorer is not None and not topic_fresh:
+        print("__ Topic scorer (cached) ready.")
 
-    # N-gram critic
-    try:
-        ngram_critic = NgramCritic(ngram_path)
-        print("__ n-gram critic ready.")
-    except Exception as e:
-        print(f"[WARN] n-gram critic not available: {e}")
-        ngram_critic = None
+    ngram_critic, ngram_fresh = load_ngram_critic_cached(ngram_path)
+    if ngram_critic is not None and not ngram_fresh:
+        print("__ n-gram critic ready (cached).")
 
     # Plan rhyme endings per line (Hernandez-style)
     if group_to_words is not None:
@@ -1484,6 +1570,8 @@ def main():
             scheme=scheme,
             group_to_words=group_to_words,
             num_candidates_per_group=args.anchor_candidates_per_line,
+            per_letter_group_count=args.anchor_groups_per_letter,
+            random_seed=args.anchor_random_seed,
         )
     else:
         anchor_plan = {}
@@ -1692,6 +1780,12 @@ def main():
         print(f"{i:02d} [{letter}] {bar}")
 
     analyse_verse(best_verse)
+
+
+def main():
+    args = parse_args()
+    settings = load_settings(args.config)
+    run_generation(args, settings)
 
 
 if __name__ == "__main__":

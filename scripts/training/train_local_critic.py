@@ -186,9 +186,39 @@ def main():
         raise RuntimeError("Not enough scored records to train the local critic.")
     print(f"[INFO] Loaded {len(records):,} records with critic scores.")
 
-    print(f"[INFO] Embedding verses with Siamese encoder from {siamese_dir}")
-    scorer = SiameseRhymeScorer(str(siamese_dir))
-    embeddings, targets = build_embeddings(records, scorer)
+    cache_dir = output_dir / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    emb_cache = cache_dir / "embeddings.pt"
+    meta_cache = cache_dir / "embeddings.meta.json"
+    dataset_sig = {
+        "scored_path": str(scored_path.resolve()),
+        "mtime": scored_path.stat().st_mtime,
+        "size": scored_path.stat().st_size,
+        "count": len(records),
+        "siamese_dir": str(siamese_dir.resolve()),
+    }
+    embeddings = targets = None
+    if emb_cache.exists() and meta_cache.exists():
+        try:
+            with open(meta_cache, "r", encoding="utf-8") as f:
+                cached_meta = json.load(f)
+            if cached_meta == dataset_sig:
+                blob = torch.load(emb_cache)
+                embeddings = blob["embeddings"]
+                targets = blob["targets"]
+                print(f"[INFO] Loaded cached Siamese embeddings from {emb_cache}")
+        except Exception as exc:
+            print(f"[WARN] Failed to load embedding cache ({emb_cache}): {exc}")
+            embeddings = targets = None
+
+    if embeddings is None or targets is None:
+        print(f"[INFO] Embedding verses with Siamese encoder from {siamese_dir}")
+        scorer = SiameseRhymeScorer(str(siamese_dir))
+        embeddings, targets = build_embeddings(records, scorer)
+        torch.save({"embeddings": embeddings, "targets": targets}, emb_cache)
+        with open(meta_cache, "w", encoding="utf-8") as f:
+            json.dump(dataset_sig, f)
+        print(f"[INFO] Saved embedding cache to {emb_cache}")
 
     num_samples = embeddings.size(0)
     indices = list(range(num_samples))

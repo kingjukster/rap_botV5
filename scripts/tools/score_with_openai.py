@@ -90,6 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_cost_per_mtok", type=float, default=None, help="USD cost per 1K completion tokens.")
     parser.add_argument("--retry_backoff", type=float, default=None, help="Seconds between retries (multiplied by attempt).")
     parser.add_argument("--max_retries", type=int, default=None, help="Maximum retries per verse before aborting.")
+    parser.add_argument(
+        "--min_verse_score",
+        type=float,
+        default=None,
+        help="Only send verses whose local verse_score meets or exceeds this value.",
+    )
     return parser.parse_args()
 
 
@@ -214,11 +220,22 @@ async def run_async(args: argparse.Namespace, settings) -> None:
     completed = load_completed(output_path)
     print(f"[INFO] Existing scores found for {len(completed)} verse_ids.")
 
+    min_score = args.min_verse_score
     to_score: List[Dict[str, Any]] = []
+    if min_score is not None:
+        print(f"[INFO] Filtering to verses with verse_score ≥ {min_score:.3f}")
     for entry in read_jsonl(input_path):
         verse_id = entry.get("verse_id")
         if not verse_id or verse_id in completed:
             continue
+        if min_score is not None:
+            verse_score = entry.get("verse_score")
+            try:
+                score_val = float(verse_score)
+            except (TypeError, ValueError):
+                score_val = None
+            if score_val is None or score_val < min_score:
+                continue
         to_score.append(entry)
         if max_records and len(to_score) >= max_records:
             break

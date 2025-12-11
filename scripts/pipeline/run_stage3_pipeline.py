@@ -56,6 +56,34 @@ def run_parallel(commands: List[List[str]], workers: int):
             future.result()
 
 
+def run_inprocess_generation(jobs: List[Dict[str, Any]], settings):
+    if not jobs:
+        return
+    from argparse import Namespace
+    from scripts.generation import generate_rhymed_verse as grv
+
+    total = len(jobs)
+    for idx, job in enumerate(jobs, start=1):
+        seed_preview = job.get("seed_id") or job.get("seed")
+        print(f"[PIPELINE] [in-process] job {idx}/{total} seed='{seed_preview}' scheme={job.get('scheme')}")
+        ns = Namespace(**job)
+        grv.run_generation(ns, settings)
+
+
+def rhyme_csv_is_stale(corpus_path: Path, csv_path: Path) -> bool:
+    csv_path = Path(csv_path)
+    corpus_path = Path(corpus_path)
+    if not csv_path.exists():
+        return True
+    if not corpus_path.exists():
+        return False
+    csv_mtime = csv_path.stat().st_mtime
+    corpus_mtime = corpus_path.stat().st_mtime
+    if csv_path.stat().st_size == 0:
+        return True
+    return csv_mtime < corpus_mtime
+
+
 @dataclass
 class SeedSpec:
     text: str
@@ -206,6 +234,16 @@ def parse_args():
         "--skip_consolidate",
         action="store_true",
         help="Skip consolidate_stage3.py step.",
+    )
+    parser.add_argument(
+        "--force_refresh_rhymes",
+        action="store_true",
+        help="Always run the rhyme CSV refresh even if files look up to date.",
+    )
+    parser.add_argument(
+        "--subprocess_generation",
+        action="store_true",
+        help="Run each verse via a subprocess (disables in-process model reuse).",
     )
     parser.add_argument(
         "--train_lora_refresh",
@@ -385,6 +423,11 @@ def main():
     stage3_cfg = settings.stage3
 
     refresh_rhymes = stage3_cfg.get("refresh_rhymes", True) and not args.skip_update_rhymes
+    if refresh_rhymes and not args.force_refresh_rhymes:
+        if not rhyme_csv_is_stale(settings.elite_corpus_path, settings.rhyme_groups_csv):
+            refresh_rhymes = False
+            print("[PIPELINE] Rhyme CSV already up to date; skipping refresh.")
+
     if refresh_rhymes:
         print("[PIPELINE] Refreshing rhyme CSV...")
         expand_rhyme_groups(
@@ -425,8 +468,13 @@ def main():
     vocab_default = args.vocab_hint or gen_cfg.get("vocab_hint")
     syllable_map_default = args.syllable_map or gen_cfg.get("syllable_map")
 
+    target_syllables_default = int(gen_cfg.get("target_syllables", 13))
+    meter_sigma_default = float(gen_cfg.get("meter_sigma", 2.0))
+    anchor_candidates_default = int(gen_cfg.get("anchor_candidates_per_line", 6))
+
     if not args.skip_generation:
         commands: List[List[str]] = []
+        jobs: List[Dict[str, Any]] = []
         for seed_spec in seeds:
             seed_scheme = (seed_spec.scheme or scheme).upper()
             per_seed_samples = seed_spec.sample_count(samples_per_seed)
@@ -474,12 +522,57 @@ def main():
                 if args.config:
                     cmd.extend(["--config", args.config])
                 commands.append(cmd)
+                job_kwargs: Dict[str, Any] = {
+                    "artist": args.artist,
+                    "section": "VERSE",
+                    "seed": seed_spec.text,
+                    "seed_id": seed_spec.seed_id,
+                    "seed_tags": ",".join(seed_spec.tags) if seed_spec.tags else None,
+                    "scheme": seed_scheme,
+                    "num_bars": num_bars,
+                    "candidates": candidates,
+                    "max_new_tokens": max_new_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "repetition_penalty": repetition_penalty,
+                    "attempts": attempts,
+                    "verse_accept_threshold": (
+                        seed_spec.verse_accept_threshold if seed_spec.verse_accept_threshold is not None else verse_accept_threshold
+                    ),
+                    "log_json": log_path,
+                    "log_dir": None,
+                    "config": args.config,
+                    "hybrid": True,
+                    "topic_model_path": None,
+                    "ngram_path": None,
+                    "target_syllables": (
+                        seed_spec.target_syllables if seed_spec.target_syllables is not None else target_syllables_default
+                    ),
+                    "meter_sigma": seed_spec.meter_sigma if seed_spec.meter_sigma is not None else meter_sigma_default,
+                    "anchor_candidates_per_line": anchor_candidates_default,
+                    "persona": seed_spec.persona or persona_default,
+                    "theme_hint": seed_spec.theme or theme_default,
+                    "style_hint": seed_spec.style or style_default,
+                    "topic_hint": seed_spec.topic or topic_default,
+                    "vocab_hint": seed_spec.vocab or vocab_default,
+                    "syllable_map": (
+                        ",".join(str(v) for v in seed_spec.syllable_map)
+                        if seed_spec.syllable_map
+                        else syllable_map_default
+                    ),
+                }
+                jobs.append(job_kwargs)
         if commands:
             print(
                 f"[PIPELINE] Generating {len(commands)} samples "
                 f"(~{samples_per_seed} per seed across {len(seeds)} entries)."
             )
-            run_parallel(commands, parallel_workers)
+            if args.subprocess_generation:
+                run_parallel(commands, parallel_workers)
+            else:
+                if parallel_workers > 1:
+                    print("[PIPELINE][WARN] parallel_workers>1 ignored for in-process generation (running sequentially).")
+                run_inprocess_generation(jobs, settings)
 
     head_path = args.local_critic_head or str(settings.local_critic_dir / "reward_head.pt")
     calibration_path = args.local_critic_calibration
