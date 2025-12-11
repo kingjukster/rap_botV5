@@ -26,14 +26,17 @@ if str(ROOT) not in sys.path:
 import argparse
 import csv
 import json
+import hashlib
+import re
 from collections import Counter, defaultdict
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 
 from config.settings import load_settings
 
 SCORE_FIELDS = ["overall_score", "depth_score", "coherence_score", "originality_score"]
+WORD_RE = re.compile(r"[A-Za-z']+")
 
 
 def parse_args():
@@ -146,6 +149,24 @@ def parse_args():
         default=None,
         help="Optional JSON/YAML config to resolve default paths.",
     )
+    parser.add_argument(
+        "--dedupe_mode",
+        choices=["none", "exact", "fingerprint"],
+        default="fingerprint",
+        help="Duplicate rejection mode for verses (exact text hash or rhyme-ending fingerprint).",
+    )
+    parser.add_argument(
+        "--min_unique_endings",
+        type=int,
+        default=0,
+        help="Minimum distinct normalized end words required per verse (0 disables).",
+    )
+    parser.add_argument(
+        "--max_repeat_per_ending",
+        type=int,
+        default=0,
+        help="Reject verses where any normalized end word occurs more than this many times (0 disables).",
+    )
     return parser.parse_args()
 
 
@@ -188,6 +209,39 @@ def verse_block(text: str) -> str:
     if not text.endswith("\n"):
         text += "\n"
     return text
+
+
+def normalize_word(word: str) -> str:
+    return re.sub(r"[^a-z]", "", str(word).lower())
+
+
+def canonical_verse_text(text: str) -> str:
+    normalized_lines = []
+    for raw_line in text.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line or raw_line.startswith("<"):
+            continue
+        normalized = re.sub(r"[^a-z0-9 ]+", "", raw_line.lower())
+        if normalized:
+            normalized_lines.append(normalized)
+    return "\n".join(normalized_lines)
+
+
+def extract_endings(bars: List[Dict]) -> Tuple[List[str], Counter]:
+    endings: List[str] = []
+    freq = Counter()
+    for bar in bars or []:
+        text = bar.get("text") if isinstance(bar, dict) else None
+        if not text:
+            continue
+        tokens = WORD_RE.findall(text.lower())
+        if not tokens:
+            continue
+        normalized = normalize_word(tokens[-1])
+        if normalized:
+            endings.append(normalized)
+            freq[normalized] += 1
+    return endings, freq
 
 
 def describe(values: List[float]) -> Dict[str, float]:
@@ -266,7 +320,14 @@ def main():
 
     scored_count = 0
     total_weight = 0
-    rejection_counts = {"missing_critic": 0, "below_overall": 0, "below_average": 0}
+    rejection_counts = {
+        "missing_critic": 0,
+        "below_overall": 0,
+        "below_average": 0,
+        "duplicate": 0,
+        "low_unique_endings": 0,
+        "ending_repeat": 0,
+    }
     score_tracker = {field: [] for field in SCORE_FIELDS}
     verse_scores: List[float] = []
     bar_counts: List[int] = []
@@ -275,6 +336,7 @@ def main():
     per_scheme = defaultdict(lambda: {"count": 0, "overall": []})
     critic_sources = Counter()
     tag_counter = Counter()
+    seen_fingerprints: set[str] = set()
 
     with open(scored_output, "w", encoding="utf-8") as scored_f, open(
         weighted_output, "w", encoding="utf-8"
@@ -304,6 +366,33 @@ def main():
                 rejection_counts["below_average"] += 1
                 continue
 
+            verse_text = log_entry.get("verse_text")
+            if not verse_text:
+                bars_for_text = log_entry.get("bars", [])
+                verse_text = "\n".join((bar.get("text", "") for bar in bars_for_text))
+            bars = log_entry.get("bars") or []
+            endings, ending_freq = extract_endings(bars)
+            unique_endings = len(set(endings))
+            if args.min_unique_endings and unique_endings < args.min_unique_endings:
+                rejection_counts["low_unique_endings"] += 1
+                continue
+            if args.max_repeat_per_ending and ending_freq:
+                most_common = ending_freq.most_common(1)[0][1]
+                if most_common > args.max_repeat_per_ending:
+                    rejection_counts["ending_repeat"] += 1
+                    continue
+
+            if args.dedupe_mode != "none":
+                if args.dedupe_mode == "exact":
+                    fingerprint_source = canonical_verse_text(verse_text)
+                else:
+                    fingerprint_source = "|".join(sorted(endings)) if endings else canonical_verse_text(verse_text)
+                fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
+                if fingerprint in seen_fingerprints:
+                    rejection_counts["duplicate"] += 1
+                    continue
+                seen_fingerprints.add(fingerprint)
+
             combined = {
                 "verse_id": verse_id,
                 "artist": log_entry.get("artist"),
@@ -318,9 +407,9 @@ def main():
                 "scheme": log_entry.get("scheme"),
                 "verse_score": log_entry.get("verse_score"),
                 "accepted": log_entry.get("accepted"),
-                "bars": log_entry.get("bars"),
+                "bars": bars,
                 "bar_metrics": log_entry.get("bar_metrics"),
-                "verse_text": log_entry.get("verse_text"),
+                "verse_text": verse_text,
                 "generation": {
                     "timestamp": log_entry.get("timestamp"),
                     "generation_params": log_entry.get("generation_params"),
@@ -370,9 +459,6 @@ def main():
                 continue
             score_norm = sum(scores) / len(scores)
             weight = max(1, int(round((score_norm ** args.power) * args.scaling_factor)))
-            verse_text = log_entry.get("verse_text") or "\n".join(
-                (bar.get("text", "") for bar in log_entry.get("bars", []))
-            )
             block = verse_block(verse_text)
             for _ in range(weight):
                 weighted_f.write(block)

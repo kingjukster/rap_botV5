@@ -34,11 +34,12 @@ if str(ROOT) not in sys.path:
 
 import argparse
 import csv
+import json
 import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple, Optional, Any
+from typing import Dict, Iterable, List, Tuple, Optional, Any, Set
 
 import pandas as pd
 import pronouncing
@@ -52,6 +53,54 @@ from rapbot.rhyme_scorer import SiameseRhymeScorer
 WORD_RE = re.compile(r"[A-Za-z']+")
 BAR_RE = re.compile(r"\[BAR\](.*)")
 BRACKET_RE = re.compile(r"\[[^\]]+\]")
+DEFAULT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "be",
+    "but",
+    "by",
+    "da",
+    "for",
+    "from",
+    "go",
+    "had",
+    "he",
+    "her",
+    "him",
+    "his",
+    "i",
+    "id",
+    "im",
+    "in",
+    "is",
+    "it",
+    "me",
+    "my",
+    "no",
+    "of",
+    "on",
+    "or",
+    "our",
+    "out",
+    "she",
+    "so",
+    "that",
+    "the",
+    "them",
+    "then",
+    "there",
+    "they",
+    "this",
+    "to",
+    "was",
+    "we",
+    "ya",
+    "yo",
+    "you",
+    "ya'll",
+}
 
 ARPA_VOWELS = {
     "AA", "AE", "AH", "AO", "AW", "AY",
@@ -230,7 +279,21 @@ def extract_end_word(text: str) -> str:
     return tokens[-1]
 
 
-def collect_bar_endings(corpus_path: str) -> Counter:
+def normalize_end_word(word: str) -> str:
+    return re.sub(r"[^a-z']", "", str(word).lower()).strip("'")
+
+
+def is_valid_end_word(word: str, min_len: int, stopwords: Set[str]) -> bool:
+    if not word:
+        return False
+    if len(word) < min_len:
+        return False
+    if word in stopwords:
+        return False
+    return True
+
+
+def collect_bar_endings(corpus_path: str, min_len: int, stopwords: Set[str]) -> Counter:
     """
     Iterate through the cleaned corpus and count end words.
     """
@@ -244,9 +307,45 @@ def collect_bar_endings(corpus_path: str) -> Counter:
                 continue
             bar_text = match.group(1)
             end_word = extract_end_word(bar_text)
-            if end_word:
-                counts[end_word] += 1
+            norm = normalize_end_word(end_word)
+            if is_valid_end_word(norm, min_len, stopwords):
+                counts[norm] += 1
     return counts
+
+
+def load_log_end_words(paths: List[str], min_len: int, stopwords: Set[str]) -> Set[str]:
+    keep: Set[str] = set()
+    for raw in paths:
+        if not raw:
+            continue
+        path = Path(raw)
+        if not path.exists():
+            print(f"[WARN] Log file not found: {path}")
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                bars = record.get("bars") or []
+                for bar in bars:
+                    text = bar.get("text") if isinstance(bar, dict) else None
+                    if not text:
+                        continue
+                    norm = normalize_end_word(extract_end_word(text))
+                    if is_valid_end_word(norm, min_len, stopwords):
+                        keep.add(norm)
+                metrics = record.get("bar_metrics") or []
+                for metric in metrics:
+                    end_word = metric.get("end_word")
+                    norm = normalize_end_word(end_word or "")
+                    if is_valid_end_word(norm, min_len, stopwords):
+                        keep.add(norm)
+    return keep
 
 
 def rhyme_signature(word: str) -> str | None:
@@ -411,6 +510,10 @@ def expand_rhyme_groups(
     rhyme_key_len: int = 4,
     reassign_manual: bool = False,
     full_recluster: bool = False,
+    min_end_length: int = 3,
+    stopwords: Optional[Set[str]] = None,
+    log_jsonl_paths: Optional[List[str]] = None,
+    log_min_count: int = 2,
 ) -> Dict[str, int]:
     """
     Main expansion routine. Returns summary stats.
@@ -467,9 +570,18 @@ def expand_rhyme_groups(
 
     next_group_id = max(word_to_group.values(), default=-1) + 1
 
+    stopword_set: Set[str] = set(stopwords or DEFAULT_STOPWORDS)
+
     print(f"[RHYME-UPDATE] Scanning corpus for end words: {corpus_path}")
-    counts = collect_bar_endings(corpus_path)
+    counts = collect_bar_endings(corpus_path, min_end_length, stopword_set)
     print(f"[RHYME-UPDATE] Found {len(counts):,} unique bar endings.")
+
+    log_words: Set[str] = set()
+    if log_jsonl_paths:
+        log_words = load_log_end_words(log_jsonl_paths, min_end_length, stopword_set)
+        print(f"[RHYME-UPDATE] Preserving {len(log_words):,} end words referenced in logs.")
+        for word in log_words:
+            counts.setdefault(word, log_min_count)
 
     new_candidates = [
         (word, freq) for word, freq in counts.items()
@@ -718,10 +830,23 @@ def expand_rhyme_groups(
     new_df = pd.DataFrame(rows_to_append)
     combined = pd.concat([existing_df, new_df], ignore_index=True)
     combined.sort_values(by=["group", "word"], inplace=True)
+    before_dedup = len(combined)
+    combined = combined.drop_duplicates(subset=["word"], keep="last")
+    if len(combined) != before_dedup:
+        print(f"[RHYME-UPDATE] Dropped {before_dedup - len(combined):,} duplicate word entries.")
 
     output_path = output_csv or existing_csv
     combined.to_csv(output_path, index=False, quoting=csv.QUOTE_MINIMAL)
     print(f"[RHYME-UPDATE] Wrote updated rhyme CSV to: {output_path}")
+
+    group_sizes = combined.groupby("group")["word"].nunique()
+    summary = {
+        "unique_words": int(combined["word"].nunique()),
+        "unique_groups": int(group_sizes.shape[0]),
+        "median_group_size": float(group_sizes.median() if not group_sizes.empty else 0.0),
+        "p90_group_size": float(group_sizes.quantile(0.9) if not group_sizes.empty else 0.0),
+    }
+    print(f"[RHYME-UPDATE] Coverage summary: {summary}")
 
     return {"appended": len(rows_to_append), "output": output_path}
 
@@ -775,11 +900,39 @@ def parse_args():
         action="store_true",
         help="Ignore existing group assignments and rebuild all rhyme groups from scratch.",
     )
+    p.add_argument(
+        "--min_end_length",
+        type=int,
+        default=3,
+        help="Minimum character length (post-cleaning) for end words harvested from the corpus/logs.",
+    )
+    p.add_argument(
+        "--extra_stopwords",
+        type=str,
+        default=None,
+        help="Comma-separated list of additional end words to drop during corpus scanning.",
+    )
+    p.add_argument(
+        "--log_jsonl",
+        action="append",
+        default=None,
+        help="Optional generation log JSONL(s) whose end words should be preserved even if rare in the corpus.",
+    )
+    p.add_argument(
+        "--log_min_count",
+        type=int,
+        default=2,
+        help="Synthetic frequency assigned to log-only words when boosting counts.",
+    )
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    stopwords = set(DEFAULT_STOPWORDS)
+    if args.extra_stopwords:
+        extras = [w.strip().lower() for w in args.extra_stopwords.split(",")]
+        stopwords.update([w for w in extras if w])
     expand_rhyme_groups(
         corpus_path=args.corpus_path,
         existing_csv=args.existing_csv,
@@ -795,6 +948,10 @@ def main():
         rhyme_key_len=args.rhyme_key_len,
         reassign_manual=args.reassign_manual,
         full_recluster=args.full_recluster,
+        min_end_length=args.min_end_length,
+        stopwords=stopwords,
+        log_jsonl_paths=args.log_jsonl,
+        log_min_count=args.log_min_count,
     )
 def build_group_profiles(word_to_group: Dict[str, int]) -> Tuple[Dict[str, Optional[PhoneticFeature]], Dict[int, GroupProfile], Dict[str, set]]:
     feature_cache: Dict[str, Optional[PhoneticFeature]] = {}

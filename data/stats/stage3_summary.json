@@ -1,72 +1,74 @@
 {
-  "generated_entries": 1184,
-  "scored_entries": 186,
-  "total_weight": 3247,
+  "generated_entries": 1188,
+  "scored_entries": 66,
+  "total_weight": 610,
   "rejections": {
-    "missing_critic": 0,
-    "below_overall": 998,
-    "below_average": 0
+    "missing_critic": 4,
+    "below_overall": 1117,
+    "below_average": 0,
+    "duplicate": 0,
+    "low_unique_endings": 0,
+    "ending_repeat": 1
   },
   "critic_sources": {
-    "remote": 1017,
-    "local": 167
+    "remote": 1184
   },
   "min_overall_applied": 2.4,
   "min_average_applied": 2.0,
   "score_summary": {
     "overall_score": {
-      "count": 186,
-      "mean": 3.190417766571045,
-      "std": 0.6225019693374634,
+      "count": 66,
+      "mean": 2.5227272510528564,
+      "std": 0.10414945334196091,
       "min": 2.5,
       "p25": 2.5,
-      "median": 3.016505718231201,
-      "p75": 3.965977668762207,
-      "max": 4.64241361618042
+      "median": 2.5,
+      "p75": 2.5,
+      "max": 3.0
     },
     "depth_score": {
-      "count": 186,
-      "mean": 3.1005077362060547,
-      "std": 0.7245224118232727,
+      "count": 66,
+      "mean": 2.5,
+      "std": 0.5573204159736633,
       "min": 2.0,
-      "p25": 2.605473041534424,
-      "median": 3.0,
-      "p75": 3.675966739654541,
-      "max": 4.447681903839111
+      "p25": 2.0,
+      "median": 2.0,
+      "p75": 3.0,
+      "max": 4.0
     },
     "coherence_score": {
-      "count": 186,
-      "mean": 3.201429843902588,
-      "std": 0.6431545615196228,
+      "count": 66,
+      "mean": 2.5303030014038086,
+      "std": 0.48366332054138184,
       "min": 2.0,
-      "p25": 3.0,
-      "median": 3.2316136360168457,
-      "p75": 3.804482936859131,
-      "max": 4.625428676605225
+      "p25": 2.0,
+      "median": 2.75,
+      "p75": 3.0,
+      "max": 3.0
     },
     "originality_score": {
-      "count": 186,
-      "mean": 3.132544755935669,
-      "std": 0.5832263827323914,
+      "count": 66,
+      "mean": 2.5,
+      "std": 0.30151134729385376,
       "min": 2.0,
       "p25": 2.5,
-      "median": 3.0114898681640625,
-      "p75": 3.669961452484131,
-      "max": 4.358745574951172
+      "median": 2.5,
+      "p75": 2.5,
+      "max": 3.5
     }
   },
   "verse_score_summary": {
-    "count": 186,
-    "mean": 0.4496666193008423,
-    "std": 0.14901386201381683,
-    "min": 0.053237609565258026,
+    "count": 66,
+    "mean": 0.44526776671409607,
+    "std": 0.13778598606586456,
+    "min": 0.18192408978939056,
     "p25": 0.3395867347717285,
-    "median": 0.43536603450775146,
-    "p75": 0.5601526498794556,
-    "max": 0.8522493243217468
+    "median": 0.44288164377212524,
+    "p75": 0.5480882525444031,
+    "max": 0.7555370330810547
   },
   "bar_count_summary": {
-    "count": 186,
+    "count": 66,
     "mean": 16.0,
     "std": 0.0,
     "min": 16.0,
@@ -77,65 +79,9 @@
   },
   "timestamp_range": {
     "min": "2025-12-09T08:36:16Z",
-    "max": "2025-12-11T04:11:28Z"
+    "max": "2025-12-11T04:10:55Z"
   },
   "top_seeds": [
-    {
-      "seed": "villain with the vacuum helmet floats past saturn",
-      "count": 9,
-      "avg_overall": 3.6410383118523493,
-      "accept_rate": 0.0,
-      "avg_verse_score": 0.26536323922789756
-    },
-    {
-      "seed": "mask on steady while the pot slow simmers",
-      "count": 14,
-      "avg_overall": 3.549667341368539,
-      "accept_rate": 0.42857142857142855,
-      "avg_verse_score": 0.3751687901791464
-    },
-    {
-      "seed": "microfilm vault keeps the villain manifestos safe",
-      "count": 14,
-      "avg_overall": 3.4710278511047363,
-      "accept_rate": 0.7142857142857143,
-      "avg_verse_score": 0.5578705297542267
-    },
-    {
-      "seed": "villain with the mask plotting on the next move",
-      "count": 37,
-      "avg_overall": 3.426692112072094,
-      "accept_rate": 0.40540540540540543,
-      "avg_verse_score": 0.5445813819279407
-    },
-    {
-      "seed": "metal face alchemist mixing rhymes in the lab",
-      "count": 19,
-      "avg_overall": 3.4189467681081673,
-      "accept_rate": 0.6842105263157895,
-      "avg_verse_score": 0.488991462718462
-    },
-    {
-      "seed": "krylon fumes and comic books on the table",
-      "count": 14,
-      "avg_overall": 3.389109901019505,
-      "accept_rate": 0.7142857142857143,
-      "avg_verse_score": 0.5262560996296657
-    },
-    {
-      "seed": "late night deli counter trading mask-inside jokes",
-      "count": 10,
-      "avg_overall": 3.357863187789917,
-      "accept_rate": 0.3,
-      "avg_verse_score": 0.36735597863793373
-    },
-    {
-      "seed": "operation doomsday broadcast from the shadows",
-      "count": 25,
-      "avg_overall": 3.1433971405029295,
-      "accept_rate": 0.28,
-      "avg_verse_score": 0.36000394807117325
-    },
     {
       "seed": "smoldering punchlines cooling on alloy workbenches",
       "count": 2,
@@ -149,9 +95,72 @@
       "avg_overall": 2.6666666666666665,
       "accept_rate": 0.6666666666666666,
       "avg_verse_score": 0.43691324881381455
+    },
+    {
+      "seed": "operation doomsday broadcast from the shadows",
+      "count": 5,
+      "avg_overall": 2.6,
+      "accept_rate": 0.4,
+      "avg_verse_score": 0.34519777093614856
+    },
+    {
+      "seed": "villain with the mask plotting on the next move",
+      "count": 8,
+      "avg_overall": 2.5,
+      "accept_rate": 0.375,
+      "avg_verse_score": 0.5210668798225622
+    },
+    {
+      "seed": "rusted synth wires tangled in a notebook of ciphers",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.3874391675823265
+    },
+    {
+      "seed": "vectors of rhyme spiraling from a dented steel mask",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5180114840733863
+    },
+    {
+      "seed": "forgotten mixtapes whispering secrets to the villain",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.3333333333333333,
+      "avg_verse_score": 0.36614768852790197
+    },
+    {
+      "seed": "adversarial metrics plotted across stained graph paper",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.5125447712424728
+    },
+    {
+      "seed": "comic book margins filled with cryptic alchemical notes",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.6100203084448973
+    },
+    {
+      "seed": "ultrasonic murmurs guiding the villain\u2019s next scheme",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5544693667441607
     }
   ],
   "bottom_seeds": [
+    {
+      "seed": "villain with the mask plotting on the next move",
+      "count": 8,
+      "avg_overall": 2.5,
+      "accept_rate": 0.375,
+      "avg_verse_score": 0.5210668798225622
+    },
     {
       "seed": "rusted synth wires tangled in a notebook of ciphers",
       "count": 3,
@@ -214,111 +223,58 @@
       "avg_overall": 2.5,
       "accept_rate": 1.0,
       "avg_verse_score": 0.706110401948293
-    },
-    {
-      "seed": "magnetized fragments of flow swirling in vortex rings",
-      "count": 1,
-      "avg_overall": 2.5,
-      "accept_rate": 0.0,
-      "avg_verse_score": 0.22103117472891295
     }
   ],
   "scheme_summary": [
     {
-      "scheme": "ABBAABBAABBAABBA",
-      "count": 14,
-      "avg_overall": 3.549667341368539
-    },
-    {
-      "scheme": "ABABABABABABABAB",
-      "count": 26,
-      "avg_overall": 3.5014854027674747
-    },
-    {
-      "scheme": "ABCABCABCABCABCA",
-      "count": 14,
-      "avg_overall": 3.4710278511047363
-    },
-    {
-      "scheme": "AAAABBBBCCCCDDDD",
-      "count": 14,
-      "avg_overall": 3.389109901019505
-    },
-    {
       "scheme": "AABBCCDDEEFFGGHH",
-      "count": 32,
-      "avg_overall": 3.323571041226387
+      "count": 3,
+      "avg_overall": 2.6666666666666665
     },
     {
       "scheme": "AABBAABBAABBAABB",
-      "count": 86,
-      "avg_overall": 2.9103210249612497
+      "count": 56,
+      "avg_overall": 2.517857142857143
+    },
+    {
+      "scheme": "AAAABBBBCCCCDDDD",
+      "count": 6,
+      "avg_overall": 2.5
+    },
+    {
+      "scheme": "ABCABCABCABCABCA",
+      "count": 1,
+      "avg_overall": 2.5
     }
   ],
   "tag_counts": [
     [
-      "villain",
-      52
-    ],
-    [
-      "food",
-      40
-    ],
-    [
-      "broadcast",
-      23
-    ],
-    [
-      "retro",
-      23
-    ],
-    [
-      "science",
-      16
-    ],
-    [
-      "lab",
-      16
-    ],
-    [
       "graffiti",
-      14
+      6
     ],
     [
       "nerdcore",
-      14
+      6
+    ],
+    [
+      "broadcast",
+      3
+    ],
+    [
+      "villain",
+      3
+    ],
+    [
+      "retro",
+      3
     ],
     [
       "archives",
-      14
+      1
     ],
     [
       "mystery",
-      14
-    ],
-    [
-      "kitchen",
-      14
-    ],
-    [
-      "city",
-      10
-    ],
-    [
-      "banter",
-      10
-    ],
-    [
-      "cosmic",
-      9
-    ],
-    [
-      "shadow",
-      6
-    ],
-    [
-      "heist",
-      6
+      1
     ]
   ],
   "histograms": {
@@ -336,17 +292,17 @@
         0,
         0,
         0,
-        55,
-        14,
-        38,
-        13,
-        11,
-        4,
-        4,
-        39,
-        7,
+        63,
         0,
-        1,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         0
       ],
       "edges": [
@@ -388,19 +344,19 @@
         0,
         0,
         0,
+        35,
+        0,
+        0,
+        0,
+        0,
         29,
-        1,
-        1,
-        31,
-        9,
-        46,
-        3,
-        8,
-        15,
-        7,
-        18,
-        15,
-        3,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
         0,
         0
       ],
@@ -443,20 +399,20 @@
         0,
         0,
         0,
-        27,
+        29,
         0,
         0,
-        9,
-        5,
-        36,
-        32,
-        15,
-        10,
-        37,
-        11,
-        3,
+        4,
         0,
-        1,
+        33,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         0
       ],
       "edges": [
@@ -498,18 +454,18 @@
         0,
         0,
         0,
-        9,
+        10,
         0,
         0,
-        42,
-        19,
-        34,
-        12,
-        14,
-        15,
-        25,
-        14,
+        48,
+        0,
+        6,
+        0,
         2,
+        0,
+        0,
+        0,
+        0,
         0,
         0,
         0
@@ -544,57 +500,57 @@
     },
     "verse_score": {
       "counts": [
-        1,
-        1,
-        1,
+        2,
+        2,
+        0,
+        3,
+        6,
+        3,
+        3,
+        2,
+        7,
+        3,
         2,
         4,
         4,
-        11,
-        17,
-        11,
-        21,
-        12,
-        13,
-        9,
-        17,
-        13,
-        12,
-        15,
-        6,
-        4,
-        4,
+        5,
+        2,
         3,
+        3,
+        4,
         3,
         1,
-        1
+        1,
+        1,
+        0,
+        2
       ],
       "edges": [
-        0.0532376100619634,
-        0.08652976598176691,
-        0.11982192190157043,
-        0.15311407782137393,
-        0.18640623374117746,
-        0.21969838966098096,
-        0.2529905455807845,
-        0.286282701500588,
-        0.3195748574203915,
-        0.352867013340195,
-        0.3861591692599985,
-        0.4194513251798021,
-        0.4527434810996056,
-        0.4860356370194091,
-        0.5193277929392126,
-        0.5526199488590161,
-        0.5859121047788196,
-        0.6192042606986231,
-        0.6524964166184266,
-        0.6857885725382301,
-        0.7190807284580336,
-        0.7523728843778372,
-        0.7856650402976407,
-        0.8189571962174442,
-        0.8522493521372477
+        0.1819240855673949,
+        0.20582462421928843,
+        0.22972516287118197,
+        0.2536257015230755,
+        0.277526240174969,
+        0.3014267788268626,
+        0.3253273174787561,
+        0.34922785613064966,
+        0.37312839478254317,
+        0.3970289334344367,
+        0.42092947208633025,
+        0.4448300107382238,
+        0.46873054939011727,
+        0.49263108804201083,
+        0.5165316266939044,
+        0.540432165345798,
+        0.5643327039976914,
+        0.588233242649585,
+        0.6121337813014786,
+        0.636034319953372,
+        0.6599348586052656,
+        0.6838353972571591,
+        0.7077359359090527,
+        0.7316364745609463,
+        0.7555370132128397
       ]
     }
   }

@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 import argparse
 import json
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 import numpy as np
 import torch
@@ -83,6 +83,30 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train_split", type=float, default=0.9, help="Fraction of data for training.")
     parser.add_argument(
+        "--kaggle_enriched",
+        type=str,
+        default=None,
+        help="Optional enriched Kaggle JSONL (from enrich_kaggle_corpus.py) for pseudo-labeled samples.",
+    )
+    parser.add_argument(
+        "--kaggle_limit",
+        type=int,
+        default=5000,
+        help="Maximum Kaggle pseudo-samples to include.",
+    )
+    parser.add_argument(
+        "--kaggle_score_floor",
+        type=float,
+        default=1.2,
+        help="Minimum critic score assigned to Kaggle pseudo-samples.",
+    )
+    parser.add_argument(
+        "--kaggle_score_ceiling",
+        type=float,
+        default=3.2,
+        help="Maximum critic score assigned to Kaggle pseudo-samples.",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default=None,
@@ -121,6 +145,45 @@ def read_scored_dataset(path: Path) -> List[Tuple[str, Dict[str, float]]]:
                 continue
             target = {k: float(critic.get(k, 0.0)) for k in SCORE_KEYS}
             records.append((verse_text, target))
+    return records
+
+
+def heuristic_scores(entry: Dict[str, Any], floor: float, ceiling: float) -> Dict[str, float]:
+    density = min(entry.get("unique_rhymes_window", 0) / 4.0, 1.0)
+    dense_bonus = min(entry.get("dense_bars_window", 0) / 2.0, 1.0)
+    syllables = min((entry.get("avg_syllables_window", 0.0) or 0.0) / 14.0, 1.0)
+    quality = max(0.0, min(1.0, 0.5 * density + 0.3 * dense_bonus + 0.2 * syllables))
+    score = floor + (ceiling - floor) * quality
+    return {key: score for key in SCORE_KEYS}
+
+
+def read_kaggle_enriched(path: Path, limit: int, floor: float, ceiling: float) -> List[Tuple[str, Dict[str, float]]]:
+    records: List[Tuple[str, Dict[str, float]]] = []
+    seen = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if limit and seen >= limit:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not entry.get("english_like", False):
+                continue
+            if entry.get("section_hint") == "hook":
+                continue
+            unique = entry.get("unique_rhymes_window", 0)
+            if unique < 1:
+                continue
+            text = entry.get("text", "").strip()
+            if not text:
+                continue
+            target = heuristic_scores(entry, floor=floor, ceiling=ceiling)
+            records.append((text, target))
+            seen += 1
     return records
 
 
@@ -185,6 +248,19 @@ def main():
     if len(records) < 10:
         raise RuntimeError("Not enough scored records to train the local critic.")
     print(f"[INFO] Loaded {len(records):,} records with critic scores.")
+
+    kaggle_path = Path(args.kaggle_enriched) if args.kaggle_enriched else None
+    if kaggle_path and kaggle_path.exists():
+        kaggle_records = read_kaggle_enriched(
+            kaggle_path,
+            limit=args.kaggle_limit,
+            floor=args.kaggle_score_floor,
+            ceiling=args.kaggle_score_ceiling,
+        )
+        records.extend(kaggle_records)
+        print(f"[INFO] Added {len(kaggle_records):,} Kaggle pseudo-labeled samples (total={len(records):,}).")
+    elif kaggle_path:
+        print(f"[WARN] Kaggle enriched file not found: {kaggle_path}")
 
     cache_dir = output_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,24 @@
+{
+  "timestamp": "2025-12-11T05:18:17.736870",
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "output_dir": "checkpoints/elite_qwen_siamese/runs/refresh_two_phase/adapter/final",
+  "tokenizer_dir": "checkpoints/elite_qwen_siamese/runs/refresh_two_phase/tokenizer",
+  "phase_history": [
+    {
+      "label": "phase1",
+      "text_path": "data/phaseA_kaggle_verse.txt",
+      "dataset_lines": 4550,
+      "epochs": 0.5
+    },
+    {
+      "label": "phase2",
+      "text_path": "data/weighted_corpus_stage3.txt",
+      "dataset_lines": 10227,
+      "epochs": 0.5
+    }
+  ],
+  "learning_rate": 0.0002,
+  "batch_size": 1,
+  "grad_accum_steps": 16,
+  "max_seq_length": 512
+}
