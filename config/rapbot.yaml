@@ -14,21 +14,24 @@ paths:
 generation:
   scheme: AABB
   num_bars: 16
-  candidates: 10
+  candidates: 12
   max_new_tokens: 40
   temperature: 0.85
   top_p: 0.92
   repetition_penalty: 1.12
-  attempts: 4
-  verse_accept_threshold: 0.30
+  attempts: 5
+  verse_accept_threshold: 0.45
+  target_syllables: 13
+  meter_sigma: 1.8
+  anchor_candidates_per_line: 8
   log_json: data/generated_raw.jsonl
 
 stage3:
-  samples_per_seed: 6
+  samples_per_seed: 4
   parallel_workers: 1
   refresh_rhymes: true
-  min_overall_score: 1.5
-  min_average_score: 1.2
+  min_overall_score: 2.4
+  min_average_score: 2.0
   hist_bins: 24
   seed_manifest: data/seeds/mfdoom_manifest.jsonl
 

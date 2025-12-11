@@ -1,71 +1,72 @@
 {
-  "generated_entries": 1017,
-  "scored_entries": 1009,
-  "total_weight": 7123,
+  "generated_entries": 1184,
+  "scored_entries": 186,
+  "total_weight": 3247,
   "rejections": {
     "missing_critic": 0,
-    "below_overall": 8,
+    "below_overall": 998,
     "below_average": 0
   },
   "critic_sources": {
-    "remote": 1017
+    "remote": 1017,
+    "local": 167
   },
-  "min_overall_applied": 1.5,
-  "min_average_applied": 1.2,
+  "min_overall_applied": 2.4,
+  "min_average_applied": 2.0,
   "score_summary": {
     "overall_score": {
-      "count": 1009,
-      "mean": 2.0292367935180664,
-      "std": 0.12744151055812836,
-      "min": 1.5,
-      "p25": 2.0,
-      "median": 2.0,
-      "p75": 2.0,
-      "max": 3.0
+      "count": 186,
+      "mean": 3.190417766571045,
+      "std": 0.6225019693374634,
+      "min": 2.5,
+      "p25": 2.5,
+      "median": 3.016505718231201,
+      "p75": 3.965977668762207,
+      "max": 4.64241361618042
     },
     "depth_score": {
-      "count": 1009,
-      "mean": 2.3201189041137695,
-      "std": 0.49537163972854614,
-      "min": 1.0,
-      "p25": 2.0,
-      "median": 2.0,
-      "p75": 3.0,
-      "max": 4.0
+      "count": 186,
+      "mean": 3.1005077362060547,
+      "std": 0.7245224118232727,
+      "min": 2.0,
+      "p25": 2.605473041534424,
+      "median": 3.0,
+      "p75": 3.675966739654541,
+      "max": 4.447681903839111
     },
     "coherence_score": {
-      "count": 1009,
-      "mean": 2.4603567123413086,
-      "std": 0.6054872274398804,
-      "min": 1.0,
-      "p25": 2.0,
-      "median": 3.0,
-      "p75": 3.0,
-      "max": 3.0
+      "count": 186,
+      "mean": 3.201429843902588,
+      "std": 0.6431545615196228,
+      "min": 2.0,
+      "p25": 3.0,
+      "median": 3.2316136360168457,
+      "p75": 3.804482936859131,
+      "max": 4.625428676605225
     },
     "originality_score": {
-      "count": 1009,
-      "mean": 2.160554885864258,
-      "std": 0.45073452591896057,
-      "min": 1.0,
-      "p25": 2.0,
-      "median": 2.0,
-      "p75": 2.0,
-      "max": 3.5
+      "count": 186,
+      "mean": 3.132544755935669,
+      "std": 0.5832263827323914,
+      "min": 2.0,
+      "p25": 2.5,
+      "median": 3.0114898681640625,
+      "p75": 3.669961452484131,
+      "max": 4.358745574951172
     }
   },
   "verse_score_summary": {
-    "count": 1009,
-    "mean": 0.4439347982406616,
-    "std": 0.13133504986763,
-    "min": 0.0791761726140976,
-    "p25": 0.3500223159790039,
-    "median": 0.43360206484794617,
-    "p75": 0.5245498418807983,
-    "max": 0.9531092047691345
+    "count": 186,
+    "mean": 0.4496666193008423,
+    "std": 0.14901386201381683,
+    "min": 0.053237609565258026,
+    "p25": 0.3395867347717285,
+    "median": 0.43536603450775146,
+    "p75": 0.5601526498794556,
+    "max": 0.8522493243217468
   },
   "bar_count_summary": {
-    "count": 1009,
+    "count": 186,
     "mean": 16.0,
     "std": 0.0,
     "min": 16.0,
@@ -75,237 +76,249 @@
     "max": 16.0
   },
   "timestamp_range": {
-    "min": "2025-12-09T07:42:18Z",
-    "max": "2025-12-10T22:25:16Z"
+    "min": "2025-12-09T08:36:16Z",
+    "max": "2025-12-11T04:11:28Z"
   },
   "top_seeds": [
     {
-      "seed": "smoldering punchlines cooling on alloy workbenches",
-      "count": 10,
-      "avg_overall": 2.15,
-      "accept_rate": 0.8,
-      "avg_verse_score": 0.4501009381030287
+      "seed": "villain with the vacuum helmet floats past saturn",
+      "count": 9,
+      "avg_overall": 3.6410383118523493,
+      "accept_rate": 0.0,
+      "avg_verse_score": 0.26536323922789756
     },
     {
-      "seed": "villain\u2019s ledger coated in graphite and burnt ozone",
+      "seed": "mask on steady while the pot slow simmers",
+      "count": 14,
+      "avg_overall": 3.549667341368539,
+      "accept_rate": 0.42857142857142855,
+      "avg_verse_score": 0.3751687901791464
+    },
+    {
+      "seed": "microfilm vault keeps the villain manifestos safe",
+      "count": 14,
+      "avg_overall": 3.4710278511047363,
+      "accept_rate": 0.7142857142857143,
+      "avg_verse_score": 0.5578705297542267
+    },
+    {
+      "seed": "villain with the mask plotting on the next move",
+      "count": 37,
+      "avg_overall": 3.426692112072094,
+      "accept_rate": 0.40540540540540543,
+      "avg_verse_score": 0.5445813819279407
+    },
+    {
+      "seed": "metal face alchemist mixing rhymes in the lab",
+      "count": 19,
+      "avg_overall": 3.4189467681081673,
+      "accept_rate": 0.6842105263157895,
+      "avg_verse_score": 0.488991462718462
+    },
+    {
+      "seed": "krylon fumes and comic books on the table",
+      "count": 14,
+      "avg_overall": 3.389109901019505,
+      "accept_rate": 0.7142857142857143,
+      "avg_verse_score": 0.5262560996296657
+    },
+    {
+      "seed": "late night deli counter trading mask-inside jokes",
       "count": 10,
-      "avg_overall": 2.15,
-      "accept_rate": 0.8,
-      "avg_verse_score": 0.4182084194198251
+      "avg_overall": 3.357863187789917,
+      "accept_rate": 0.3,
+      "avg_verse_score": 0.36735597863793373
+    },
+    {
+      "seed": "operation doomsday broadcast from the shadows",
+      "count": 25,
+      "avg_overall": 3.1433971405029295,
+      "accept_rate": 0.28,
+      "avg_verse_score": 0.36000394807117325
+    },
+    {
+      "seed": "smoldering punchlines cooling on alloy workbenches",
+      "count": 2,
+      "avg_overall": 2.75,
+      "accept_rate": 0.0,
+      "avg_verse_score": 0.24754616220792136
     },
     {
       "seed": "metal fingers calibrating fractured loops in the furnace",
-      "count": 17,
-      "avg_overall": 2.1176470588235294,
-      "accept_rate": 0.8235294117647058,
-      "avg_verse_score": 0.4338833301792479
-    },
-    {
-      "seed": "covert mechanisms plotting syncopated sabotage",
-      "count": 11,
-      "avg_overall": 2.090909090909091,
-      "accept_rate": 0.7272727272727273,
-      "avg_verse_score": 0.3729626708630816
-    },
-    {
-      "seed": "forgotten mixtapes whispering secrets to the villain",
-      "count": 17,
-      "avg_overall": 2.088235294117647,
-      "accept_rate": 0.8235294117647058,
-      "avg_verse_score": 0.44543522955627823
-    },
-    {
-      "seed": "adversarial metrics plotted across stained graph paper",
-      "count": 17,
-      "avg_overall": 2.088235294117647,
-      "accept_rate": 0.8235294117647058,
-      "avg_verse_score": 0.49964314103856977
-    },
-    {
-      "seed": "lab rats scurrying past reels soaked in bass residue",
-      "count": 12,
-      "avg_overall": 2.0833333333333335,
+      "count": 3,
+      "avg_overall": 2.6666666666666665,
       "accept_rate": 0.6666666666666666,
-      "avg_verse_score": 0.3814939568720994
-    },
-    {
-      "seed": "rusted synth wires tangled in a notebook of ciphers",
-      "count": 20,
-      "avg_overall": 2.075,
-      "accept_rate": 0.7,
-      "avg_verse_score": 0.39386725481486995
-    },
-    {
-      "seed": "vectors of rhyme spiraling from a dented steel mask",
-      "count": 14,
-      "avg_overall": 2.0714285714285716,
-      "accept_rate": 1.0,
-      "avg_verse_score": 0.5292984811817201
-    },
-    {
-      "seed": "gravity-warped flows aligning under flickering bulbs",
-      "count": 14,
-      "avg_overall": 2.0714285714285716,
-      "accept_rate": 1.0,
-      "avg_verse_score": 0.5239351835469304
+      "avg_verse_score": 0.43691324881381455
     }
   ],
   "bottom_seeds": [
     {
-      "seed": "static-drenched mantras chanted through a broken mask",
-      "count": 13,
-      "avg_overall": 1.9615384615384615,
-      "accept_rate": 0.9230769230769231,
-      "avg_verse_score": 0.5412141316160707
+      "seed": "rusted synth wires tangled in a notebook of ciphers",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.3874391675823265
     },
     {
-      "seed": "arcane punchlines fermenting under laboratory lamps",
-      "count": 15,
-      "avg_overall": 2.0,
-      "accept_rate": 0.9333333333333333,
-      "avg_verse_score": 0.4708067421248508
+      "seed": "vectors of rhyme spiraling from a dented steel mask",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5180114840733863
     },
     {
-      "seed": "distorted frequencies swimming through shadow corridors",
-      "count": 20,
-      "avg_overall": 2.0,
-      "accept_rate": 0.7,
-      "avg_verse_score": 0.40740378772744384
+      "seed": "forgotten mixtapes whispering secrets to the villain",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.3333333333333333,
+      "avg_verse_score": 0.36614768852790197
     },
     {
-      "seed": "broken samplers coughing sparks into empty beakers",
-      "count": 19,
-      "avg_overall": 2.0,
-      "accept_rate": 0.7368421052631579,
-      "avg_verse_score": 0.4071429846518881
+      "seed": "adversarial metrics plotted across stained graph paper",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.5125447712424728
     },
     {
-      "seed": "ancient blueprints annotated with ultraviolet ink",
-      "count": 15,
-      "avg_overall": 2.0,
-      "accept_rate": 0.9333333333333333,
-      "avg_verse_score": 0.516142754473147
+      "seed": "comic book margins filled with cryptic alchemical notes",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.6100203084448973
     },
     {
-      "seed": "syntax reactors glowing between torn vinyl sleeves",
-      "count": 17,
-      "avg_overall": 2.0,
-      "accept_rate": 0.7647058823529411,
-      "avg_verse_score": 0.4511507330665819
+      "seed": "ultrasonic murmurs guiding the villain\u2019s next scheme",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5544693667441607
     },
     {
-      "seed": "mask fogged from the heat of molten rhyme compounds",
-      "count": 20,
-      "avg_overall": 2.0,
-      "accept_rate": 0.7,
-      "avg_verse_score": 0.40344179086919346
+      "seed": "cadence residue etched into rusted metal schematics",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.4908523055414359
     },
     {
-      "seed": "villainous specter soldering cadences to circuitry",
-      "count": 24,
-      "avg_overall": 2.0,
-      "accept_rate": 0.5833333333333334,
-      "avg_verse_score": 0.3815285188450122
+      "seed": "gravity-warped flows aligning under flickering bulbs",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.38483796007931237
     },
     {
-      "seed": "fractal sonics dripping from battered tin speakers",
-      "count": 24,
-      "avg_overall": 2.0,
-      "accept_rate": 0.5833333333333334,
-      "avg_verse_score": 0.3658516402718508
+      "seed": "ciphered monologues drifting through corroded vents",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.706110401948293
     },
     {
-      "seed": "volatile rhyme cocktails bubbling inside glass flasks",
-      "count": 20,
-      "avg_overall": 2.0,
-      "accept_rate": 0.7,
-      "avg_verse_score": 0.38344158682994367
+      "seed": "magnetized fragments of flow swirling in vortex rings",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 0.0,
+      "avg_verse_score": 0.22103117472891295
     }
   ],
   "scheme_summary": [
     {
-      "scheme": "AABBCCDDEEFFGGHH",
-      "count": 29,
-      "avg_overall": 2.0689655172413794
-    },
-    {
-      "scheme": "AAAABBBBCCCCDDDD",
-      "count": 25,
-      "avg_overall": 2.04
-    },
-    {
-      "scheme": "AABBAABBAABBAABB",
-      "count": 880,
-      "avg_overall": 2.0301136363636365
-    },
-    {
-      "scheme": "ABCABCABCABCABCA",
-      "count": 24,
-      "avg_overall": 2.0208333333333335
-    },
-    {
       "scheme": "ABBAABBAABBAABBA",
-      "count": 27,
-      "avg_overall": 2.0
+      "count": 14,
+      "avg_overall": 3.549667341368539
     },
     {
       "scheme": "ABABABABABABABAB",
-      "count": 24,
-      "avg_overall": 1.9791666666666667
+      "count": 26,
+      "avg_overall": 3.5014854027674747
+    },
+    {
+      "scheme": "ABCABCABCABCABCA",
+      "count": 14,
+      "avg_overall": 3.4710278511047363
+    },
+    {
+      "scheme": "AAAABBBBCCCCDDDD",
+      "count": 14,
+      "avg_overall": 3.389109901019505
+    },
+    {
+      "scheme": "AABBCCDDEEFFGGHH",
+      "count": 32,
+      "avg_overall": 3.323571041226387
+    },
+    {
+      "scheme": "AABBAABBAABBAABB",
+      "count": 86,
+      "avg_overall": 2.9103210249612497
     }
   ],
   "tag_counts": [
     [
       "villain",
-      80
+      52
     ],
     [
       "food",
-      51
+      40
     ],
     [
       "broadcast",
-      29
+      23
     ],
     [
       "retro",
-      29
-    ],
-    [
-      "kitchen",
-      27
-    ],
-    [
-      "graffiti",
-      25
-    ],
-    [
-      "nerdcore",
-      25
-    ],
-    [
-      "shadow",
-      24
-    ],
-    [
-      "heist",
-      24
+      23
     ],
     [
       "science",
-      24
+      16
     ],
     [
       "lab",
-      24
+      16
+    ],
+    [
+      "graffiti",
+      14
+    ],
+    [
+      "nerdcore",
+      14
     ],
     [
       "archives",
-      24
+      14
     ],
     [
       "mystery",
-      24
+      14
+    ],
+    [
+      "kitchen",
+      14
+    ],
+    [
+      "city",
+      10
+    ],
+    [
+      "banter",
+      10
+    ],
+    [
+      "cosmic",
+      9
+    ],
+    [
+      "shadow",
+      6
+    ],
+    [
+      "heist",
+      6
     ]
   ],
   "histograms": {
@@ -318,22 +331,22 @@
         0,
         0,
         0,
-        2,
         0,
-        949,
+        0,
+        0,
         0,
         0,
         55,
+        14,
+        38,
+        13,
+        11,
+        4,
+        4,
+        39,
+        7,
         0,
-        3,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        1,
         0
       ],
       "edges": [
@@ -370,24 +383,24 @@
         0,
         0,
         0,
-        12,
         0,
         0,
         0,
         0,
-        664,
         0,
-        0,
-        0,
-        0,
-        331,
-        0,
-        0,
-        0,
-        0,
-        2,
-        0,
-        0,
+        29,
+        1,
+        1,
+        31,
+        9,
+        46,
+        3,
+        8,
+        15,
+        7,
+        18,
+        15,
+        3,
         0,
         0
       ],
@@ -425,25 +438,25 @@
         0,
         0,
         0,
-        60,
         0,
         0,
         0,
         0,
-        423,
+        0,
+        27,
         0,
         0,
+        9,
+        5,
+        36,
+        32,
+        15,
+        10,
+        37,
+        11,
         3,
         0,
-        523,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        1,
         0
       ],
       "edges": [
@@ -480,23 +493,23 @@
         0,
         0,
         0,
-        39,
         0,
         0,
         0,
         0,
-        749,
+        0,
+        9,
         0,
         0,
         42,
-        0,
-        177,
-        0,
+        19,
+        34,
+        12,
+        14,
+        15,
+        25,
+        14,
         2,
-        0,
-        0,
-        0,
-        0,
         0,
         0,
         0
@@ -532,56 +545,56 @@
     "verse_score": {
       "counts": [
         1,
-        3,
-        6,
-        18,
-        28,
-        64,
-        87,
-        112,
-        115,
-        109,
-        112,
-        79,
-        80,
-        51,
-        48,
-        39,
-        15,
+        1,
+        1,
+        2,
+        4,
+        4,
+        11,
+        17,
+        11,
+        21,
+        12,
+        13,
         9,
         17,
-        9,
+        13,
+        12,
+        15,
+        6,
+        4,
+        4,
         3,
-        2,
-        0,
-        2
+        3,
+        1,
+        1
       ],
       "edges": [
-        0.0791761708756288,
-        0.1155900476189951,
-        0.15200392436236143,
-        0.18841780110572776,
-        0.22483167784909408,
-        0.2612455545924604,
-        0.2976594313358267,
-        0.334073308079193,
-        0.3704871848225593,
-        0.40690106156592565,
-        0.443314938309292,
-        0.4797288150526583,
-        0.5161426917960246,
-        0.552556568539391,
-        0.5889704452827572,
-        0.6253843220261236,
-        0.6617981987694899,
-        0.6982120755128561,
-        0.7346259522562225,
-        0.7710398289995888,
-        0.8074537057429552,
-        0.8438675824863214,
-        0.8802814592296878,
-        0.9166953359730541,
-        0.9531092127164205
+        0.0532376100619634,
+        0.08652976598176691,
+        0.11982192190157043,
+        0.15311407782137393,
+        0.18640623374117746,
+        0.21969838966098096,
+        0.2529905455807845,
+        0.286282701500588,
+        0.3195748574203915,
+        0.352867013340195,
+        0.3861591692599985,
+        0.4194513251798021,
+        0.4527434810996056,
+        0.4860356370194091,
+        0.5193277929392126,
+        0.5526199488590161,
+        0.5859121047788196,
+        0.6192042606986231,
+        0.6524964166184266,
+        0.6857885725382301,
+        0.7190807284580336,
+        0.7523728843778372,
+        0.7856650402976407,
+        0.8189571962174442,
+        0.8522493521372477
       ]
     }
   }
