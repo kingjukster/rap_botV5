@@ -471,6 +471,8 @@ def main():
     target_syllables_default = int(gen_cfg.get("target_syllables", 13))
     meter_sigma_default = float(gen_cfg.get("meter_sigma", 2.0))
     anchor_candidates_default = int(gen_cfg.get("anchor_candidates_per_line", 6))
+    anchor_groups_default = int(gen_cfg.get("anchor_groups_per_letter", 2))
+    anchor_random_default = gen_cfg.get("anchor_random_seed")
 
     if not args.skip_generation:
         commands: List[List[str]] = []
@@ -519,6 +521,9 @@ def main():
                     cmd.extend(["--verse_accept_threshold", str(verse_accept_threshold)])
                 if log_path:
                     cmd.extend(["--log_json", log_path])
+                cmd.extend(["--anchor_groups_per_letter", str(anchor_groups_default)])
+                if anchor_random_default is not None:
+                    cmd.extend(["--anchor_random_seed", str(anchor_random_default)])
                 if args.config:
                     cmd.extend(["--config", args.config])
                 commands.append(cmd)
@@ -550,6 +555,8 @@ def main():
                     ),
                     "meter_sigma": seed_spec.meter_sigma if seed_spec.meter_sigma is not None else meter_sigma_default,
                     "anchor_candidates_per_line": anchor_candidates_default,
+                    "anchor_groups_per_letter": anchor_groups_default,
+                    "anchor_random_seed": anchor_random_default,
                     "persona": seed_spec.persona or persona_default,
                     "theme_hint": seed_spec.theme or theme_default,
                     "style_hint": seed_spec.style or style_default,

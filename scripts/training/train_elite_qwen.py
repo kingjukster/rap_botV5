@@ -118,6 +118,24 @@ def parse_args():
         help="Optional path to write metadata JSON for this run.",
     )
     parser.add_argument(
+        "--phase2_text_path",
+        type=str,
+        default=None,
+        help="Optional Stage-3 weighted corpus for a second fine-tuning phase.",
+    )
+    parser.add_argument(
+        "--phase1_epochs",
+        type=float,
+        default=None,
+        help="Epochs for phase 1 (defaults to --num_epochs).",
+    )
+    parser.add_argument(
+        "--phase2_epochs",
+        type=float,
+        default=None,
+        help="Epochs for phase 2 (defaults to --num_epochs).",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default=None,
@@ -185,7 +203,7 @@ def load_tokenizer_and_model(base_model_name: str, tokenizer_save_dir: str) -> t
     print(f"[INFO] Loading 4-bit model from {base_model_name}")
     model = AutoModelForCausalLM.from_pretrained(
         base_model_name,
-        device_map="auto",
+        device_map={"": 0},
         torch_dtype=torch.float16,
         quantization_config=quant_config,
         trust_remote_code=True,
@@ -283,61 +301,70 @@ def main():
     text_path = Path(args.text_path or settings.elite_corpus_path)
     output_dir = Path(args.output_dir or settings.lora_output_dir)
     tokenizer_save_dir = Path(args.tokenizer_save_dir or settings.tokenizer_save_dir)
+    phase2_path = Path(args.phase2_text_path).expanduser().resolve() if args.phase2_text_path else None
 
     output_dir.mkdir(parents=True, exist_ok=True)
     tokenizer_save_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer, model = load_tokenizer_and_model(model_name, str(tokenizer_save_dir))
-    train_dataset = load_rap_dataset(
-        tokenizer,
-        text_path=str(text_path),
-        max_seq_length=args.max_seq_length,
-    )
+    phase_specs = []
+    phase1_epochs = args.phase1_epochs if args.phase1_epochs is not None else args.num_epochs
+    phase_specs.append((text_path, phase1_epochs, "phase1"))
+    if phase2_path:
+        phase2_epochs = args.phase2_epochs if args.phase2_epochs is not None else args.num_epochs
+        phase_specs.append((phase2_path, phase2_epochs, "phase2"))
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-    )
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    phase_history = []
+    for idx, (phase_path, phase_epochs, phase_label) in enumerate(phase_specs, start=1):
+        dataset = load_rap_dataset(
+            tokenizer,
+            text_path=str(phase_path),
+            max_seq_length=args.max_seq_length,
+        )
+        training_args = TrainingArguments(
+            output_dir=str(output_dir / phase_label),
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.grad_accum_steps,
+            num_train_epochs=phase_epochs,
+            learning_rate=args.learning_rate,
+            do_eval=False,
+            logging_steps=LOGGING_STEPS,
+            save_steps=SAVE_STEPS,
+            save_total_limit=2,
+            fp16=False,
+            bf16=torch.cuda.is_bf16_supported(),
+            load_best_model_at_end=False,
+            report_to=[],
+        )
 
-    training_args = TrainingArguments(
-        output_dir=str(output_dir),
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum_steps,
-        num_train_epochs=args.num_epochs,
-        learning_rate=args.learning_rate,
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=dataset,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
+        print(f"[INFO] Starting training phase {idx}/{len(phase_specs)} on {phase_path} (epochs={phase_epochs})...")
+        trainer.train()
+        trainer.save_state()
+        phase_history.append(
+            {
+                "label": phase_label,
+                "text_path": str(phase_path),
+                "dataset_blocks": len(dataset),
+                "approx_tokens": len(dataset) * args.max_seq_length,
+                "epochs": phase_epochs,
+            }
+        )
 
-        do_eval=False,
-
-        logging_steps=LOGGING_STEPS,
-        save_steps=SAVE_STEPS,
-        save_total_limit=2,
-
-        fp16=False,
-        bf16=torch.cuda.is_bf16_supported(),
-
-        load_best_model_at_end=False,
-        report_to=[],
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-    )
-
-    print("[INFO] Starting training...")
-    trainer.train()
     print("[INFO] Training complete. Saving final adapter...")
-    trainer.save_model(str(output_dir))
+    model.save_pretrained(str(output_dir))
 
     # Save tokenizer snapshot
     tokenizer.save_pretrained(str(tokenizer_save_dir))
     print(f"[INFO] Done. LoRA + tokenizer saved to: {output_dir}")
 
-    dataset_blocks = len(train_dataset)
-    approx_tokens = dataset_blocks * args.max_seq_length
     metadata_path = Path(args.metadata_out) if args.metadata_out else output_dir / "metadata.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -346,9 +373,8 @@ def main():
         "text_path": str(text_path),
         "output_dir": str(output_dir),
         "tokenizer_dir": str(tokenizer_save_dir),
+        "phase_history": phase_history,
         "dataset_lines": count_lines(text_path),
-        "dataset_blocks": dataset_blocks,
-        "approx_tokens": approx_tokens,
         "num_epochs": args.num_epochs,
         "learning_rate": args.learning_rate,
         "batch_size": args.batch_size,
