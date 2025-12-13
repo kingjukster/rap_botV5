@@ -152,6 +152,34 @@ def is_elite_artist(artist: str) -> bool:
     return False
 
 
+def load_artist_allowlist(path: str | None) -> set[str]:
+    """Optional helper to load newline-separated artist names for allowlist mode."""
+    if not path:
+        return set()
+    allow: set[str] = set()
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            name = normalize_name(raw.strip())
+            if name:
+                allow.add(name)
+    return allow
+
+
+def artist_passes_filter(
+    artist: str,
+    mode: str,
+    allowlist: set[str] | None = None,
+) -> bool:
+    if mode == "all":
+        return True
+    if mode == "allowlist":
+        if allowlist is None or not allowlist:
+            return False
+        return normalize_name(artist) in allowlist
+    # default: elite
+    return is_elite_artist(artist)
+
+
 # ---------------------------------------------------------------------------
 # GENRE / LANGUAGE FILTERS
 # ---------------------------------------------------------------------------
@@ -732,6 +760,8 @@ def run_pass_filter(
     expected_total_rows: int,
     rhyme_lookup: Dict[str, int],
     siamese_scorer,   # NEW
+    artist_filter_mode: str = "elite",
+    artist_allowlist: set[str] | None = None,
 ):
     """
     Pass A:
@@ -750,6 +780,14 @@ def run_pass_filter(
     print(f"[PASS A] Filtering & cleaning from: {csv_path}")
     print(f"[PASS A] Writing meta to: {top_tier_meta_csv}")
     print(f"[PASS A] Writing bars to: {top_tier_bars_csv}")
+    print(
+        f"[PASS A] Artist filter mode: {artist_filter_mode}"
+        + (
+            f" (allowlist entries={len(artist_allowlist)})"
+            if artist_filter_mode == "allowlist" and artist_allowlist
+            else ""
+        )
+    )
 
     if rhyme_lookup is None:
         raise ValueError(
@@ -840,8 +878,12 @@ def run_pass_filter(
             if not is_rap_track(row):
                 continue
 
-            # Restrict to elite artists
-            if not is_elite_artist(artist):
+            # Artist filtering strategy
+            if not artist_passes_filter(
+                artist=artist,
+                mode=artist_filter_mode,
+                allowlist=artist_allowlist,
+            ):
                 continue
 
             lines = clean_lyrics_to_lines(lyrics)
@@ -1391,6 +1433,19 @@ def parse_args():
         help="Batch size for Siamese embed_batch in Pass B.",
     )
     parser.add_argument(
+        "--artist_filter_mode",
+        type=str,
+        default="elite",
+        choices=["elite", "all", "allowlist"],
+        help="Artist filtering strategy during Pass A.",
+    )
+    parser.add_argument(
+        "--artist_allowlist",
+        type=str,
+        default=None,
+        help="Path to newline-separated artist names when --artist_filter_mode=allowlist.",
+    )
+    parser.add_argument(
         "--auto_expand_rhyme_groups",
         action="store_true",
         help="After export, run update_rhyme_groups.py to refresh rhymes_grouped.csv.",
@@ -1466,6 +1521,19 @@ def main():
         print(f"[GLOBAL] Siamese rhyme model ready on device: {siamese_for_rhymes.device}")
 
 
+    artist_allowlist = None
+    if args.artist_filter_mode == "allowlist":
+        artist_allowlist = load_artist_allowlist(args.artist_allowlist)
+        print(
+            f"[GLOBAL] Loaded {len(artist_allowlist)} artists from allowlist "
+            f"({args.artist_allowlist})"
+        )
+        if not artist_allowlist:
+            print(
+                "[WARN] Allowlist is empty; Pass A will drop every song. "
+                "Double-check --artist_allowlist."
+            )
+
     if args.mode in ("all", "filter"):
         run_pass_filter(
             csv_path=csv_path,
@@ -1476,6 +1544,8 @@ def main():
             expected_total_rows=args.expected_total_rows,
             rhyme_lookup=rhyme_lookup,
             siamese_scorer=siamese_for_rhymes,
+            artist_filter_mode=args.artist_filter_mode,
+            artist_allowlist=artist_allowlist,
         )
 
 

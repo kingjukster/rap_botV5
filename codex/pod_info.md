@@ -22,9 +22,9 @@ This pod hosts the entire Rap Bot / Blacklight training and generation pipeline,
 ## 2. Compute Resources
 
 ### GPU
-- **Model:** NVIDIA **RTX A5000**
+- **Model:** NVIDIA **RTX A6000**
 - **Count:** 1 GPU
-- **VRAM:** ~24 GB
+- **VRAM:** ~48 GB
 
 ### CPU
 - **vCPUs:** 9 virtual CPUs
@@ -45,10 +45,10 @@ This pod hosts the entire Rap Bot / Blacklight training and generation pipeline,
 
 | Component | Cost |
 |----------|------|
-| Compute (A5000) | **$0.27/hr** |
+| Compute (A6000) | **consult RunPod plan (~$0.80–$1.00/hr on demand)** |
 | Container Storage | $0.004/hr |
 | Volume Storage | $0.014/hr |
-| **Estimated Total** | **$0.29/hr** |
+| **Estimated Total** | **$0.86–$1.02/hr** |
 
 (*Prices reflect RunPod's on-demand A5000 tier at the time captured.*)
 
@@ -117,7 +117,7 @@ ssh root@69.30.85.220 -p 22133 -i ~/.ssh/id_ed25519
 
 ### ✔ LoRA fine-tuning (Stage 1 / Stage 2)
 Ideal for:
-- Qwen 7B in 4-bit quantization  
+- Qwen 7B–14B in FP16 or 4-bit quantization  
 - Training with PEFT/QLoRA  
 - Running rhyme-scoring models  
 
@@ -128,7 +128,7 @@ Handles large weighted corpora and multi-hour fine-tuning well.
 Supports:
 - Multiple sampling candidates  
 - Rhyme-scoring loops  
-- Structural generation  
+- Structural generation (Qwen 7B–14B)  
 
 ### ✔ Rhyme-scoring workloads  
 The GPU accelerates Siamese inference effectively.
@@ -138,19 +138,20 @@ The GPU accelerates Siamese inference effectively.
 ## 7. Performance Notes
 
 ### Strengths
-- Excellent cost-to-performance ratio  
-- Enough VRAM for all Qwen 7B pipelines  
+- Excellent cost-to-performance ratio for 48 GB class  
+- Enough VRAM for Qwen 7B and 14B pipelines (FP16 or 4-bit)  
 - Stable for long training runs  
 
 ### Limitations
-- Cannot support 14B–70B-class models  
-- Must stay in FP16/4-bit modes  
+- Cannot support 30B–70B-class models on a single card  
+- Qwen 70B still requires multi-GPU or heavy CPU/NVMe offload  
+- Best results achieved in FP16/4-bit modes  
 
 ### Upgrade Path
-Move to **A6000 (48GB)** for:
+Move to **H100/A100 80GB** or multi-GPU setups for:
+- Native 70B-class hosting  
 - Larger sequences  
-- Bigger batch sizes  
-- Faster Stage-3 training  
+- Faster Stage-3 training with massive batches  
 
 ---
 

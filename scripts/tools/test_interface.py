@@ -3,7 +3,7 @@
 test.py – structure-aware generation sanity check
 
 Modes:
-  --mode base  : Qwen2.5-7B-Instruct base only (no LoRA)
+  --mode base  : Qwen2.5-14B-Instruct base only (no LoRA)
   --mode lora  : Base + LoRA from configured adapter directory
   --mode both  : Run base first, then LoRA, same prompt
 

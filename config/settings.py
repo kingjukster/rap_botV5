@@ -71,7 +71,7 @@ class Settings:
 
 
 DEFAULTS: Dict[str, str] = {
-    "base_model_name": "Qwen/Qwen2.5-7B-Instruct",
+    "base_model_name": "Qwen/Qwen2.5-14B-Instruct",
     "adapter_dir": "lora_elite_v2",
     "tokenizer_dir": "elite_tokenizer",
     "rhyme_groups_csv": "data/rhymes_grouped.csv",

@@ -16,6 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+try:
+    from langdetect import LangDetectException, detect_langs
+except Exception:  # pragma: no cover - optional dependency
+    detect_langs = None  # type: ignore
+
+    class LangDetectException(Exception):  # type: ignore
+        pass
+
 META_RE = re.compile(r"<([^>=]+)=([^>]+)>")
 BAR_RE = re.compile(r"^\[BAR\]\s*(.*)")
 TAG_RHY = re.compile(r"\[RHY=([A-Z])\]")
@@ -34,6 +42,13 @@ PROFANITY = {
     "dick",
     "pussy",
 }
+
+HOOK_KEYWORDS = {"hook", "chorus", "refrain"}
+INTERLUDE_KEYWORDS = {"interlude", "skit", "intermission"}
+BRIDGE_KEYWORDS = {"bridge", "breakdown"}
+FILLER_TOKENS = {"yeah", "yo", "uh", "uhh", "nah", "ok", "okay"}
+LANGUAGE_METHOD = "langdetect" if detect_langs else "ascii_ratio"
+HOOK_REPEAT_THRESHOLD = 3
 
 
 def parse_meta(raw: str) -> Dict[str, str]:
@@ -152,17 +167,49 @@ def sliding_metrics(bars: List[Bar], window: int) -> List[Dict[str, float]]:
     return metrics
 
 
-def infer_section_hint(text: str, seen_counts: Counter) -> str:
+def infer_section_hint(text: str, seen_counts: Counter, full_counts: Counter) -> str:
     normalized = normalized_text(text)
     if not normalized:
         return "other"
-    count = seen_counts[normalized]
+    tokens = normalized.split()
+    token_count = len(tokens)
+    total_seen = full_counts[normalized]
+    lower = normalized.lower()
+    if any(keyword in lower for keyword in INTERLUDE_KEYWORDS):
+        section = "interlude"
+    elif any(keyword in lower for keyword in BRIDGE_KEYWORDS):
+        section = "bridge"
+    elif any(keyword in lower for keyword in HOOK_KEYWORDS):
+        section = "hook"
+    elif total_seen >= HOOK_REPEAT_THRESHOLD and token_count <= 10:
+        section = "hook"
+    elif total_seen >= 2 and token_count <= 8:
+        section = "hook"
+    elif token_count <= 3 or all(token in FILLER_TOKENS for token in tokens):
+        section = "interlude"
+    elif token_count <= 5:
+        section = "filler"
+    else:
+        section = "verse"
     seen_counts[normalized] += 1
-    if count >= 2:
-        return "hook"
-    if len(normalized.split()) <= 4:
-        return "filler"
-    return "verse"
+    return section
+
+
+def detect_language_label(text: str) -> Tuple[str, float]:
+    sample = text.strip()
+    if not sample:
+        return "unknown", 0.0
+    if detect_langs:
+        try:
+            langs = detect_langs(sample)
+        except LangDetectException:
+            return "unknown", 0.0
+        if not langs:
+            return "unknown", 0.0
+        best = max(langs, key=lambda item: item.prob)
+        return best.lang, best.prob
+    score = ascii_ratio(sample)
+    return ("en", score) if score >= 0.9 else ("unknown", score)
 
 
 def process_corpus(
@@ -171,6 +218,9 @@ def process_corpus(
     summary_path: Path,
     window_size: int = 4,
     english_threshold: float = 0.85,
+    min_lang_prob: float = 0.7,
+    ascii_fallback: float = 0.92,
+    keep_hooks: bool = False,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,13 +233,30 @@ def process_corpus(
             track_counter += 1
             if not bars:
                 continue
+            track_text = " ".join(bar.text for bar in bars)
+            lang_code, lang_score = detect_language_label(track_text)
+            ascii_score_track = ascii_ratio(track_text)
+            english_track = (
+                (lang_code == "en" and lang_score >= min_lang_prob)
+                or (lang_code == "unknown" and ascii_score_track >= ascii_fallback)
+            )
+            if not english_track:
+                stats["tracks_dropped_language"] += 1
+                continue
+            stats["tracks_retained"] += 1
             sliding = sliding_metrics(bars, window_size)
             seen_lines: Counter = Counter()
+            full_counts = Counter(normalized_text(bar.text) for bar in bars if normalized_text(bar.text))
             for idx, bar in enumerate(bars):
                 ascii_score = ascii_ratio(bar.text)
                 tokens = WORD_RE.findall(bar.text.lower())
                 alpha_ratio = (len(tokens) / max(1, len(bar.text.split()))) if bar.text.strip() else 0.0
                 english_like = ascii_score >= english_threshold and alpha_ratio >= 0.5
+                section_hint = infer_section_hint(bar.text, seen_lines, full_counts)
+                stats[f"section_detected_{section_hint}"] += 1
+                if not keep_hooks and section_hint == "hook":
+                    stats["hook_bars_dropped"] += 1
+                    continue
                 entry = {
                     "track_index": track_idx,
                     "artist": meta.get("artist"),
@@ -205,7 +272,9 @@ def process_corpus(
                     "alpha_ratio": round(alpha_ratio, 4),
                     "english_like": english_like,
                     "has_profanity": has_profanity(bar.text),
-                    "section_hint": infer_section_hint(bar.text, seen_lines),
+                    "section": section_hint,
+                    "language": lang_code,
+                    "language_score": round(lang_score, 4),
                 }
                 entry.update(sliding[idx])
                 rhyme_diversity.append(sliding[idx]["unique_rhymes_window"])
@@ -214,18 +283,39 @@ def process_corpus(
                 stats["total_bars"] += 1
                 if english_like:
                     stats["english_like_bars"] += 1
-                if entry["section_hint"] == "hook":
+                stats[f"section_kept_{entry['section']}"] += 1
+                if entry["section"] == "hook":
                     stats["hook_bars"] += 1
                 if bar.intensity and bar.intensity.upper() == "DENSE":
                     stats["dense_bars"] += 1
 
     summary = {
         "total_tracks": track_counter,
+        "tracks_retained": stats.get("tracks_retained", 0),
+        "tracks_dropped_language": stats.get("tracks_dropped_language", 0),
         "total_bars": stats.get("total_bars", 0),
         "english_like_ratio": (stats.get("english_like_bars", 0) / max(1, stats.get("total_bars", 0))),
         "hook_ratio": (stats.get("hook_bars", 0) / max(1, stats.get("total_bars", 0))),
         "dense_ratio": (stats.get("dense_bars", 0) / max(1, stats.get("total_bars", 0))),
         "avg_unique_rhymes_window": (sum(rhyme_diversity) / max(1, len(rhyme_diversity))),
+        "hook_bars_dropped": stats.get("hook_bars_dropped", 0),
+        "section_counts": {
+            "verse": stats.get("section_kept_verse", 0),
+            "hook": stats.get("section_kept_hook", 0),
+            "interlude": stats.get("section_kept_interlude", 0),
+            "filler": stats.get("section_kept_filler", 0),
+            "bridge": stats.get("section_kept_bridge", 0),
+            "other": stats.get("section_kept_other", 0),
+        },
+        "detected_section_counts": {
+            "verse": stats.get("section_detected_verse", 0),
+            "hook": stats.get("section_detected_hook", 0),
+            "interlude": stats.get("section_detected_interlude", 0),
+            "filler": stats.get("section_detected_filler", 0),
+            "bridge": stats.get("section_detected_bridge", 0),
+            "other": stats.get("section_detected_other", 0),
+        },
+        "language_method": LANGUAGE_METHOD,
     }
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
@@ -241,6 +331,23 @@ def parse_args():
         type=float,
         default=0.85,
         help="Minimum ASCII ratio to mark a bar as English-like.",
+    )
+    parser.add_argument(
+        "--min_lang_prob",
+        type=float,
+        default=0.7,
+        help="Minimum probability from language detector to keep a track.",
+    )
+    parser.add_argument(
+        "--ascii_fallback",
+        type=float,
+        default=0.92,
+        help="Fallback ASCII ratio threshold to keep a track when language detection is unavailable.",
+    )
+    parser.add_argument(
+        "--keep_hooks",
+        action="store_true",
+        help="Keep lines labeled as hooks instead of filtering them out.",
     )
     return parser.parse_args()
 
@@ -258,6 +365,9 @@ def main():
         summary_path=summary_path,
         window_size=args.window_size,
         english_threshold=args.english_threshold,
+        min_lang_prob=args.min_lang_prob,
+        ascii_fallback=args.ascii_fallback,
+        keep_hooks=args.keep_hooks,
     )
     print(f"[DONE] Enriched corpus written to {output_path}")
     print(f"[DONE] Summary written to {summary_path}")

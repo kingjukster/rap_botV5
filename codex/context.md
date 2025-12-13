@@ -34,7 +34,7 @@ Rap Bot / Blacklight is a **multi‑stage expert rap generation engine** focused
 - Pipeline‑driven refinement across generations  
 
 The system combines:
-1. **Fine‑tuned Qwen 7B model**  
+1. **Fine‑tuned Qwen 14B model**  
 2. **Rhyme enforcement engine (CSV + Siamese model)**  
 3. **Structure‑aware generation loops**  
 4. **External critic scoring → weighted dataset → Stage‑3 model training**  
@@ -117,7 +117,7 @@ Each file below is described in detail.
 
 # 3. Models and Learning Components
 
-## 3.1 Base Model: Qwen 2.5–7B
+## 3.1 Base Model: Qwen 2.5–14B
 Chosen for:
 - Strong multilingual tokenization  
 - High instruction fidelity  

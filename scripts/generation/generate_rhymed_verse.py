@@ -3,7 +3,7 @@
 generate_rhymed_verse.py
 
 Generate a multi-bar verse with a rhyme scheme (e.g. AAAA, AABB, ABAB)
-using your QLoRA-trained Qwen2.5-7B-Instruct model + LoRA adapter.
+using your QLoRA-trained Qwen2.5-14B-Instruct model + LoRA adapter.
 
 Hybrid scoring:
 - Original structural score (rhyme groups, internal multis, coherence, etc.).
@@ -900,7 +900,7 @@ def load_rap_model(adapter_dir: str, tokenizer_dir: str):
     print(f"__ Adapter expects base model: {base_model_name}")
 
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available, but GPU is expected for Qwen2.5-7B.")
+        raise RuntimeError("CUDA is not available, but GPU is expected for Qwen2.5-14B.")
 
     print(f"__ Loading tokenizer from: {tokenizer_dir}")
     tokenizer = AutoTokenizer.from_pretrained(

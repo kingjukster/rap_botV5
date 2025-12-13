@@ -1,4 +1,4 @@
-base_model_name: Qwen/Qwen2.5-7B-Instruct
+base_model_name: Qwen/Qwen2.5-14B-Instruct
 
 paths:
   adapter_dir: lora_elite_v2
