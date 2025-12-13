@@ -1,0 +1,557 @@
+{
+  "generated_entries": 1188,
+  "scored_entries": 66,
+  "total_weight": 610,
+  "rejections": {
+    "missing_critic": 4,
+    "below_overall": 1117,
+    "below_average": 0,
+    "duplicate": 0,
+    "low_unique_endings": 0,
+    "ending_repeat": 1
+  },
+  "critic_sources": {
+    "remote": 1184
+  },
+  "min_overall_applied": 2.4,
+  "min_average_applied": 2.0,
+  "score_summary": {
+    "overall_score": {
+      "count": 66,
+      "mean": 2.5227272510528564,
+      "std": 0.10414945334196091,
+      "min": 2.5,
+      "p25": 2.5,
+      "median": 2.5,
+      "p75": 2.5,
+      "max": 3.0
+    },
+    "depth_score": {
+      "count": 66,
+      "mean": 2.5,
+      "std": 0.5573204159736633,
+      "min": 2.0,
+      "p25": 2.0,
+      "median": 2.0,
+      "p75": 3.0,
+      "max": 4.0
+    },
+    "coherence_score": {
+      "count": 66,
+      "mean": 2.5303030014038086,
+      "std": 0.48366332054138184,
+      "min": 2.0,
+      "p25": 2.0,
+      "median": 2.75,
+      "p75": 3.0,
+      "max": 3.0
+    },
+    "originality_score": {
+      "count": 66,
+      "mean": 2.5,
+      "std": 0.30151134729385376,
+      "min": 2.0,
+      "p25": 2.5,
+      "median": 2.5,
+      "p75": 2.5,
+      "max": 3.5
+    }
+  },
+  "verse_score_summary": {
+    "count": 66,
+    "mean": 0.44526776671409607,
+    "std": 0.13778598606586456,
+    "min": 0.18192408978939056,
+    "p25": 0.3395867347717285,
+    "median": 0.44288164377212524,
+    "p75": 0.5480882525444031,
+    "max": 0.7555370330810547
+  },
+  "bar_count_summary": {
+    "count": 66,
+    "mean": 16.0,
+    "std": 0.0,
+    "min": 16.0,
+    "p25": 16.0,
+    "median": 16.0,
+    "p75": 16.0,
+    "max": 16.0
+  },
+  "timestamp_range": {
+    "min": "2025-12-09T08:36:16Z",
+    "max": "2025-12-11T04:10:55Z"
+  },
+  "top_seeds": [
+    {
+      "seed": "smoldering punchlines cooling on alloy workbenches",
+      "count": 2,
+      "avg_overall": 2.75,
+      "accept_rate": 0.0,
+      "avg_verse_score": 0.24754616220792136
+    },
+    {
+      "seed": "metal fingers calibrating fractured loops in the furnace",
+      "count": 3,
+      "avg_overall": 2.6666666666666665,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.43691324881381455
+    },
+    {
+      "seed": "operation doomsday broadcast from the shadows",
+      "count": 5,
+      "avg_overall": 2.6,
+      "accept_rate": 0.4,
+      "avg_verse_score": 0.34519777093614856
+    },
+    {
+      "seed": "villain with the mask plotting on the next move",
+      "count": 8,
+      "avg_overall": 2.5,
+      "accept_rate": 0.375,
+      "avg_verse_score": 0.5210668798225622
+    },
+    {
+      "seed": "rusted synth wires tangled in a notebook of ciphers",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.3874391675823265
+    },
+    {
+      "seed": "vectors of rhyme spiraling from a dented steel mask",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5180114840733863
+    },
+    {
+      "seed": "forgotten mixtapes whispering secrets to the villain",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.3333333333333333,
+      "avg_verse_score": 0.36614768852790197
+    },
+    {
+      "seed": "adversarial metrics plotted across stained graph paper",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.5125447712424728
+    },
+    {
+      "seed": "comic book margins filled with cryptic alchemical notes",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.6100203084448973
+    },
+    {
+      "seed": "ultrasonic murmurs guiding the villain\u2019s next scheme",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5544693667441607
+    }
+  ],
+  "bottom_seeds": [
+    {
+      "seed": "villain with the mask plotting on the next move",
+      "count": 8,
+      "avg_overall": 2.5,
+      "accept_rate": 0.375,
+      "avg_verse_score": 0.5210668798225622
+    },
+    {
+      "seed": "rusted synth wires tangled in a notebook of ciphers",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.3874391675823265
+    },
+    {
+      "seed": "vectors of rhyme spiraling from a dented steel mask",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5180114840733863
+    },
+    {
+      "seed": "forgotten mixtapes whispering secrets to the villain",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.3333333333333333,
+      "avg_verse_score": 0.36614768852790197
+    },
+    {
+      "seed": "adversarial metrics plotted across stained graph paper",
+      "count": 3,
+      "avg_overall": 2.5,
+      "accept_rate": 0.6666666666666666,
+      "avg_verse_score": 0.5125447712424728
+    },
+    {
+      "seed": "comic book margins filled with cryptic alchemical notes",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.6100203084448973
+    },
+    {
+      "seed": "ultrasonic murmurs guiding the villain\u2019s next scheme",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.5544693667441607
+    },
+    {
+      "seed": "cadence residue etched into rusted metal schematics",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.4908523055414359
+    },
+    {
+      "seed": "gravity-warped flows aligning under flickering bulbs",
+      "count": 2,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.38483796007931237
+    },
+    {
+      "seed": "ciphered monologues drifting through corroded vents",
+      "count": 1,
+      "avg_overall": 2.5,
+      "accept_rate": 1.0,
+      "avg_verse_score": 0.706110401948293
+    }
+  ],
+  "scheme_summary": [
+    {
+      "scheme": "AABBCCDDEEFFGGHH",
+      "count": 3,
+      "avg_overall": 2.6666666666666665
+    },
+    {
+      "scheme": "AABBAABBAABBAABB",
+      "count": 56,
+      "avg_overall": 2.517857142857143
+    },
+    {
+      "scheme": "AAAABBBBCCCCDDDD",
+      "count": 6,
+      "avg_overall": 2.5
+    },
+    {
+      "scheme": "ABCABCABCABCABCA",
+      "count": 1,
+      "avg_overall": 2.5
+    }
+  ],
+  "tag_counts": [
+    [
+      "graffiti",
+      6
+    ],
+    [
+      "nerdcore",
+      6
+    ],
+    [
+      "broadcast",
+      3
+    ],
+    [
+      "villain",
+      3
+    ],
+    [
+      "retro",
+      3
+    ],
+    [
+      "archives",
+      1
+    ],
+    [
+      "mystery",
+      1
+    ]
+  ],
+  "histograms": {
+    "overall_score": {
+      "counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        63,
+        0,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "edges": [
+        0.0,
+        0.20833333333333334,
+        0.4166666666666667,
+        0.625,
+        0.8333333333333334,
+        1.0416666666666667,
+        1.25,
+        1.4583333333333335,
+        1.6666666666666667,
+        1.875,
+        2.0833333333333335,
+        2.291666666666667,
+        2.5,
+        2.7083333333333335,
+        2.916666666666667,
+        3.125,
+        3.3333333333333335,
+        3.541666666666667,
+        3.75,
+        3.9583333333333335,
+        4.166666666666667,
+        4.375,
+        4.583333333333334,
+        4.791666666666667,
+        5.0
+      ]
+    },
+    "depth_score": {
+      "counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        35,
+        0,
+        0,
+        0,
+        0,
+        29,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "edges": [
+        0.0,
+        0.20833333333333334,
+        0.4166666666666667,
+        0.625,
+        0.8333333333333334,
+        1.0416666666666667,
+        1.25,
+        1.4583333333333335,
+        1.6666666666666667,
+        1.875,
+        2.0833333333333335,
+        2.291666666666667,
+        2.5,
+        2.7083333333333335,
+        2.916666666666667,
+        3.125,
+        3.3333333333333335,
+        3.541666666666667,
+        3.75,
+        3.9583333333333335,
+        4.166666666666667,
+        4.375,
+        4.583333333333334,
+        4.791666666666667,
+        5.0
+      ]
+    },
+    "coherence_score": {
+      "counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        29,
+        0,
+        0,
+        4,
+        0,
+        33,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "edges": [
+        0.0,
+        0.20833333333333334,
+        0.4166666666666667,
+        0.625,
+        0.8333333333333334,
+        1.0416666666666667,
+        1.25,
+        1.4583333333333335,
+        1.6666666666666667,
+        1.875,
+        2.0833333333333335,
+        2.291666666666667,
+        2.5,
+        2.7083333333333335,
+        2.916666666666667,
+        3.125,
+        3.3333333333333335,
+        3.541666666666667,
+        3.75,
+        3.9583333333333335,
+        4.166666666666667,
+        4.375,
+        4.583333333333334,
+        4.791666666666667,
+        5.0
+      ]
+    },
+    "originality_score": {
+      "counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        10,
+        0,
+        0,
+        48,
+        0,
+        6,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "edges": [
+        0.0,
+        0.20833333333333334,
+        0.4166666666666667,
+        0.625,
+        0.8333333333333334,
+        1.0416666666666667,
+        1.25,
+        1.4583333333333335,
+        1.6666666666666667,
+        1.875,
+        2.0833333333333335,
+        2.291666666666667,
+        2.5,
+        2.7083333333333335,
+        2.916666666666667,
+        3.125,
+        3.3333333333333335,
+        3.541666666666667,
+        3.75,
+        3.9583333333333335,
+        4.166666666666667,
+        4.375,
+        4.583333333333334,
+        4.791666666666667,
+        5.0
+      ]
+    },
+    "verse_score": {
+      "counts": [
+        2,
+        2,
+        0,
+        3,
+        6,
+        3,
+        3,
+        2,
+        7,
+        3,
+        2,
+        4,
+        4,
+        5,
+        2,
+        3,
+        3,
+        4,
+        3,
+        1,
+        1,
+        1,
+        0,
+        2
+      ],
+      "edges": [
+        0.1819240855673949,
+        0.20582462421928843,
+        0.22972516287118197,
+        0.2536257015230755,
+        0.277526240174969,
+        0.3014267788268626,
+        0.3253273174787561,
+        0.34922785613064966,
+        0.37312839478254317,
+        0.3970289334344367,
+        0.42092947208633025,
+        0.4448300107382238,
+        0.46873054939011727,
+        0.49263108804201083,
+        0.5165316266939044,
+        0.540432165345798,
+        0.5643327039976914,
+        0.588233242649585,
+        0.6121337813014786,
+        0.636034319953372,
+        0.6599348586052656,
+        0.6838353972571591,
+        0.7077359359090527,
+        0.7316364745609463,
+        0.7555370132128397
+      ]
+    }
+  }
+}
