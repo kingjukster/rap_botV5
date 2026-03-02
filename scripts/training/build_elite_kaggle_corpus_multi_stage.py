@@ -34,6 +34,16 @@ Usage example (all passes):
       --min_bars 16 \
       --expected_total_rows 5134856 \
       --progress_every 50
+
+Without Siamese model (phonetic rhyme only):
+
+    python build_elite_kaggle_corpus_multi_stage.py \
+      --mode all \
+      --download_dir /workspace/data_kaggle \
+      --output_csv data/elite_kaggle_lines_clean.csv \
+      --output_txt data/elite_kaggle_corpus_clean.txt \
+      --rhyme_groups_csv data/rhymes_grouped.csv \
+      --no_siamese
 """
 
 import sys
@@ -211,14 +221,17 @@ def is_rap_track(row: pd.Series) -> bool:
 
     tag_l = tag.lower() if isinstance(tag, str) else ""
 
+    # Resolve language: prefer language, fallback to language_cld3 / language_ft
+    # (Genius: language is NaN when cld3 != ft; cld3/ft have ~66% en)
     lang = ""
-    for col in ["language", "language_detected", "lyrics_language"]:
-        if col in row and isinstance(row[col], str):
-            lang = row[col]
+    for col in ["language", "language_cld3", "language_ft", "language_detected", "lyrics_language"]:
+        val = row.get(col)
+        if pd.notna(val) and isinstance(val, str) and str(val).strip():
+            lang = str(val).strip()
             break
-    lang_l = lang.lower() if isinstance(lang, str) else ""
+    lang_l = lang.lower() if lang else ""
 
-    # Must be English-ish
+    # Must be English-ish (when we have a language value)
     if lang_l and not any(k in lang_l for k in ["en", "eng", "english"]):
         return False
 
@@ -226,6 +239,48 @@ def is_rap_track(row: pd.Series) -> bool:
         return False
 
     return any(k in tag_l for k in RAP_TAG_KEYWORDS)
+
+
+def _parse_year(val) -> int | None:
+    """Parse year from row; return int or None if invalid/missing."""
+    if pd.isna(val):
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_views(val) -> int | None:
+    """Parse views from row; return int or None if invalid/missing."""
+    if pd.isna(val):
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return None
+
+
+def row_passes_views_year_filter(
+    row: pd.Series,
+    min_views: int | None,
+    year_min: int | None,
+    year_max: int | None,
+) -> bool:
+    """Return True if row passes optional views/year filters."""
+    if min_views is not None and min_views > 0:
+        v = _parse_views(row.get("views"))
+        if v is not None and v < min_views:
+            return False
+    if year_min is not None:
+        y = _parse_year(row.get("year"))
+        if y is not None and y < year_min:
+            return False
+    if year_max is not None:
+        y = _parse_year(row.get("year"))
+        if y is not None and y > year_max:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -759,9 +814,13 @@ def run_pass_filter(
     min_bars: int,
     expected_total_rows: int,
     rhyme_lookup: Dict[str, int],
-    siamese_scorer,   # NEW
+    siamese_scorer,   # None when use_phonetic_rhyme=True
     artist_filter_mode: str = "elite",
     artist_allowlist: set[str] | None = None,
+    min_views: int | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    use_phonetic_rhyme: bool = False,
 ):
     """
     Pass A:
@@ -788,6 +847,15 @@ def run_pass_filter(
             else ""
         )
     )
+    if min_views is not None and min_views > 0:
+        print(f"[PASS A] Min views filter: {min_views:,}")
+    if year_min is not None or year_max is not None:
+        print(
+            f"[PASS A] Year range: {year_min if year_min is not None else 'any'} - "
+            f"{year_max if year_max is not None else 'any'}"
+        )
+    if use_phonetic_rhyme:
+        print("[PASS A] Using phonetic rhyme lookup (--no_siamese); Siamese model not required.")
 
     if rhyme_lookup is None:
         raise ValueError(
@@ -878,6 +946,10 @@ def run_pass_filter(
             if not is_rap_track(row):
                 continue
 
+            # Optional views / year filters
+            if not row_passes_views_year_filter(row, min_views, year_min, year_max):
+                continue
+
             # Artist filtering strategy
             if not artist_passes_filter(
                 artist=artist,
@@ -895,29 +967,45 @@ def run_pass_filter(
 
             total_songs_considered += 1
 
-            song_id = f"chunk{chunk_idx}_row{idx}"
+            raw_id = row.get("id")
+            song_id = (
+                str(raw_id)
+                if (pd.notna(raw_id) and str(raw_id).strip())
+                else f"chunk{chunk_idx}_row{idx}"
+            )
             num_bars = len(lines)
 
-            # 1) Siamese-based rhyme clusters for bar endings
-            rhyme_group_ids, rhyme_letters = compute_siamese_end_rhyme_groups(
-                lines,
-                scorer=siamese_scorer,
-                threshold=0.70,        # tune as needed
-                batch_size=64,
-            )
-            
-            # 2) Syllables + internal density (can still use rhyme_lookup here if you like)
-            syllable_counts = []
-            syllable_buckets = []
-            internal_tags = []
-            
-            for ln in lines:
-                sc = count_syllables_line(ln)
-                sb = syllable_bucket(sc)
-                it = internal_rhyme_density(ln, rhyme_lookup) if rhyme_lookup is not None else "INT_NONE"
-                syllable_counts.append(sc)
-                syllable_buckets.append(sb)
-                internal_tags.append(it)
+            if use_phonetic_rhyme:
+                # Phonetic rhyme from rhymes_grouped.csv (no Siamese model needed)
+                (
+                    rhyme_group_ids,
+                    rhyme_letters,
+                    syllable_counts,
+                    syllable_buckets,
+                    internal_tags,
+                ) = annotate_song_bars(lines, rhyme_lookup)
+            else:
+                # Siamese-based rhyme clusters for bar endings
+                rhyme_group_ids, rhyme_letters = compute_siamese_end_rhyme_groups(
+                    lines,
+                    scorer=siamese_scorer,
+                    threshold=0.70,
+                    batch_size=64,
+                )
+                syllable_counts = []
+                syllable_buckets = []
+                internal_tags = []
+                for ln in lines:
+                    sc = count_syllables_line(ln)
+                    sb = syllable_bucket(sc)
+                    it = (
+                        internal_rhyme_density(ln, rhyme_lookup)
+                        if rhyme_lookup is not None
+                        else "INT_NONE"
+                    )
+                    syllable_counts.append(sc)
+                    syllable_buckets.append(sb)
+                    internal_tags.append(it)
     
             meta_writer.writerow([song_id, artist, title, num_bars])
 
@@ -964,8 +1052,48 @@ def run_pass_filter(
 
 
 # ---------------------------------------------------------------------------
-# PASS B: SIAMESE SCORING ON TOP-TIER BARS
+# PASS B: SIAMESE SCORING (OR DUMMY SCORES WHEN --no_siamese)
 # ---------------------------------------------------------------------------
+
+def run_pass_dummy_scores(
+    top_tier_meta_csv: str,
+    scores_csv: str,
+    default_score: float = 0.5,
+):
+    """
+    Write a scores CSV with a default score for each song (used when --no_siamese).
+    Pass C can then export all songs or use selection_mode=top_k.
+    """
+    if not os.path.exists(top_tier_meta_csv):
+        raise FileNotFoundError(
+            f"[PASS B] top_tier_meta_csv not found: {top_tier_meta_csv} "
+            "(run --mode filter first)"
+        )
+
+    print(f"[PASS B] Writing dummy scores from: {top_tier_meta_csv}")
+    print(f"[PASS B] All songs assigned score={default_score} (--no_siamese mode)")
+
+    os.makedirs(os.path.dirname(scores_csv), exist_ok=True)
+    with open(top_tier_meta_csv, "r", encoding="utf-8") as f_in:
+        reader = csv.DictReader(f_in)
+        rows = list(reader)
+
+    with open(scores_csv, "w", newline="", encoding="utf-8") as f_out:
+        writer = csv.writer(f_out)
+        writer.writerow(["song_id", "artist", "title", "num_bars", "song_score"])
+        for row in rows:
+            writer.writerow(
+                [
+                    row["song_id"],
+                    row["artist"],
+                    row["title"],
+                    row["num_bars"],
+                    f"{default_score:.6f}",
+                ]
+            )
+
+    print(f"[PASS B SUMMARY] Wrote {len(rows)} dummy scores to {scores_csv}")
+
 
 def run_pass_score(
     top_tier_bars_csv: str,
@@ -1353,6 +1481,12 @@ def parse_args():
         help="Directory containing trained Siamese model.",
     )
     parser.add_argument(
+        "--no_siamese",
+        action="store_true",
+        help="Use phonetic rhyme lookup instead of Siamese model. Skips Pass B scoring "
+             "(writes dummy scores). Requires --rhyme_groups_csv.",
+    )
+    parser.add_argument(
         "--rhyme_groups_csv",
         type=str,
         default=None,
@@ -1389,6 +1523,24 @@ def parse_args():
         type=int,
         default=16,
         help="Minimum number of lyric lines required for a song in Pass A.",
+    )
+    parser.add_argument(
+        "--min_views",
+        type=int,
+        default=None,
+        help="Drop tracks with views below this (Genius dataset). Default: no filter.",
+    )
+    parser.add_argument(
+        "--year_min",
+        type=int,
+        default=None,
+        help="Drop tracks released before this year. Default: no filter.",
+    )
+    parser.add_argument(
+        "--year_max",
+        type=int,
+        default=None,
+        help="Drop tracks released after this year. Default: no filter.",
     )
     parser.add_argument(
         "--progress_every",
@@ -1498,6 +1650,7 @@ def main():
     )
 
     rhyme_lookup = None
+    siamese_for_rhymes = None
     if args.mode in ("all", "filter"):
         if not args.rhyme_groups_csv:
             raise ValueError(
@@ -1507,18 +1660,27 @@ def main():
         rhyme_lookup = load_rhyme_lookup(args.rhyme_groups_csv)
         print(f"[GLOBAL] Loaded {len(rhyme_lookup):,} rhyme entries.")
 
-        print(f"[GLOBAL] Loading Siamese model for rhyme clustering from: {args.siamese_model_dir}")
-        siamese_for_rhymes = SiameseRhymeScorer(args.siamese_model_dir)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if hasattr(siamese_for_rhymes, "to"):
-            siamese_for_rhymes.to(device)
-            siamese_for_rhymes.device = device
-        elif hasattr(siamese_for_rhymes, "model"):
-            siamese_for_rhymes.model.to(device)
-            siamese_for_rhymes.device = device
+        if not args.no_siamese:
+            print(
+                f"[GLOBAL] Loading Siamese model for rhyme clustering from: "
+                f"{args.siamese_model_dir}"
+            )
+            siamese_for_rhymes = SiameseRhymeScorer(args.siamese_model_dir)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if hasattr(siamese_for_rhymes, "to"):
+                siamese_for_rhymes.to(device)
+                siamese_for_rhymes.device = device
+            elif hasattr(siamese_for_rhymes, "model"):
+                siamese_for_rhymes.model.to(device)
+                siamese_for_rhymes.device = device
+            else:
+                siamese_for_rhymes.device = device
+            print(
+                f"[GLOBAL] Siamese rhyme model ready on device: "
+                f"{siamese_for_rhymes.device}"
+            )
         else:
-            siamese_for_rhymes.device = device
-        print(f"[GLOBAL] Siamese rhyme model ready on device: {siamese_for_rhymes.device}")
+            print("[GLOBAL] --no_siamese: using phonetic rhyme only (no Siamese model).")
 
 
     artist_allowlist = None
@@ -1546,17 +1708,27 @@ def main():
             siamese_scorer=siamese_for_rhymes,
             artist_filter_mode=args.artist_filter_mode,
             artist_allowlist=artist_allowlist,
+            min_views=args.min_views,
+            year_min=args.year_min,
+            year_max=args.year_max,
+            use_phonetic_rhyme=args.no_siamese,
         )
-
 
     if args.mode in ("all", "score"):
-        run_pass_score(
-            top_tier_bars_csv=top_tier_bars_csv,
-            scores_csv=scores_csv,
-            siamese_model_dir=args.siamese_model_dir,
-            batch_size=args.score_batch_size,
-            progress_every=args.progress_every,
-        )
+        if args.no_siamese:
+            run_pass_dummy_scores(
+                top_tier_meta_csv=top_tier_meta_csv,
+                scores_csv=scores_csv,
+                default_score=0.5,
+            )
+        else:
+            run_pass_score(
+                top_tier_bars_csv=top_tier_bars_csv,
+                scores_csv=scores_csv,
+                siamese_model_dir=args.siamese_model_dir,
+                batch_size=args.score_batch_size,
+                progress_every=args.progress_every,
+            )
 
     if args.mode in ("all", "export"):
         run_pass_export(
@@ -1596,7 +1768,7 @@ def main():
                         output_csv=output_csv,
                         min_count=args.rhyme_update_min_count,
                         max_new_words=args.rhyme_update_max_new,
-                        siamese_model_dir=args.siamese_model_dir,
+                        siamese_model_dir=None if args.no_siamese else args.siamese_model_dir,
                         siamese_threshold=args.rhyme_update_threshold,
                     )
 
