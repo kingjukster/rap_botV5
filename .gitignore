@@ -99,4 +99,10 @@ data/*top_tier*.csv
 *.log
 *.tmp
 *.cache
-__pyca
+__pycache__
+
+# Environment / secrets
+.env
+
+# Iterative test artifacts (regenerated on run)
+data/iterative_tests/

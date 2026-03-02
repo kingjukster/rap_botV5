@@ -53,26 +53,72 @@ DEVICE = "cpu"  # keep this on CPU to avoid fighting Qwen for VRAM
 # Rhyme groups
 # ---------------------------------------------------------------------
 
-def load_rhyme_groups(csv_path: str | Path) -> Dict[str, int]:
+def load_rhyme_groups(csv_path: str | Path, validate: bool = True) -> Dict[str, int]:
     """
     Load a mapping word -> group_id from rhymes_grouped.csv.
+    
+    Args:
+        csv_path: Path to rhymes_grouped.csv
+        validate: If True, perform basic validation checks
+        
+    Returns:
+        Dictionary mapping word -> group_id
     """
     csv_path = Path(csv_path)
     if not csv_path.exists():
         print(f"[WARN] Rhyme CSV not found at {csv_path}, continuing with empty mapping.")
         return {}
-    df = pd.read_csv(csv_path)
+    
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as e:
+        print(f"[WARN] Failed to read rhyme CSV {csv_path}: {e}")
+        return {}
+    
+    # Validation checks
+    if validate:
+        if "word" not in df.columns or "group" not in df.columns:
+            print(f"[WARN] Rhyme CSV missing required columns (word, group). Found: {list(df.columns)}")
+            return {}
+        
+        # Check for empty dataframe
+        if len(df) == 0:
+            print(f"[WARN] Rhyme CSV is empty")
+            return {}
+    
     mapping: Dict[str, int] = {}
+    duplicate_count = 0
+    invalid_count = 0
+    
     for _, row in df.iterrows():
         w = str(row["word"]).strip().lower()
-        g = int(row["group"])
-        if w:
+        if not w:
+            continue
+        
+        try:
+            g = int(row["group"])
+            if g < 0:
+                invalid_count += 1
+                continue
+            
+            # Handle duplicates by keeping the last entry
+            if w in mapping and mapping[w] != g:
+                duplicate_count += 1
             mapping[w] = g
+        except (ValueError, KeyError):
+            invalid_count += 1
+            continue
+    
+    if validate and (duplicate_count > 0 or invalid_count > 0):
+        print(f"[WARN] Found {duplicate_count} duplicate words and {invalid_count} invalid entries in rhyme CSV")
+    
     print(f"[INFO] Loaded {len(mapping)} rhyme-group entries from {csv_path}")
     return mapping
 
 
-RHYME_GROUPS: Dict[str, int] = load_rhyme_groups(RHYME_CSV_PATH)
+# Load rhyme groups with validation
+# If loading fails, empty dict is returned and system falls back to phonetic analysis
+RHYME_GROUPS: Dict[str, int] = load_rhyme_groups(RHYME_CSV_PATH, validate=True)
 
 
 def get_rhyme_group(word: str):
@@ -222,3 +268,54 @@ class SiameseRhymeScorer:
         if ea.numel() == 0 or eb.numel() == 0:
             return 0.0
         return float(torch.dot(ea, eb).item())
+    
+    @torch.no_grad()
+    def score_pairs_batch(self, pairs: List[Tuple[str, str]]) -> List[float]:
+        """
+        Score multiple pairs in batch for efficiency.
+        
+        Args:
+            pairs: List of (text1, text2) tuples
+            
+        Returns:
+            List of similarity scores
+        """
+        if not self.enabled or not pairs:
+            return [0.0] * len(pairs)
+        
+        texts1 = [p[0] for p in pairs]
+        texts2 = [p[1] for p in pairs]
+        
+        embs1 = self.embed_batch(texts1)
+        embs2 = self.embed_batch(texts2)
+        
+        if embs1.shape[0] != embs2.shape[0]:
+            return [0.0] * len(pairs)
+        
+        # Compute cosine similarities
+        scores = []
+        for i in range(len(pairs)):
+            e1 = embs1[i]
+            e2 = embs2[i]
+            if e1.numel() == 0 or e2.numel() == 0:
+                scores.append(0.0)
+            else:
+                # Cosine similarity
+                dot_product = torch.dot(e1, e2).item()
+                norm1 = torch.norm(e1).item()
+                norm2 = torch.norm(e2).item()
+                if norm1 > 0 and norm2 > 0:
+                    score = dot_product / (norm1 * norm2)
+                    scores.append(float(score))
+                else:
+                    scores.append(0.0)
+        
+        return scores
+    
+    @property
+    def hidden_size(self) -> int:
+        """Get the hidden size of the encoder."""
+        if hasattr(self.encoder, 'config'):
+            return self.encoder.config.hidden_size
+        # Fallback
+        return 768
