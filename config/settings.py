@@ -181,6 +181,10 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
     cfg_data: Dict[str, Any] = {}
 
     cfg_path = config_path or os.environ.get("RAPBOT_CONFIG")
+    if not cfg_path:
+        default_cfg = base_dir / "config" / "rapbot.yaml"
+        if default_cfg.exists():
+            cfg_path = str(default_cfg)
     if cfg_path:
         cfg_file = _resolve_path(cfg_path, base_dir)
         if not cfg_file.exists():

@@ -5,7 +5,7 @@ paths:
   tokenizer_dir: elite_tokenizer
   rhyme_groups_csv: data/rhymes_grouped.csv
   siamese_model_dir: rhyme_siamese
-  elite_corpus_path: data/elite_kaggle_corpus_clean.txt
+  elite_corpus_path: data/elite_songs_corpus_clean_filtered.txt
   generation_log_path: data/generated_raw.jsonl
   scored_dataset_path: data/scored_dataset.jsonl
   weighted_corpus_path: data/weighted_corpus_stage3.txt

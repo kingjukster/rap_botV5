@@ -44,6 +44,18 @@ Without Siamese model (phonetic rhyme only):
       --output_txt data/elite_kaggle_corpus_clean.txt \
       --rhyme_groups_csv data/rhymes_grouped.csv \
       --no_siamese
+
+Using local songs.csv (skips Kaggle download):
+
+    python build_elite_kaggle_corpus_multi_stage.py \
+      --mode all \
+      --lyrics_csv data/songs.csv \
+      --output_csv data/elite_songs_lines_clean.csv \
+      --output_txt data/elite_songs_corpus_clean.txt \
+      --rhyme_groups_csv data/rhymes_grouped.csv \
+      --no_siamese \
+      --artist_filter_mode all \
+      --expected_total_rows 24000000
 """
 
 import sys
@@ -52,6 +64,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import json
 import os
 import re
 import csv
@@ -208,21 +221,85 @@ RAP_TAG_KEYWORDS = [
 ]
 
 
-def is_rap_track(row: pd.Series) -> bool:
+def _parse_artists_json(artists_raw) -> str:
+    """
+    Parse artists column from songs.csv (JSON array like [""ARTIST""] or ["Artist1","Artist2"]).
+    Returns first artist name, or empty string on failure.
+    """
+    if pd.isna(artists_raw) or not isinstance(artists_raw, str):
+        return ""
+    s = str(artists_raw).strip()
+    if not s:
+        return ""
+    try:
+        # CSV may store "" inside quoted strings; normalize for JSON
+        normalized = s.replace('""', '"')
+        arr = json.loads(normalized)
+        if arr and isinstance(arr, list):
+            first = arr[0]
+            return str(first).strip() if first else ""
+    except (json.JSONDecodeError, TypeError, IndexError):
+        pass
+    # Fallback: extract first quoted string
+    m = re.search(r'"([^"]*)"', s)
+    return m.group(1).strip() if m else ""
+
+
+def _parse_niche_genres_json(niche_raw) -> List[str]:
+    """Parse niche_genres JSON array from songs.csv. Returns list of genre strings."""
+    if pd.isna(niche_raw) or not isinstance(niche_raw, str):
+        return []
+    s = str(niche_raw).strip()
+    if not s or s == "[]":
+        return []
+    try:
+        normalized = s.replace('""', '"')
+        arr = json.loads(normalized)
+        if isinstance(arr, list):
+            return [str(x).strip() for x in arr if x]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return []
+
+
+def songs_csv_row_to_tag(row: pd.Series) -> str:
+    """Build combined tag string from genre + niche_genres for is_rap_track."""
+    parts = []
+    genre = row.get("genre")
+    if pd.notna(genre) and isinstance(genre, str) and str(genre).strip():
+        parts.append(str(genre).strip())
+    niche = _parse_niche_genres_json(row.get("niche_genres"))
+    if niche:
+        parts.extend(niche)
+    return " ".join(parts).lower() if parts else ""
+
+
+def is_rap_track(row: pd.Series, tag_override: str | None = None) -> bool:
     """
     Heuristic: use tag/genre columns to decide if it's a rap/hip-hop song.
     Also drop obvious non-English entries.
+    When tag_override is provided (e.g. from songs_csv_row_to_tag), use it instead of row.
     """
-    tag = ""
-    for col in ["tag", "genre", "primary_tag", "primary_artist_tags"]:
-        if col in row and isinstance(row[col], str):
-            tag = row[col]
-            break
-
-    tag_l = tag.lower() if isinstance(tag, str) else ""
+    if tag_override is not None:
+        tag_l = tag_override.lower()
+    else:
+        tag = ""
+        for col in ["tag", "genre", "primary_tag", "primary_artist_tags"]:
+            if col in row and isinstance(row[col], str):
+                tag = row[col]
+                break
+        # songs.csv: combine genre + niche_genres
+        if not tag and "genre" in row:
+            niche = _parse_niche_genres_json(row.get("niche_genres"))
+            genre = row.get("genre")
+            parts = [str(genre)] if pd.notna(genre) and genre else []
+            parts.extend(niche)
+            tag = " ".join(parts) if parts else ""
+        tag_l = tag.lower() if isinstance(tag, str) else ""
 
     # Resolve language: prefer language, fallback to language_cld3 / language_ft
     # (Genius: language is NaN when cld3 != ft; cld3/ft have ~66% en)
+    # songs.csv has no language column → skip (lang_l empty means check is skipped)
     lang = ""
     for col in ["language", "language_cld3", "language_ft", "language_detected", "lyrics_language"]:
         val = row.get(col)
@@ -821,6 +898,7 @@ def run_pass_filter(
     year_min: int | None = None,
     year_max: int | None = None,
     use_phonetic_rhyme: bool = False,
+    source_format: str = "kaggle",
 ):
     """
     Pass A:
@@ -924,8 +1002,12 @@ def run_pass_filter(
             f"elapsed={format_eta(elapsed)}, ETA={format_eta(eta_sec)}"
         )
 
-        # Required columns check
-        for col in ["artist", "lyrics", "title"]:
+        # Required columns check (schema depends on source_format)
+        if source_format == "songs_csv":
+            required = ["id", "name", "artists", "lyrics"]
+        else:
+            required = ["artist", "lyrics", "title"]
+        for col in required:
             if col not in df_chunk.columns:
                 print(
                     f"[WARN] Column '{col}' not found in chunk {chunk_idx}; "
@@ -935,20 +1017,35 @@ def run_pass_filter(
                 break
 
         for idx, row in df_chunk.iterrows():
-            artist = row.get("artist", "")
-            title = row.get("title", "")
-            lyrics = row.get("lyrics", "")
+            if source_format == "songs_csv":
+                artist = _parse_artists_json(row.get("artists"))
+                title = str(row.get("name", "")).strip() if pd.notna(row.get("name")) else ""
+                lyrics = row.get("lyrics", "")
+                raw_id = row.get("id")
+                tag_override = songs_csv_row_to_tag(row)
+                # songs.csv: no views column; skip views filter
+                apply_views_filter = False
+            else:
+                artist = str(row.get("artist", "")).strip() if pd.notna(row.get("artist")) else ""
+                title = str(row.get("title", "")).strip() if pd.notna(row.get("title")) else ""
+                lyrics = row.get("lyrics", "")
+                raw_id = row.get("id")
+                tag_override = None
+                apply_views_filter = True
 
             if not isinstance(lyrics, str) or not lyrics.strip():
                 continue
 
             # Genre / language filter
-            if not is_rap_track(row):
+            if not is_rap_track(row, tag_override=tag_override):
                 continue
 
-            # Optional views / year filters
-            if not row_passes_views_year_filter(row, min_views, year_min, year_max):
+            # Optional views / year filters (skip views for songs_csv)
+            if apply_views_filter and not row_passes_views_year_filter(row, min_views, year_min, year_max):
                 continue
+            if not apply_views_filter and (year_min is not None or year_max is not None):
+                if not row_passes_views_year_filter(row, None, year_min, year_max):
+                    continue
 
             # Artist filtering strategy
             if not artist_passes_filter(
@@ -967,7 +1064,6 @@ def run_pass_filter(
 
             total_songs_considered += 1
 
-            raw_id = row.get("id")
             song_id = (
                 str(raw_id)
                 if (pd.notna(raw_id) and str(raw_id).strip())
@@ -1451,16 +1547,23 @@ def parse_args():
         help="Which stages to run: all | filter | score | export.",
     )
     parser.add_argument(
+        "--lyrics_csv",
+        type=str,
+        default=None,
+        help="Path to local lyrics CSV (e.g. data/songs.csv). When set, skips Kaggle download. "
+             "Expects songs.csv schema: id, name, artists, lyrics, genre, niche_genres, year.",
+    )
+    parser.add_argument(
         "--kaggle_dataset",
         type=str,
         default="carlosgdcj/genius-song-lyrics-with-language-information",
-        help="Kaggle dataset slug.",
+        help="Kaggle dataset slug (used only when --lyrics_csv is not set).",
     )
     parser.add_argument(
         "--download_dir",
         type=str,
-        required=True,
-        help="Directory to download/unzip the Kaggle dataset into.",
+        default=None,
+        help="Directory to download/unzip the Kaggle dataset into. Required when --lyrics_csv is not set.",
     )
     parser.add_argument(
         "--output_csv",
@@ -1554,7 +1657,7 @@ def parse_args():
         default=5134856,
         help=(
             "Expected total rows in the CSV. Used only for ETA. "
-            "For the Genius dataset this is about 5,134,856."
+            "Genius/Kaggle: ~5,134,856. songs.csv: ~24,000,000."
         ),
     )
     parser.add_argument(
@@ -1644,10 +1747,27 @@ def main():
     top_tier_meta_csv = args.top_tier_meta_csv or (base_csv + "_top_tier_song_meta.csv")
     scores_csv = args.scores_csv or (base_csv + "_rhyme_scores.csv")
 
-    csv_path = ensure_kaggle_dataset(
-        dataset=args.kaggle_dataset,
-        download_dir=args.download_dir,
-    )
+    # Resolve lyrics source: local CSV or Kaggle download
+    if args.lyrics_csv:
+        if not os.path.isfile(args.lyrics_csv):
+            raise FileNotFoundError(f"--lyrics_csv file not found: {args.lyrics_csv}")
+        csv_path = args.lyrics_csv
+        source_format = "songs_csv"
+        expected_total_rows = args.expected_total_rows
+        if expected_total_rows == 5134856:  # default from Kaggle
+            expected_total_rows = 24_000_000  # typical for songs.csv
+    else:
+        if not args.download_dir:
+            raise ValueError(
+                "Either --lyrics_csv or --download_dir must be provided. "
+                "Use --lyrics_csv for local lyrics (e.g. data/songs.csv), or --download_dir for Kaggle."
+            )
+        csv_path = ensure_kaggle_dataset(
+            dataset=args.kaggle_dataset,
+            download_dir=args.download_dir,
+        )
+        source_format = "kaggle"
+        expected_total_rows = args.expected_total_rows
 
     rhyme_lookup = None
     siamese_for_rhymes = None
@@ -1703,7 +1823,7 @@ def main():
             top_tier_meta_csv=top_tier_meta_csv,
             chunksize=args.chunksize,
             min_bars=args.min_bars,
-            expected_total_rows=args.expected_total_rows,
+            expected_total_rows=expected_total_rows,
             rhyme_lookup=rhyme_lookup,
             siamese_scorer=siamese_for_rhymes,
             artist_filter_mode=args.artist_filter_mode,
@@ -1712,6 +1832,7 @@ def main():
             year_min=args.year_min,
             year_max=args.year_max,
             use_phonetic_rhyme=args.no_siamese,
+            source_format=source_format,
         )
 
     if args.mode in ("all", "score"):
