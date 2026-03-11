@@ -100,3 +100,34 @@ class TestComputeFitness:
         scores1 = score_couplet(ind1)
         assert "multisyllabic" in scores1
         assert scores1["multisyllabic"] >= 0.2
+
+    def test_score_couplet_with_lm_fluency(self):
+        """score_couplet with use_lm_fluency=True returns ngram_fluency (may blend with LM)."""
+        ind = CoupletIndividual(
+            line1="I got the flow when I step in the spot",
+            line2="You know I rock it hard when I hit the block",
+        )
+        analyze_individual(ind)
+        scores = score_couplet(ind, use_lm_fluency=False)
+        assert "ngram_fluency" in scores
+        # With LM (may fail to load if no torch/transformers)
+        scores_lm = score_couplet(ind, use_lm_fluency=True)
+        assert "ngram_fluency" in scores_lm
+        assert 0 <= scores_lm["ngram_fluency"] <= 1
+
+    def test_ngram_floor_rejects_nonsense(self):
+        """Candidates with ngram_fluency < 0.2 get fitness 0 (blocks nonsense phrase structure)."""
+        scores_high_ngram = {
+            "end_rhyme": 0.9, "internal_rhyme": 0.8, "rhyme_graph": 0.5,
+            "multisyllabic": 0.5, "syllable_balance": 0.9, "stress_alignment": 0.8,
+            "semantic": 1.0, "fluency": 0.9, "lexical_validity": 1.0,
+            "ngram_fluency": 0.5, "novelty": 0.8,
+            "weak_tail_penalty": 0.0, "repetition_penalty": 0.0,
+            "rhyme_family_repetition_penalty": 0.0, "identical_line_penalty": 0.0,
+            "near_duplicate_penalty": 0.0, "template_penalty": 0.0,
+            "corpus_overlap_penalty": 0.0, "theme_penalty": 0.0,
+        }
+        scores_low_ngram = {**scores_high_ngram, "ngram_fluency": 0.05}
+        assert compute_fitness(scores_high_ngram, ngram_floor=0.2) > 0
+        assert compute_fitness(scores_low_ngram, ngram_floor=0.2) == 0.0
+        assert compute_fitness(scores_low_ngram, ngram_floor=None) > 0  # floor disabled

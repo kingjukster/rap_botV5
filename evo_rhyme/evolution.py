@@ -20,6 +20,7 @@ from evo_rhyme.constraints import ConstraintConfig, passes_constraints
 from evo_rhyme.crossover import crossover
 from evo_rhyme.fitness import (
     DEFAULT_WEIGHTS,
+    NGRAM_FLOOR,
     _get_rhyme_family,
     compute_fitness,
     score_couplet,
@@ -56,6 +57,9 @@ class EvolutionConfig:
     min_fluency_accept: float = 0.0  # reject mutations with fluency below this (0=disabled)
     min_semantic_accept: float = 0.0  # reject mutations with semantic below this (0=disabled)
     min_lexical_accept: float = 0.0  # reject mutations with lexical_validity below this (0=disabled)
+    min_ngram_fluency_accept: float = 0.0  # reject mutations with ngram_fluency below this (0=disabled). Use 0.2 to block nonsense phrase structure.
+    use_lm_fluency: bool = False  # blend ngram with LM perplexity for phrase plausibility (stronger nonsense detection)
+    lm_fluency_weight: float = 0.5  # weight of LM score in ngram_fluency blend (0.5 = 50% ngram, 50% LM)
     require_theme_presence: bool = False  # when True + prompt_keywords, enforce at least one keyword in couplet
 
 
@@ -442,7 +446,10 @@ def evolve(
                 semantic_scorer=semantic_scorer if cfg.use_embeddings else None,
                 embedding_weight=cfg.embedding_weight,
                 corpus_lines=cfg.corpus_lines,
+                use_lm_fluency=cfg.use_lm_fluency,
+                lm_fluency_weight=cfg.lm_fluency_weight,
             )
+            ngram_floor = cfg.min_ngram_fluency_accept if cfg.min_ngram_fluency_accept > 0 else (NGRAM_FLOOR if cfg.corpus_lines else None)  # default floor when corpus available
             ind.fitness = compute_fitness(
                 ind.scores,
                 weights,
@@ -450,6 +457,7 @@ def evolve(
                 population=population,
                 style_profile=cfg.style_profile,
                 style_weight=cfg.style_weight if cfg.style_profile else 0.0,
+                ngram_floor=ngram_floor,
             )
 
         # Sort by fitness (best first)
@@ -458,6 +466,7 @@ def evolve(
         best = population[0].fitness if population else 0.0
         avg = sum(p.fitness or 0 for p in population) / max(1, len(population))
         top5 = population[:5]
+        ngram_floor = cfg.min_ngram_fluency_accept if cfg.min_ngram_fluency_accept > 0 else (NGRAM_FLOOR if cfg.corpus_lines else None)
         best_raw = (
             compute_fitness(
                 population[0].scores,
@@ -466,6 +475,7 @@ def evolve(
                 population=population,
                 style_profile=cfg.style_profile,
                 style_weight=cfg.style_weight if cfg.style_profile else 0.0,
+                ngram_floor=ngram_floor,
             )
             if population else None
         )
@@ -562,7 +572,9 @@ def evolve(
             child = mutate(child, mutation_config, mut_weights)
             if not passes_constraints(child, _effective_constraint_config(cfg, prompt_keywords)):
                 continue
-            if cfg.min_fluency_accept > 0 or cfg.min_semantic_accept > 0 or cfg.min_lexical_accept > 0:
+            needs_scores = (cfg.min_fluency_accept > 0 or cfg.min_semantic_accept > 0 or cfg.min_lexical_accept > 0
+                           or cfg.min_ngram_fluency_accept > 0 or (cfg.corpus_lines and cfg.min_ngram_fluency_accept == 0))
+            if needs_scores:
                 analyze_individual(child)
                 child_scores = score_couplet(
                     child,
@@ -571,12 +583,17 @@ def evolve(
                     semantic_scorer=semantic_scorer if cfg.use_embeddings else None,
                     embedding_weight=cfg.embedding_weight,
                     corpus_lines=cfg.corpus_lines,
+                    use_lm_fluency=cfg.use_lm_fluency,
+                    lm_fluency_weight=cfg.lm_fluency_weight,
                 )
                 if cfg.min_fluency_accept > 0 and child_scores.get("fluency", 0) < cfg.min_fluency_accept:
                     continue
                 if cfg.min_semantic_accept > 0 and child_scores.get("semantic", 0) < cfg.min_semantic_accept:
                     continue
                 if cfg.min_lexical_accept > 0 and child_scores.get("lexical_validity", 0.5) < cfg.min_lexical_accept:
+                    continue
+                ngram_floor_val = cfg.min_ngram_fluency_accept if cfg.min_ngram_fluency_accept > 0 else (NGRAM_FLOOR if cfg.corpus_lines else None)
+                if ngram_floor_val is not None and child_scores.get("ngram_fluency", 0.5) < ngram_floor_val:
                     continue
             accepted += 1
             next_pop.append(child)
@@ -665,6 +682,8 @@ def evolve_multiobjective(
                 semantic_scorer=semantic_scorer if cfg.use_embeddings else None,
                 embedding_weight=cfg.embedding_weight,
                 corpus_lines=cfg.corpus_lines,
+                use_lm_fluency=cfg.use_lm_fluency,
+                lm_fluency_weight=cfg.lm_fluency_weight,
             )
         for ind in population:
             family = _get_rhyme_family(ind)
@@ -787,7 +806,9 @@ def evolve_multiobjective(
             child = mutate(child, mutation_config, mut_weights)
             if not passes_constraints(child, _effective_constraint_config(cfg, prompt_keywords)):
                 continue
-            if cfg.min_fluency_accept > 0 or cfg.min_semantic_accept > 0 or cfg.min_lexical_accept > 0:
+            needs_scores = (cfg.min_fluency_accept > 0 or cfg.min_semantic_accept > 0 or cfg.min_lexical_accept > 0
+                           or cfg.min_ngram_fluency_accept > 0 or (cfg.corpus_lines and cfg.min_ngram_fluency_accept == 0))
+            if needs_scores:
                 analyze_individual(child)
                 child_scores = score_couplet(
                     child,
@@ -796,12 +817,17 @@ def evolve_multiobjective(
                     semantic_scorer=semantic_scorer if cfg.use_embeddings else None,
                     embedding_weight=cfg.embedding_weight,
                     corpus_lines=cfg.corpus_lines,
+                    use_lm_fluency=cfg.use_lm_fluency,
+                    lm_fluency_weight=cfg.lm_fluency_weight,
                 )
                 if cfg.min_fluency_accept > 0 and child_scores.get("fluency", 0) < cfg.min_fluency_accept:
                     continue
                 if cfg.min_semantic_accept > 0 and child_scores.get("semantic", 0) < cfg.min_semantic_accept:
                     continue
                 if cfg.min_lexical_accept > 0 and child_scores.get("lexical_validity", 0.5) < cfg.min_lexical_accept:
+                    continue
+                ngram_floor_val = cfg.min_ngram_fluency_accept if cfg.min_ngram_fluency_accept > 0 else (NGRAM_FLOOR if cfg.corpus_lines else None)
+                if ngram_floor_val is not None and child_scores.get("ngram_fluency", 0.5) < ngram_floor_val:
                     continue
             accepted += 1
             next_pop.append(child)

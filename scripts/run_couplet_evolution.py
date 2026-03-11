@@ -165,6 +165,13 @@ def main():
         help="Reject mutations with lexical_validity below this (0=disabled). Requires corpus. Try 0.5-0.6 to block nonsense.",
     )
     parser.add_argument(
+        "--min-ngram",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Reject mutations with ngram_fluency below this (0=disabled). Default: 0.2 when corpus available. Blocks nonsense phrase structure.",
+    )
+    parser.add_argument(
         "--style-corpus",
         type=str,
         default=None,
@@ -186,6 +193,18 @@ def main():
         type=str,
         default=None,
         help="Path to evolved weights JSON (from run_weight_tuner.py). Uses 'weights' key.",
+    )
+    parser.add_argument(
+        "--lm-fluency",
+        action="store_true",
+        help="Blend ngram fluency with LM perplexity (DistilGPT-2) for stronger nonsense detection.",
+    )
+    parser.add_argument(
+        "--lm-fluency-weight",
+        type=float,
+        default=0.5,
+        metavar="FLOAT",
+        help="Weight of LM score in ngram_fluency blend when --lm-fluency (default: 0.5).",
     )
     args = parser.parse_args()
 
@@ -209,6 +228,14 @@ def main():
     )
     min_lexical_accept = args.min_lexical
 
+    corpus_lines = load_corpus_lines(corpus_path)
+    if corpus_lines:
+        corpus_lines = corpus_lines[:2000]
+    min_ngram_fluency_accept = (
+        args.min_ngram if args.min_ngram is not None
+        else (0.2 if corpus_lines else 0.0)
+    )
+
     style_profile = None
     style_weight = 0.0
     if args.style_corpus:
@@ -223,9 +250,6 @@ def main():
         else:
             logger.warning(f"Style corpus empty or not found: {style_path}")
 
-    corpus_lines = load_corpus_lines(corpus_path)
-    if corpus_lines:
-        corpus_lines = corpus_lines[:2000]
     logger.info(f"Corpus: {corpus_path}")
     logger.info(f"Theme: {theme_keywords or 'none'}")
     logger.info(f"Population: {args.population}, Generations: {args.generations}, Init: {args.init}")
@@ -268,6 +292,9 @@ def main():
         min_fluency_accept=min_fluency_accept,
         min_semantic_accept=min_semantic_accept,
         min_lexical_accept=min_lexical_accept,
+        min_ngram_fluency_accept=min_ngram_fluency_accept,
+        use_lm_fluency=args.lm_fluency,
+        lm_fluency_weight=args.lm_fluency_weight,
         style_profile=style_profile,
         style_weight=style_weight,
         corpus_lines=corpus_lines if corpus_lines else None,

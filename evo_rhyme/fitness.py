@@ -24,18 +24,22 @@ from evo_rhyme.style_profile import StyleProfile
 # MVP weights - rebalanced to avoid early saturation; max fitness rarely achieved
 # lexical_validity + ngram_fluency protect against rhyme-optimized nonsense
 # rhyme_family_repetition_penalty + repeated_shell_penalty block "truck duck fuck" collapse
+#
+# CRITICAL: ngram_fluency must be strong - it's the only signal that checks whether
+# phrase structure appears in natural language. Without it, evolution exploits the
+# loophole: valid words + rhyme + theme tokens = high score, but nonsense sequences.
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "end_rhyme": 0.16,
-    "internal_rhyme": 0.28,
-    "rhyme_graph": 0.10,
-    "multisyllabic": 0.09,
-    "syllable_balance": 0.07,
+    "end_rhyme": 0.18,
+    "internal_rhyme": 0.16,
+    "rhyme_graph": 0.12,
+    "multisyllabic": 0.08,
+    "syllable_balance": 0.06,
     "stress_alignment": 0.10,
-    "semantic": 0.11,
-    "fluency": 0.12,
-    "lexical_validity": 0.12,
-    "ngram_fluency": 0.10,
-    "novelty": 0.07,
+    "semantic": 0.10,
+    "fluency": 0.08,
+    "lexical_validity": 0.06,
+    "ngram_fluency": 0.15,  # Strong: penalizes unnatural phrase sequences
+    "novelty": 0.05,
     "weak_tail_penalty": -0.03,
     "repetition_penalty": -0.03,
     "rhyme_family_repetition_penalty": -0.15,
@@ -48,6 +52,10 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
 
 # Cap aggregate fitness to prevent saturation (e.g. truck duck fuck scoring >1.0)
 FITNESS_CAP = 0.95
+
+# Minimum ngram_fluency to survive - rejects candidates with unnatural phrase structure.
+# When corpus is available, ngram_fluency < this means phrase never appears in real language.
+NGRAM_FLOOR = 0.2
 
 
 def _score_end_rhyme(f1: Optional[LineFeatures], f2: Optional[LineFeatures]) -> float:
@@ -480,6 +488,8 @@ def score_couplet(
     semantic_scorer: Optional[Any] = None,
     embedding_weight: float = 0.5,
     corpus_lines: Optional[List[str]] = None,
+    use_lm_fluency: bool = False,
+    lm_fluency_weight: float = 0.5,
 ) -> Dict[str, float]:
     """
     Compute all component scores for a couplet.
@@ -487,6 +497,9 @@ def score_couplet(
     Returns dict with: end_rhyme, internal_rhyme, multisyllabic, syllable_balance,
     stress_alignment, semantic, fluency, lexical_validity, ngram_fluency, novelty,
     weak_tail_penalty, repetition_penalty, etc.
+
+    When use_lm_fluency=True, blends corpus ngram score with LM perplexity score
+    for stronger phrase plausibility (catches nonsense like "survival pop rough").
     """
     import re
     f1, f2 = individual.features1, individual.features2
@@ -502,6 +515,22 @@ def score_couplet(
             corpus_vocab.update(w.lower() for w in word_re.findall(line.lower()))
         from evo_rhyme.ngram_fluency import get_ngram_model
         ngram_model = get_ngram_model(corpus_lines)
+
+    # Optional LM perplexity scorer for phrase plausibility (blends with ngram)
+    lm_scorer: Optional[Any] = None
+    if use_lm_fluency:
+        try:
+            from evo_rhyme.lm_fluency import get_lm_scorer
+            lm_scorer = get_lm_scorer()
+        except Exception:
+            lm_scorer = None
+
+    ngram_score = _score_ngram_fluency(individual, ngram_model)
+    if lm_scorer is not None:
+        lm_score = lm_scorer.score_couplet(individual.line1, individual.line2)
+        ngram_fluency_val = (1.0 - lm_fluency_weight) * ngram_score + lm_fluency_weight * lm_score
+    else:
+        ngram_fluency_val = ngram_score
 
     rhyme_graph = (
         score_line_rhyme_graph(individual.line1) + score_line_rhyme_graph(individual.line2)
@@ -523,7 +552,7 @@ def score_couplet(
         ),
         "fluency": _score_fluency(individual),
         "lexical_validity": _score_lexical_validity(individual, corpus_vocab),
-        "ngram_fluency": _score_ngram_fluency(individual, ngram_model),
+        "ngram_fluency": ngram_fluency_val,
         "novelty": _score_novelty(individual),
         "weak_tail_penalty": _weak_tail_penalty_raw(f1, f2),
         "repetition_penalty": _repetition_penalty_raw(individual),
@@ -897,6 +926,7 @@ def compute_fitness(
     population: Optional[List[CoupletIndividual]] = None,
     style_profile: Optional["StyleProfile"] = None,
     style_weight: float = 0.0,
+    ngram_floor: Optional[float] = NGRAM_FLOOR,
 ) -> float:
     """
     Aggregate fitness from weighted sum of component scores.
@@ -905,7 +935,12 @@ def compute_fitness(
     When individual and population are provided, adds rhyme_family_diversity_penalty
     and repeated_shell_penalty.
     Caps result at FITNESS_CAP to prevent saturation.
+
+    When ngram_floor is set (default 0.2), candidates with ngram_fluency below
+    the floor get fitness 0 - they never appear in natural language.
     """
+    if ngram_floor is not None and scores.get("ngram_fluency", 0.5) < ngram_floor:
+        return 0.0
     w = weights or DEFAULT_WEIGHTS
     total = 0.0
     for key, weight in w.items():
