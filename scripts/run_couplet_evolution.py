@@ -77,7 +77,7 @@ def main():
     parser.add_argument(
         "--generations",
         type=int,
-        default=30,
+        default=10,
         help="Number of generations",
     )
     parser.add_argument(
