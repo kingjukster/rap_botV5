@@ -1,0 +1,69 @@
+# Canonical evolution defaults for rap verse generation.
+# Paths are relative to project root unless absolute.
+
+paths:
+  rhyme_groups_csv: data/rhymes_grouped.csv
+  siamese_model_dir: rhyme_siamese
+  elite_corpus: data/elite_kaggle_corpus_clean.txt
+
+evolution:
+  population_size: 100
+  generations: 30
+  num_elites: 5
+  tournament_k: 3
+  random_immigrants_per_gen: 10
+  population_init: mixed  # mixed | random | template
+
+# Fitness weights (evo_rhyme.fitness.DEFAULT_WEIGHTS)
+# Positive weights sum to ~1.0; penalties are negative.
+fitness_weights:
+  end_rhyme: 0.18
+  internal_rhyme: 0.16
+  rhyme_graph: 0.12
+  multisyllabic: 0.08
+  syllable_balance: 0.06
+  stress_alignment: 0.10
+  semantic: 0.10
+  fluency: 0.08
+  lexical_validity: 0.06
+  ngram_fluency: 0.15
+  novelty: 0.05
+  weak_tail_penalty: -0.03
+  repetition_penalty: -0.08
+  theme_word_repetition_penalty: -0.12
+  rhyme_family_repetition_penalty: -0.15
+  identical_line_penalty: -0.20
+  near_duplicate_penalty: -0.15
+  template_penalty: -0.08
+  corpus_overlap_penalty: -0.20
+  theme_penalty: -0.18
+
+# Mutation type weights (evo_rhyme.mutation.MUTATION_WEIGHTS)
+# Must sum to 1.0.
+mutation_weights:
+  end_word_swap: 0.22
+  internal_rhyme_insert: 0.18
+  stressed_vowel_swap: 0.08
+  syllable_adjust: 0.06
+  semantic_swap: 0.10
+  syntax_synonym: 0.10
+  compression: 0.10
+  expansion: 0.05
+  phrase_replace: 0.02
+  rhyme_graph_expand: 0.08
+  stress_repair: 0.01
+
+output:
+  runs_dir: data/evo_rhyme/runs
+
+# LM-backed bar proposer (evo_rhyme.lm_proposer.ProposerConfig)
+proposer:
+  backend: openai
+  model: gpt-4o-mini
+  bars_per_slot: 80
+  temperature: 0.95
+  top_p: 0.95
+  max_tokens: 60
+  batch_size: 20
+  timeout: 30.0
+  max_retries: 3

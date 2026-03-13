@@ -410,7 +410,7 @@ def evolve(
     semantic_scorer: Optional[Any] = None
     if cfg.use_embeddings:
         try:
-            from rapbot.rhyme_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
+            from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
             semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cpu")
             logger.info("Loaded SiameseRhymeScorer for embedding-based semantic scoring")
         except Exception as e:
@@ -648,7 +648,7 @@ def evolve_multiobjective(
     semantic_scorer: Optional[Any] = None
     if cfg.use_embeddings:
         try:
-            from rapbot.rhyme_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
+            from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
             semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cpu")
             logger.info("Loaded SiameseRhymeScorer for embedding-based semantic scoring")
         except Exception as e:

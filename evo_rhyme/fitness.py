@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 from collections import Counter
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from evo_rhyme.individual import CoupletIndividual, LineFeatures, VerseIndividual, VerseFeatures
@@ -19,6 +20,8 @@ from evo_rhyme.phonetics import (
     phonetic_similarity,
 )
 from evo_rhyme.rhyme_graph import score_line_rhyme_graph
+from evo_rhyme.scoring.coherence import score_coherence
+from evo_rhyme.scoring.punchline import score_punchline
 from evo_rhyme.style_profile import StyleProfile
 
 # MVP weights - rebalanced to avoid early saturation; max fitness rarely achieved
@@ -565,7 +568,7 @@ def score_couplet(
         score_line_rhyme_graph(individual.line1) + score_line_rhyme_graph(individual.line2)
     ) / 2.0
 
-    return {
+    scores: Dict[str, float] = {
         "end_rhyme": _score_end_rhyme(f1, f2),
         "internal_rhyme": _score_internal_rhyme(f1, f2),
         "rhyme_graph": rhyme_graph,
@@ -595,6 +598,19 @@ def score_couplet(
         "corpus_overlap_penalty": _score_corpus_overlap_penalty(individual, corpus_lines),
         "theme_penalty": _score_theme_penalty(individual, prompt_keywords=kw),
     }
+
+    lines = [individual.line1, individual.line2]
+    try:
+        scores["coherence"] = score_coherence(lines)
+    except Exception:
+        scores["coherence"] = 0.0
+
+    try:
+        scores["punchline"] = score_punchline(lines)
+    except Exception:
+        scores["punchline"] = 0.0
+
+    return scores
 
 
 def _get_rhyme_family(individual: CoupletIndividual) -> tuple:
@@ -687,13 +703,19 @@ def _repeated_shell_penalty(
 VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "rhyme_scheme_score": 0.30,
     "internal_rhyme": 0.18,
-    "syllable_balance": 0.12,
-    "fluency": 0.18,
+    "syllable_balance": 0.06,
+    "fluency": 0.10,
     "semantic": 0.10,
+    "lexical_validity": 0.08,
+    "coherence": 0.08,
+    "punchline": 0.06,
     "identical_line_penalty": -0.20,
     "template_penalty": -0.12,
     "repetition_penalty": -0.10,
     "near_duplicate_penalty": -0.15,
+    "filler_line_penalty": -0.25,
+    "line_phrase_penalty": -0.10,
+    "corpus_overlap_penalty": -0.20,
 }
 
 
@@ -806,7 +828,11 @@ def _score_verse_semantic(
     semantic_scorer: Optional[Any] = None,
     embedding_weight: float = 0.5,
 ) -> float:
-    """Semantic relevance to theme for 4-line verse."""
+    """
+    Semantic relevance to theme for 4-line verse.
+    Applies per-line theme coverage scaling: when fewer than 2 of 4 lines
+    contain any theme keyword, the semantic score is reduced proportionally.
+    """
     text = " ".join(individual.lines).lower()
     if prompt_keywords:
         words = set(w.lower() for w in text.split() if len(w) > 2)
@@ -821,8 +847,20 @@ def _score_verse_semantic(
         except Exception:
             embedding_score = keyword_score
         alpha = 1.0 - embedding_weight
-        return alpha * keyword_score + embedding_weight * embedding_score
-    return keyword_score
+        base_score = alpha * keyword_score + embedding_weight * embedding_score
+    else:
+        base_score = keyword_score
+
+    if prompt_keywords:
+        lines_with_theme = sum(
+            1 for line in individual.lines
+            if any(kw in set(w.lower() for w in line.split()) for kw in prompt_keywords)
+        )
+        theme_coverage = lines_with_theme / max(1, len(individual.lines))
+        if theme_coverage < 0.5:
+            base_score *= theme_coverage * 2.0
+
+    return base_score
 
 
 def _score_verse_identical_line_penalty(individual: VerseIndividual) -> float:
@@ -908,6 +946,125 @@ def _score_verse_near_duplicate_penalty(individual: VerseIndividual) -> float:
     return max_penalty
 
 
+def _score_verse_lexical_validity(individual: VerseIndividual) -> float:
+    """Average valid-word ratio across all 4 lines [0,1]."""
+    from evo_rhyme.phonetics import phones_for_word
+    stopwords = {"a", "an", "and", "at", "be", "but", "by", "for", "from", "go",
+                 "had", "he", "her", "him", "his", "i", "in", "is", "it", "me",
+                 "my", "no", "of", "on", "or", "our", "out", "she", "so", "that",
+                 "the", "them", "then", "there", "they", "this", "to", "was",
+                 "we", "you", "got", "like", "just", "all", "say", "said"}
+    f = individual.features
+    if not f or not f.tokens_per_line:
+        return 0.5
+    ratios = []
+    for tokens in f.tokens_per_line:
+        content = [t.lower() for t in tokens if t.lower() not in stopwords and len(t) > 1]
+        if not content:
+            ratios.append(1.0)
+        else:
+            valid = sum(1 for w in content if phones_for_word(w))
+            ratios.append(valid / len(content))
+    return sum(ratios) / len(ratios) if ratios else 0.5
+
+
+def _load_filler_tokens() -> set:
+    """Load scat/filler tokens from data/evo_rhyme/filler_tokens.txt."""
+    root = Path(__file__).resolve().parents[1]
+    path = root / "data" / "evo_rhyme" / "filler_tokens.txt"
+    if not path.exists():
+        return set()
+    tokens: set = set()
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            t = line.strip().lower()
+            if t and not t.startswith("#"):
+                tokens.add(t)
+    return tokens
+
+
+_FILLER_TOKENS: Optional[set] = None
+
+
+def _get_filler_tokens() -> set:
+    global _FILLER_TOKENS
+    if _FILLER_TOKENS is None:
+        _FILLER_TOKENS = _load_filler_tokens()
+    return _FILLER_TOKENS
+
+
+def _score_verse_filler_line_penalty(individual: VerseIndividual) -> float:
+    """
+    Penalty [0,1] for scat/filler lines: lines where >50% of tokens are
+    single-char or in the filler set. Returns fraction of lines that are filler.
+    """
+    import re
+    filler_set = _get_filler_tokens()
+    word_re = re.compile(r"[A-Za-z']+")
+    filler_count = 0
+    for line in individual.lines:
+        tokens = word_re.findall(line.lower())
+        if not tokens:
+            continue
+        filler_hits = sum(
+            1 for t in tokens if len(t) <= 1 or t in filler_set
+        )
+        if filler_hits / len(tokens) > 0.5:
+            filler_count += 1
+    return filler_count / max(1, len(individual.lines))
+
+
+def _score_verse_line_phrase_penalty(individual: VerseIndividual) -> float:
+    """Penalty for lines containing banned phrases from penalty_phrases.txt."""
+    from evo_rhyme.scoring.line_penalty import apply_line_penalty
+    return apply_line_penalty(individual.lines)
+
+
+def _score_verse_corpus_overlap_penalty(
+    individual: VerseIndividual,
+    corpus_lines: Optional[List[str]] = None,
+) -> float:
+    """
+    Penalty when verse lines are too similar to raw corpus lines.
+    Checks all 4 lines via word overlap (threshold 0.68) and
+    character-level SequenceMatcher (threshold 0.85).
+    Returns max penalty across all lines [0,1].
+    """
+    if not corpus_lines or len(corpus_lines) < 2:
+        return 0.0
+    import re
+    word_re = re.compile(r"[A-Za-z']+")
+    line_token_sets = [set(word_re.findall(l.lower())) for l in individual.lines]
+
+    max_word_overlap = 0.0
+    for ind_tokens in line_token_sets:
+        if not ind_tokens:
+            continue
+        for corp in corpus_lines:
+            tc = set(word_re.findall(corp.lower()))
+            if not tc:
+                continue
+            overlap = len(ind_tokens & tc) / max(len(ind_tokens), len(tc))
+            max_word_overlap = max(max_word_overlap, overlap)
+    if max_word_overlap <= 0.68:
+        word_penalty = 0.0
+    else:
+        word_penalty = min(1.0, (max_word_overlap - 0.68) / 0.32)
+
+    max_ratio = 0.0
+    for line in individual.lines:
+        line_lower = line.lower()
+        for corp in corpus_lines:
+            ratio = difflib.SequenceMatcher(None, line_lower, corp.lower()).ratio()
+            max_ratio = max(max_ratio, ratio)
+    if max_ratio > 0.85:
+        seq_penalty = min(1.0, (max_ratio - 0.85) / 0.15)
+    else:
+        seq_penalty = 0.0
+
+    return max(word_penalty, seq_penalty)
+
+
 def score_verse(
     individual: VerseIndividual,
     scheme: str = "AABB",
@@ -915,11 +1072,12 @@ def score_verse(
     theme_string: Optional[str] = None,
     semantic_scorer: Optional[Any] = None,
     embedding_weight: float = 0.5,
+    corpus_lines: Optional[List[str]] = None,
 ) -> Dict[str, float]:
     """Compute all component scores for a 4-line verse."""
     f = individual.features
     kw = set(w.lower() for w in (prompt_keywords or [])) if prompt_keywords else None
-    return {
+    scores: Dict[str, float] = {
         "rhyme_scheme_score": _score_verse_rhyme_scheme(f, scheme),
         "internal_rhyme": _score_verse_internal_rhyme_simple(f),
         "syllable_balance": _score_verse_syllable_balance(f),
@@ -931,11 +1089,28 @@ def score_verse(
             semantic_scorer=semantic_scorer,
             embedding_weight=embedding_weight,
         ),
+        "lexical_validity": _score_verse_lexical_validity(individual),
         "identical_line_penalty": _score_verse_identical_line_penalty(individual),
         "template_penalty": _score_verse_template_penalty(individual, prompt_keywords=kw),
         "repetition_penalty": _score_verse_repetition_penalty(individual),
         "near_duplicate_penalty": _score_verse_near_duplicate_penalty(individual),
+        "filler_line_penalty": _score_verse_filler_line_penalty(individual),
+        "line_phrase_penalty": _score_verse_line_phrase_penalty(individual),
+        "corpus_overlap_penalty": _score_verse_corpus_overlap_penalty(individual, corpus_lines),
     }
+
+    lines = individual.lines
+    try:
+        scores["coherence"] = score_coherence(lines)
+    except Exception:
+        scores["coherence"] = 0.0
+
+    try:
+        scores["punchline"] = score_punchline(lines)
+    except Exception:
+        scores["punchline"] = 0.0
+
+    return scores
 
 
 def compute_verse_fitness(
@@ -949,6 +1124,63 @@ def compute_verse_fitness(
         if key in scores:
             total += weight * scores[key]
     return total
+
+
+# ---------------------------------------------------------------------------
+# Multi-objective score vector
+# ---------------------------------------------------------------------------
+
+OBJECTIVE_KEYS: List[str] = [
+    "end_rhyme",
+    "internal_rhyme",
+    "rhythm",
+    "semantic",
+    "fluency",
+    "coherence",
+    "originality",
+    "style_match",
+    "punchline",
+]
+
+
+def score_vector(
+    scores: Dict[str, float], keys: Optional[List[str]] = None
+) -> List[float]:
+    """Extract multi-objective score vector from a scores dict.
+
+    Args:
+        scores: The full scores dictionary from score_couplet or score_verse.
+        keys: Which objectives to extract. Defaults to OBJECTIVE_KEYS.
+
+    Returns:
+        List of float values, one per objective. Missing keys default to 0.0.
+
+    The 'rhythm' key is synthesized as mean of 'stress_alignment' and 'syllable_balance'.
+    The 'originality' key is synthesized as 1.0 - scores.get('corpus_overlap_penalty', 0.0).
+    The 'style_match' key maps to 'score_style_similarity' if present.
+    """
+    if keys is None:
+        keys = OBJECTIVE_KEYS
+
+    vec: List[float] = []
+    for k in keys:
+        if k == "rhythm":
+            val = (
+                scores.get("stress_alignment", 0.0)
+                + scores.get("syllable_balance", 0.0)
+            ) / 2.0
+        elif k == "originality":
+            val = 1.0 - abs(scores.get("corpus_overlap_penalty", 0.0))
+        elif k == "style_match":
+            val = scores.get("score_style_similarity", 0.0)
+        elif k == "end_rhyme":
+            val = scores.get("end_rhyme", scores.get("rhyme_scheme_score", 0.0))
+        elif k == "fluency":
+            val = scores.get("ngram_fluency", scores.get("fluency", 0.0))
+        else:
+            val = scores.get(k, 0.0)
+        vec.append(max(0.0, float(val)))
+    return vec
 
 
 def compute_fitness(

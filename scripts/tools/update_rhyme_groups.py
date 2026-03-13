@@ -47,7 +47,7 @@ import torch
 import numpy as np
 from sklearn.cluster import DBSCAN
 
-from rapbot.rhyme_scorer import SiameseRhymeScorer
+from evo_rhyme.siamese_scorer import SiameseRhymeScorer
 
 
 WORD_RE = re.compile(r"[A-Za-z']+")

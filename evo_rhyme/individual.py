@@ -54,9 +54,54 @@ class VerseFeatures:
 
 
 @dataclass
+class VerseStructure:
+    """Structural metadata for a verse, evolved alongside content."""
+    scheme: str = "AABB"
+    roles: List[str] = field(default_factory=list)
+    callbacks: List[Optional[int]] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.roles and self.scheme:
+            n = len(self.scheme)
+            defaults = {
+                4: ["setup", "flex", "flex", "punchline"],
+                8: ["setup", "flex", "threat", "flex", "setup", "flex", "threat", "punchline"],
+                16: ["setup", "flex", "threat", "flex"] * 3 + ["setup", "flex", "introspection", "punchline"],
+            }
+            self.roles = defaults.get(n, ["flex"] * n)
+        if not self.callbacks:
+            self.callbacks = [None] * len(self.roles)
+
+    @classmethod
+    def for_scheme(cls, scheme: str, num_lines: int = 4) -> "VerseStructure":
+        """Create a VerseStructure for a given scheme and line count."""
+        full_scheme = scheme
+        if len(scheme) < num_lines:
+            repeats = (num_lines + len(scheme) - 1) // len(scheme)
+            full_scheme = (scheme * repeats)[:num_lines]
+        return cls(scheme=full_scheme)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "scheme": self.scheme,
+            "roles": self.roles,
+            "callbacks": self.callbacks,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VerseStructure":
+        return cls(
+            scheme=data.get("scheme", "AABB"),
+            roles=data.get("roles", []),
+            callbacks=data.get("callbacks", []),
+        )
+
+
+@dataclass
 class VerseIndividual:
     """A verse (4 lines) with features and scores."""
     lines: List[str]
+    structure: Optional[VerseStructure] = None
     features: Optional[VerseFeatures] = None
     scores: Optional[Dict[str, float]] = None
     fitness: Optional[float] = None
@@ -123,3 +168,20 @@ def analyze_verse_individual(individual: VerseIndividual) -> VerseIndividual:
         stress_patterns=[lf.stress_pattern for lf in line_features],
     )
     return individual
+
+
+def create_verse_individual(
+    lines: List[str],
+    scheme: str = "AABB",
+    roles: Optional[List[str]] = None,
+) -> VerseIndividual:
+    """Create a VerseIndividual with structure metadata."""
+    structure = VerseStructure(scheme=scheme)
+    if roles:
+        structure.roles = roles
+    if not structure.callbacks:
+        structure.callbacks = [None] * len(lines)
+    return VerseIndividual(
+        lines=lines,
+        structure=structure,
+    )

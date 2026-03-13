@@ -58,6 +58,77 @@ from evo_rhyme.generator import (
     get_group_to_words,
 )
 
+# LM proposer
+try:
+    from evo_rhyme.lm_proposer import BarProposer, ProposerConfig, BarRequest
+except ImportError:
+    pass
+
+# LM rewriter
+try:
+    from evo_rhyme.lm_rewriter import BarRewriter, RewriterConfig
+except ImportError:
+    pass
+
+# MAP-Elites archive
+try:
+    from evo_rhyme.archive import (
+        MAPElitesArchive,
+        ArchiveDimension,
+        create_verse_archive,
+        default_verse_dimensions,
+    )
+except ImportError:
+    pass
+
+# Scoring – coherence
+try:
+    from evo_rhyme.scoring.coherence import score_coherence, score_coherence_with_embeddings
+except ImportError:
+    pass
+
+# Scoring – punchline
+try:
+    from evo_rhyme.scoring.punchline import score_punchline, score_punchline_per_line
+except ImportError:
+    pass
+
+# Multi-objective fitness utilities
+try:
+    from evo_rhyme.fitness import score_vector, OBJECTIVE_KEYS
+except ImportError:
+    pass
+
+# Pareto / NSGA-II selection utilities
+try:
+    from evo_rhyme.selection import (
+        pareto_rank,
+        crowding_distance,
+        pareto_tournament_select,
+        pareto_elitism,
+        compute_population_objectives,
+    )
+except ImportError:
+    pass
+
+# New individual types
+try:
+    from evo_rhyme.individual import VerseStructure, create_verse_individual
+except ImportError:
+    pass
+
+# QD evolution
+try:
+    from evo_rhyme.verse_evolution import evolve_verse_qd, QDEvolutionConfig
+except ImportError:
+    pass
+
+# LM population seeder
+try:
+    from evo_rhyme.population import LMVerseSeedGenerator
+except ImportError:
+    pass
+
 __all__ = [
     "CoupletIndividual",
     "LineFeatures",
@@ -112,4 +183,38 @@ __all__ = [
     "load_templates",
     "load_vocab",
     "get_group_to_words",
+    # LM proposer
+    "BarProposer",
+    "ProposerConfig",
+    "BarRequest",
+    # LM rewriter
+    "BarRewriter",
+    "RewriterConfig",
+    # MAP-Elites archive
+    "MAPElitesArchive",
+    "ArchiveDimension",
+    "create_verse_archive",
+    "default_verse_dimensions",
+    # Scoring
+    "score_coherence",
+    "score_coherence_with_embeddings",
+    "score_punchline",
+    "score_punchline_per_line",
+    # Multi-objective fitness
+    "score_vector",
+    "OBJECTIVE_KEYS",
+    # Selection
+    "pareto_rank",
+    "crowding_distance",
+    "pareto_tournament_select",
+    "pareto_elitism",
+    "compute_population_objectives",
+    # Individual
+    "VerseStructure",
+    "create_verse_individual",
+    # QD evolution
+    "evolve_verse_qd",
+    "QDEvolutionConfig",
+    # LM population
+    "LMVerseSeedGenerator",
 ]

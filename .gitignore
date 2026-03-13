@@ -49,6 +49,7 @@ rhyme_siamese/
 
 # --- MODEL CHECKPOINTS (Do NOT store in Git) ---
 models/
+checkpoints/
 */adapter_model.safetensors
 *.safetensors
 *.bin
@@ -106,3 +107,4 @@ __pycache__
 
 # Iterative test artifacts (regenerated on run)
 data/iterative_tests/
+data/evo_rhyme/runs/

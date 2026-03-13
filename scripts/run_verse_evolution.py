@@ -177,6 +177,17 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Run logging to {output_dir}")
 
+    corpus_lines = None
+    if corpus_path.exists():
+        try:
+            with open(corpus_path, "r", encoding="utf-8") as cf:
+                corpus_lines = [l.strip() for l in cf if l.strip() and not l.startswith("<")]
+            if corpus_lines:
+                corpus_lines = corpus_lines[:5000]
+                logger.info(f"Loaded {len(corpus_lines)} corpus lines for scoring")
+        except Exception as e:
+            logger.warning(f"Could not load corpus lines for scoring: {e}")
+
     config = VerseEvolutionConfig(
         population_size=args.population,
         num_elites=args.elites,
@@ -186,6 +197,7 @@ def main() -> None:
         use_embeddings=args.use_embeddings,
         embedding_weight=args.embedding_weight,
         use_niching=args.use_niching,
+        corpus_lines=corpus_lines,
     )
 
     raw_population = create_initial_verse_population(

@@ -27,7 +27,8 @@ import pandas as pd
 import pronouncing
 
 try:
-    from rapbot.rhyme_scorer import SiameseRhymeScorer, load_rhyme_groups
+    from evo_rhyme.siamese_scorer import SiameseRhymeScorer
+    from evo_rhyme.rhyme_resources import load_rhyme_groups
 except ImportError:
     SiameseRhymeScorer = None
     load_rhyme_groups = None

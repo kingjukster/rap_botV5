@@ -9,12 +9,14 @@ one conservative change and returns a new CoupletIndividual.
 from __future__ import annotations
 
 import csv
+import logging
 import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from evo_rhyme.individual import CoupletIndividual, analyze_individual
+from evo_rhyme.lm_rewriter import BarRewriter, RewriterConfig
 from evo_rhyme.phonetics import (
     extract_rhyme_tail,
     extract_stressed_vowels_from_phones,
@@ -26,8 +28,22 @@ from evo_rhyme.phonetics import (
 )
 from evo_rhyme.rhyme_graph import build_rhyme_graph
 
-# Mutation type weights (must sum to 1.0)
+logger = logging.getLogger(__name__)
+
 MUTATION_WEIGHTS: Dict[str, float] = {
+    "lm_rhyme_rewrite": 0.28,
+    "lm_internal_rhyme": 0.18,
+    "lm_theme_rewrite": 0.14,
+    "lm_paraphrase": 0.12,
+    "lm_tighten": 0.08,
+    "lm_expand": 0.04,
+    "stressed_vowel_swap": 0.06,
+    "syllable_adjust": 0.04,
+    "rhyme_graph_expand": 0.04,
+    "end_word_swap": 0.02,
+}
+
+LEGACY_MUTATION_WEIGHTS: Dict[str, float] = {
     "end_word_swap": 0.22,
     "internal_rhyme_insert": 0.18,
     "stressed_vowel_swap": 0.08,
@@ -40,6 +56,26 @@ MUTATION_WEIGHTS: Dict[str, float] = {
     "rhyme_graph_expand": 0.08,
     "stress_repair": 0.01,
 }
+
+# ---------------------------------------------------------------------------
+# Shared BarRewriter instance (lazy-init)
+# ---------------------------------------------------------------------------
+
+_REWRITER: Optional[BarRewriter] = None
+
+
+def get_rewriter(config: Optional[Dict] = None) -> BarRewriter:
+    """Get or create the shared BarRewriter instance."""
+    global _REWRITER
+    if _REWRITER is None:
+        rewriter_cfg = RewriterConfig()
+        if config and isinstance(config, dict) and "rewriter" in config:
+            rc = config["rewriter"]
+            for k, v in rc.items():
+                if hasattr(rewriter_cfg, k):
+                    setattr(rewriter_cfg, k, v)
+        _REWRITER = BarRewriter(rewriter_cfg)
+    return _REWRITER
 
 # ---------------------------------------------------------------------------
 # tail_to_words index: rhyme tail -> list of words
@@ -522,8 +558,267 @@ def _rhyme_graph_expand(
     return _copy_individual(individual, individual.line1, new_line)
 
 
+# ---------------------------------------------------------------------------
+# LM-backed mutation operators (use BarRewriter)
+# ---------------------------------------------------------------------------
+
+
+def _lm_config_helpers(config: Any):
+    """Extract common config values used by all LM mutations."""
+    theme_keywords: List[str] = []
+    if config and isinstance(config, dict):
+        theme_keywords = config.get("theme_keywords", [])
+    min_syl = config.get("min_syllables", 6) if isinstance(config, dict) else 6
+    max_syl = config.get("max_syllables", 18) if isinstance(config, dict) else 18
+    return theme_keywords, (min_syl, max_syl)
+
+
+def _lm_rhyme_rewrite(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Rewrite a random line so its end word rhymes better with the other line."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+
+        pick_line1 = random.random() < 0.5
+        if pick_line1:
+            line, other_line = individual.line1, individual.line2
+        else:
+            line, other_line = individual.line2, individual.line1
+
+        other_tokens = tokenize_line(other_line)
+        if not other_tokens:
+            return None
+        rhyme_target = other_tokens[-1]
+
+        candidates = rewriter.rhyme_rewrite(line, rhyme_target, theme_keywords, syllable_range)
+        if not candidates:
+            return None
+
+        target_tail = extract_rhyme_tail(rhyme_target)
+        best_line: Optional[str] = None
+        best_score = -1
+        for cand in candidates:
+            tokens = tokenize_line(cand)
+            if not tokens:
+                continue
+            cand_tail = extract_rhyme_tail(tokens[-1])
+            score = multisyllable_overlap(cand_tail, target_tail)
+            if score > best_score:
+                best_score = score
+                best_line = cand
+
+        if best_line is None:
+            return None
+
+        if pick_line1:
+            return _copy_individual(individual, best_line, individual.line2)
+        return _copy_individual(individual, individual.line1, best_line)
+    except Exception:
+        logger.warning("_lm_rhyme_rewrite failed", exc_info=True)
+        return None
+
+
+def _lm_internal_rhyme(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Rewrite a line to add an internal rhyme at a middle word position."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+
+        pick_line1 = random.random() < 0.5
+        line = individual.line1 if pick_line1 else individual.line2
+
+        tokens = tokenize_line(line)
+        if len(tokens) < 3:
+            return None
+
+        mid_pos = random.randint(1, len(tokens) - 2)
+        rhyme_with_word = tokens[mid_pos]
+        rhyme_tail = extract_rhyme_tail(rhyme_with_word)
+        if rhyme_tail is None:
+            return None
+
+        candidates = rewriter.internal_rhyme_rewrite(
+            line, mid_pos, rhyme_with_word, theme_keywords, syllable_range,
+        )
+        if not candidates:
+            return None
+
+        target_tail = rhyme_tail
+        best_line: Optional[str] = None
+        best_score = -1
+        for cand in candidates:
+            cand_tokens = tokenize_line(cand)
+            if len(cand_tokens) < 3:
+                continue
+            for i in range(1, len(cand_tokens) - 1):
+                t = extract_rhyme_tail(cand_tokens[i])
+                score = multisyllable_overlap(t, target_tail)
+                if score > best_score:
+                    best_score = score
+                    best_line = cand
+
+        if best_line is None:
+            return None
+
+        if pick_line1:
+            return _copy_individual(individual, best_line, individual.line2)
+        return _copy_individual(individual, individual.line1, best_line)
+    except Exception:
+        logger.warning("_lm_internal_rhyme failed", exc_info=True)
+        return None
+
+
+def _lm_theme_rewrite(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Rewrite the weaker-theme line to increase semantic relevance."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+        if not theme_keywords:
+            return None
+
+        pick_line1 = True
+        if individual.scores and "semantic1" in individual.scores and "semantic2" in individual.scores:
+            pick_line1 = individual.scores["semantic1"] <= individual.scores["semantic2"]
+        else:
+            pick_line1 = random.random() < 0.5
+
+        line = individual.line1 if pick_line1 else individual.line2
+
+        candidates = rewriter.theme_rewrite(line, theme_keywords, syllable_range)
+        if not candidates:
+            return None
+
+        new_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, new_line, individual.line2)
+        return _copy_individual(individual, individual.line1, new_line)
+    except Exception:
+        logger.warning("_lm_theme_rewrite failed", exc_info=True)
+        return None
+
+
+def _lm_paraphrase(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Paraphrase a random line while preserving end rhyme."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        _, syllable_range = _lm_config_helpers(config)
+
+        pick_line1 = random.random() < 0.5
+        line = individual.line1 if pick_line1 else individual.line2
+
+        candidates = rewriter.paraphrase(line, preserve_end_rhyme=True, syllable_range=syllable_range)
+        if not candidates:
+            return None
+
+        new_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, new_line, individual.line2)
+        return _copy_individual(individual, individual.line1, new_line)
+    except Exception:
+        logger.warning("_lm_paraphrase failed", exc_info=True)
+        return None
+
+
+def _lm_tighten(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Tighten the longer line by ~2 syllables."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        _, syllable_range = _lm_config_helpers(config)
+
+        f1, f2 = individual.features1, individual.features2
+        if not f1 or not f2:
+            analyze_individual(individual)
+            f1, f2 = individual.features1, individual.features2
+        if not f1 or not f2:
+            return None
+
+        pick_line1 = f1.syllable_count >= f2.syllable_count
+        if pick_line1:
+            line, current_syl = individual.line1, f1.syllable_count
+        else:
+            line, current_syl = individual.line2, f2.syllable_count
+
+        target_syl = max(syllable_range[0], current_syl - 2)
+        candidates = rewriter.tighten(line, target_syllables=target_syl, syllable_range=syllable_range)
+        if not candidates:
+            return None
+
+        new_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, new_line, individual.line2)
+        return _copy_individual(individual, individual.line1, new_line)
+    except Exception:
+        logger.warning("_lm_tighten failed", exc_info=True)
+        return None
+
+
+def _lm_expand(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Expand the shorter line by ~2 syllables."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        _, syllable_range = _lm_config_helpers(config)
+
+        f1, f2 = individual.features1, individual.features2
+        if not f1 or not f2:
+            analyze_individual(individual)
+            f1, f2 = individual.features1, individual.features2
+        if not f1 or not f2:
+            return None
+
+        pick_line1 = f1.syllable_count <= f2.syllable_count
+        if pick_line1:
+            line, current_syl = individual.line1, f1.syllable_count
+        else:
+            line, current_syl = individual.line2, f2.syllable_count
+
+        target_syl = min(syllable_range[1], current_syl + 2)
+        candidates = rewriter.expand(line, target_syllables=target_syl, syllable_range=syllable_range)
+        if not candidates:
+            return None
+
+        new_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, new_line, individual.line2)
+        return _copy_individual(individual, individual.line1, new_line)
+    except Exception:
+        logger.warning("_lm_expand failed", exc_info=True)
+        return None
+
+
 # Registry of mutation functions
 _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
+    # LM-backed operators
+    "lm_rhyme_rewrite": _lm_rhyme_rewrite,
+    "lm_internal_rhyme": _lm_internal_rhyme,
+    "lm_theme_rewrite": _lm_theme_rewrite,
+    "lm_paraphrase": _lm_paraphrase,
+    "lm_tighten": _lm_tighten,
+    "lm_expand": _lm_expand,
+    # Legacy operators (cheap fallbacks)
     "end_word_swap": _end_word_swap,
     "internal_rhyme_insert": _internal_rhyme_insert,
     "stressed_vowel_swap": _stressed_vowel_swap,
@@ -542,16 +837,29 @@ def mutate(
     individual: CoupletIndividual,
     config: Optional[Any] = None,
     weights: Optional[Dict[str, float]] = None,
+    lm_budget: Optional[Dict[str, int]] = None,
 ) -> CoupletIndividual:
     """
     Apply one mutation to individual. Selects mutation type by MUTATION_WEIGHTS,
     makes one conservative change, returns new CoupletIndividual.
     If selected mutation fails, tries others; if all fail, returns copy unchanged.
+
+    *lm_budget*: if provided, a mutable dict like ``{"remaining": 50}``.
+    LM operators (keys starting with ``lm_``) are excluded when the budget is
+    exhausted, and each successful LM mutation decrements the counter by 1.
+    Pass ``None`` for unlimited LM calls.
     """
     w = weights or MUTATION_WEIGHTS
     tail_to_words = get_tail_to_words()
 
-    choices = [k for k in w if w.get(k, 0) > 0 and k in _MUTATION_FUNCS]
+    lm_allowed = lm_budget is None or lm_budget.get("remaining", 0) > 0
+
+    choices = [
+        k for k in w
+        if w.get(k, 0) > 0
+        and k in _MUTATION_FUNCS
+        and (lm_allowed or not k.startswith("lm_"))
+    ]
     if not choices:
         return _copy_individual(individual, individual.line1, individual.line2)
 
@@ -571,12 +879,16 @@ def mutate(
         func = _MUTATION_FUNCS[name]
         result = func(individual, tail_to_words, config)
         if result is not None:
+            if lm_budget is not None and name.startswith("lm_"):
+                lm_budget["remaining"] -= 1
             return result
 
     # Fallback: try each mutation once
     for name in random.sample(choices, len(choices)):
         result = _MUTATION_FUNCS[name](individual, tail_to_words, config)
         if result is not None:
+            if lm_budget is not None and name.startswith("lm_"):
+                lm_budget["remaining"] -= 1
             return result
 
     return _copy_individual(individual, individual.line1, individual.line2)

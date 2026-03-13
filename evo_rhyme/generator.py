@@ -2,7 +2,7 @@
 evo_rhyme/generator.py
 
 Seed couplet generation from templates and vocab. Loads rhyme groups from
-rapbot.rhyme_scorer for end-word pairing. Builds tail_to_words (group_to_words)
+evo_rhyme.rhyme_resources for end-word pairing. Builds tail_to_words (group_to_words)
 index from rhymes_grouped.csv for rhyme targeting in mutations.
 
 Also supports corpus-based random couplets for inject_random_immigrants.
@@ -19,11 +19,7 @@ from typing import Callable, Dict, List, Optional, Set
 
 from evo_rhyme.individual import CoupletIndividual, analyze_individual
 
-try:
-    from rapbot.rhyme_scorer import RHYME_GROUPS, load_rhyme_groups
-except ImportError:
-    RHYME_GROUPS: Dict[str, int] = {}
-    load_rhyme_groups = None  # type: ignore
+from evo_rhyme.rhyme_resources import RHYME_GROUPS, load_rhyme_groups
 
 # ---------------------------------------------------------------------------
 # Paths for template/vocab seed generation
@@ -288,7 +284,7 @@ def generate_seed_couplets(
 ) -> List[CoupletIndividual]:
     """
     Generate seed couplets from templates with theme-aware word filling.
-    End-word pairs are picked from the same rhyme group (from rapbot.rhyme_scorer).
+    End-word pairs are picked from the same rhyme group (from evo_rhyme.rhyme_resources).
 
     Args:
         theme_keywords: Optional list of theme words to prefer when filling slots.

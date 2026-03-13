@@ -120,14 +120,36 @@ def _check_weak_end_words(
     return None
 
 
+def _check_consecutive_duplicates(tokens: list, max_run: int = 2) -> Optional[str]:
+    """Reject if any word (including stopwords) appears max_run+ times consecutively."""
+    if len(tokens) < 2:
+        return None
+    run_len = 1
+    for i in range(1, len(tokens)):
+        if tokens[i].lower() == tokens[i - 1].lower():
+            run_len += 1
+            if run_len > max_run:
+                return f"word '{tokens[i].lower()}' repeated {run_len}x consecutively"
+        else:
+            run_len = 1
+    return None
+
+
 def _check_repetition(
     individual: CoupletIndividual, config: ConstraintConfig
 ) -> Optional[str]:
     """Reject if same content word appears more than max_token_repeats times.
-    Stopwords (the, a, in, etc.) are excluded from the count."""
+    Stopwords (the, a, in, etc.) are excluded from the content-word count,
+    but consecutive duplicates of ANY word (including stopwords) are caught."""
     f1, f2 = individual.features1, individual.features2
     if not f1 or not f2:
         return None  # skip if not analyzed
+
+    for tokens in (f1.tokens, f2.tokens):
+        err = _check_consecutive_duplicates(tokens)
+        if err:
+            return err
+
     stopwords = config.repetition_stopwords
     content_tokens = [
         t.lower() for t in (f1.tokens + f2.tokens)
@@ -394,10 +416,17 @@ def _check_verse_content_repetition(
     individual: VerseIndividual,
     config: ConstraintConfig,
 ) -> Optional[str]:
-    """Reject if any content word appears more than max_token_repeats times across 4 lines."""
+    """Reject if any content word appears more than max_token_repeats times across
+    4 lines, or if any line has consecutive duplicate words."""
     f = individual.features
     if not f or len(f.tokens_per_line) != 4:
         return None
+
+    for i, tokens in enumerate(f.tokens_per_line):
+        err = _check_consecutive_duplicates(tokens)
+        if err:
+            return f"line{i+1}: {err}"
+
     stopwords = config.repetition_stopwords
     content_tokens = []
     for tokens in f.tokens_per_line:
@@ -466,5 +495,12 @@ def passes_verse_constraints(
     err = _check_verse_content_repetition(individual, cfg)
     if err:
         return False
+
+    if cfg.require_theme_presence and cfg.prompt_keywords:
+        all_words: set = set()
+        for line in individual.lines:
+            all_words.update(re.findall(r"[A-Za-z']+", line.lower()))
+        if not (all_words & cfg.prompt_keywords):
+            return False
 
     return True

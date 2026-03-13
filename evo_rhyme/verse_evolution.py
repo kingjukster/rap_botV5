@@ -13,13 +13,23 @@ import logging
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from evo_rhyme.constraints import passes_verse_constraints
+from evo_rhyme.archive import MAPElitesArchive, create_verse_archive
 from evo_rhyme.fitness import (
+    OBJECTIVE_KEYS,
     VERSE_DEFAULT_WEIGHTS,
     compute_verse_fitness,
+    score_vector,
     score_verse,
+)
+from evo_rhyme.selection import (
+    compute_population_objectives,
+    crowding_distance,
+    pareto_elitism,
+    pareto_rank,
+    pareto_tournament_select,
 )
 from evo_rhyme.individual import (
     CoupletIndividual,
@@ -49,7 +59,40 @@ class VerseEvolutionConfig:
     output_dir: Optional[Path] = None
     use_embeddings: bool = False
     embedding_weight: float = 0.5
-    use_niching: bool = False
+    use_niching: bool = True
+    corpus_lines: Optional[list] = None
+
+
+@dataclass
+class QDEvolutionConfig:
+    """Configuration for quality-diversity verse evolution."""
+    population_size: int = 120
+    num_generations: int = 30
+    num_elites: int = 10
+    tournament_k: int = 3
+    random_immigrants_per_gen: int = 5
+    rhyme_scheme: str = "AABB"
+    theme_keywords: List[str] = field(default_factory=list)
+    num_lines: int = 4
+
+    lm_mutation_budget_per_gen: int = 200
+
+    archive_dims: Optional[List] = None
+
+    min_fluency: float = 0.3
+    min_semantic: float = 0.0
+
+    max_offspring_attempts: int = 200
+    crossover_rate: float = 0.7
+
+    output_dir: Optional[str] = None
+
+    min_syllables: int = 6
+    max_syllables: int = 18
+
+    corpus_vocab: Optional[set] = None
+    use_embeddings: bool = False
+    embedding_weight: float = 0.10
 
 
 def verse_crossover(
@@ -122,17 +165,30 @@ def verse_mutate(
     individual: VerseIndividual,
     config: Optional[Any] = None,
     weights: Optional[Dict[str, float]] = None,
+    constraint_config: Optional[Any] = None,
+    lm_budget: Optional[Dict[str, int]] = None,
 ) -> VerseIndividual:
     """
     Mutate one line pair (1-2 or 3-4) using couplet mutation.
-    Reuses mutate() from mutation.py per line pair.
+    Validates mutated couplet against constraints; discards mutation if it fails.
     """
+    from evo_rhyme.constraints import passes_constraints
+
     pair_idx = random.randint(0, 1)  # 0 = lines 1-2, 1 = lines 3-4
     line1 = individual.lines[pair_idx * 2]
     line2 = individual.lines[pair_idx * 2 + 1]
 
     couplet = CoupletIndividual(line1=line1, line2=line2)
-    mutated = mutate(couplet, config, weights)
+    mutated = mutate(couplet, config, weights, lm_budget=lm_budget)
+
+    if not passes_constraints(mutated, constraint_config):
+        return VerseIndividual(
+            lines=list(individual.lines),
+            features=None,
+            scores=None,
+            fitness=None,
+            metadata=dict(individual.metadata),
+        )
 
     lines = list(individual.lines)
     lines[pair_idx * 2] = mutated.line1
@@ -211,14 +267,13 @@ def evolve_verse_population(
     cfg = config or VerseEvolutionConfig()
     weights = cfg.fitness_weights or VERSE_DEFAULT_WEIGHTS
     mut_weights = cfg.mutation_weights or MUTATION_WEIGHTS
-    num_elites = min(cfg.num_elites, cfg.population_size)
     target_size = cfg.population_size
     scheme = cfg.rhyme_scheme or "AABB"
 
     semantic_scorer: Optional[Any] = None
     if cfg.use_embeddings:
         try:
-            from rapbot.rhyme_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
+            from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
             semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cpu")
             logger.info("Loaded SiameseRhymeScorer for verse semantic scoring")
         except Exception as e:
@@ -267,6 +322,7 @@ def evolve_verse_population(
                 theme_string=theme_string,
                 semantic_scorer=semantic_scorer if cfg.use_embeddings else None,
                 embedding_weight=cfg.embedding_weight,
+                corpus_lines=cfg.corpus_lines,
             )
             ind.fitness = compute_verse_fitness(ind.scores, weights)
 
@@ -292,7 +348,8 @@ def evolve_verse_population(
         if gen == generations - 1:
             break
 
-        # Elites
+        # Elites -- cap at 30% of surviving population to prevent premature convergence
+        num_elites = min(cfg.num_elites, max(1, len(population) * 3 // 10))
         elite_pool_size = num_elites * 5
         elite_pool = (
             _select_elites_niching_verse(population, elite_pool_size)
@@ -308,22 +365,27 @@ def evolve_verse_population(
             elite_candidates.append(p)
         next_pop: List[VerseIndividual] = list(elite_candidates)
 
+        # Scale immigrants when population is small (< half target)
+        immigrants_this_gen = cfg.random_immigrants_per_gen
+        if len(population) < cfg.population_size // 2:
+            immigrants_this_gen = cfg.random_immigrants_per_gen * 2
+
         # Offspring
         attempts = 0
         accepted = 0
         max_attempts = (target_size - num_elites) * cfg.max_offspring_attempts
-        while len(next_pop) < target_size - cfg.random_immigrants_per_gen and attempts < max_attempts:
+        while len(next_pop) < target_size - immigrants_this_gen and attempts < max_attempts:
             attempts += 1
             p1 = _tournament_select_verse(population, cfg.tournament_k)
             p2 = _tournament_select_verse(population, cfg.tournament_k)
             child = verse_crossover(p1, p2, crossover_config)
-            child = verse_mutate(child, mutation_config, mut_weights)
+            child = verse_mutate(child, mutation_config, mut_weights, constraint_config=cfg.constraint_config)
             if passes_verse_constraints(child, cfg.constraint_config):
                 accepted += 1
                 next_pop.append(child)
 
-        if immigrant_generator and cfg.random_immigrants_per_gen > 0:
-            immigrants = immigrant_generator(cfg.random_immigrants_per_gen)
+        if immigrant_generator and immigrants_this_gen > 0:
+            immigrants = immigrant_generator(immigrants_this_gen)
             for ind in immigrants:
                 if passes_verse_constraints(ind, cfg.constraint_config):
                     next_pop.append(ind)
@@ -411,3 +473,278 @@ class VerseRunLogger:
         json_path = self.run_dir / "top_candidates.json"
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(self.top_candidates_by_gen, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Quality-Diversity (MAP-Elites + Pareto) evolution
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VerseQDRunLogger:
+    """Write QD verse run artifacts to run_dir."""
+
+    run_dir: Path
+    score_history: List[Dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.run_dir = Path(self.run_dir)
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_config(
+        self,
+        config: QDEvolutionConfig,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        data: Dict[str, Any] = {
+            "population_size": config.population_size,
+            "num_generations": config.num_generations,
+            "num_elites": config.num_elites,
+            "tournament_k": config.tournament_k,
+            "random_immigrants_per_gen": config.random_immigrants_per_gen,
+            "rhyme_scheme": config.rhyme_scheme,
+            "theme_keywords": config.theme_keywords,
+            "num_lines": config.num_lines,
+            "lm_mutation_budget_per_gen": config.lm_mutation_budget_per_gen,
+            "min_fluency": config.min_fluency,
+            "min_semantic": config.min_semantic,
+            "crossover_rate": config.crossover_rate,
+            "max_offspring_attempts": config.max_offspring_attempts,
+            "min_syllables": config.min_syllables,
+            "max_syllables": config.max_syllables,
+            "use_embeddings": config.use_embeddings,
+            "embedding_weight": config.embedding_weight,
+        }
+        if extra:
+            data.update(extra)
+        path = self.run_dir / "config.json"
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def log_generation(
+        self,
+        gen: int,
+        archive_coverage: float,
+        best_fitness: float,
+        mean_fitness: float,
+        occupied_niches: int,
+    ) -> None:
+        self.score_history.append({
+            "generation": gen,
+            "archive_coverage": archive_coverage,
+            "best_fitness": best_fitness,
+            "mean_fitness": mean_fitness,
+            "occupied_niches": occupied_niches,
+        })
+
+    def flush(self, archive: MAPElitesArchive) -> None:
+        csv_path = self.run_dir / "score_history.csv"
+        if self.score_history:
+            with csv_path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "generation", "archive_coverage",
+                        "best_fitness", "mean_fitness", "occupied_niches",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerows(self.score_history)
+
+        archive_path = self.run_dir / "archive.json"
+        with archive_path.open("w", encoding="utf-8") as f:
+            json.dump(archive.to_json(), f, indent=2)
+
+        top_path = self.run_dir / "top_candidates.json"
+        top = archive.top_k(50)
+        candidates = [
+            {"lines": ind.lines, "fitness": ind.fitness, "scores": ind.scores}
+            for ind in top
+        ]
+        with top_path.open("w", encoding="utf-8") as f:
+            json.dump(candidates, f, indent=2)
+
+
+def evolve_verse_qd(
+    population: List[VerseIndividual],
+    config: QDEvolutionConfig,
+    immigrant_generator: Optional[Callable[[], VerseIndividual]] = None,
+    on_generation: Optional[Callable[[int, MAPElitesArchive, List[VerseIndividual]], None]] = None,
+) -> Tuple[MAPElitesArchive, List[VerseIndividual]]:
+    """Run quality-diversity evolution on verse population.
+
+    Uses MAP-Elites archive for diversity preservation and Pareto-based
+    selection for multi-objective optimization.
+
+    Args:
+        population: Initial population of VerseIndividuals.
+        config: QD evolution configuration.
+        immigrant_generator: Optional callable that produces random immigrants.
+        on_generation: Optional callback(gen_idx, archive, population) for logging.
+
+    Returns:
+        Tuple of (archive, final_population).
+    """
+    scheme = config.rhyme_scheme or "AABB"
+    weights = VERSE_DEFAULT_WEIGHTS
+    mut_weights = MUTATION_WEIGHTS
+
+    theme_keywords = config.theme_keywords or []
+    kw = set(w.lower() for w in theme_keywords) if theme_keywords else None
+    theme_string = " ".join(theme_keywords) if theme_keywords else None
+
+    mutation_config: Dict[str, Any] = {
+        "theme_keywords": list(theme_keywords),
+        "min_syllables": config.min_syllables,
+        "max_syllables": config.max_syllables,
+    }
+    if config.corpus_vocab:
+        mutation_config["corpus_vocab"] = config.corpus_vocab
+
+    constraint_config: Dict[str, Any] = {
+        "min_syllables": config.min_syllables,
+        "max_syllables": config.max_syllables,
+    }
+    crossover_config: Dict[str, Any] = {}
+
+    semantic_scorer: Optional[Any] = None
+    if config.use_embeddings:
+        try:
+            from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
+            semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cpu")
+            logger.info("Loaded SiameseRhymeScorer for QD verse semantic scoring")
+        except Exception as e:
+            logger.warning("Failed to load SiameseRhymeScorer: %s", e)
+
+    run_logger: Optional[VerseQDRunLogger] = None
+    if config.output_dir:
+        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir))
+        run_logger.write_config(config)
+
+    archive = create_verse_archive(config.archive_dims)
+
+    for gen in range(config.num_generations):
+        # 1. Analyze & score all individuals
+        for ind in population:
+            analyze_verse_individual(ind)
+            ind.scores = score_verse(
+                ind,
+                scheme=scheme,
+                prompt_keywords=kw,
+                theme_string=theme_string,
+                semantic_scorer=semantic_scorer if config.use_embeddings else None,
+                embedding_weight=config.embedding_weight,
+            )
+            ind.fitness = compute_verse_fitness(ind.scores, weights)
+
+        # 2. Add all to archive
+        improved = archive.add_batch(population)
+
+        # 3. Extract objectives for Pareto selection
+        objectives = compute_population_objectives(population, score_vector)
+        ranks = pareto_rank(population, objectives)
+
+        all_crowding = [0.0] * len(population)
+        for rank_val in set(ranks):
+            front = [i for i, r in enumerate(ranks) if r == rank_val]
+            if len(front) > 1:
+                cd = crowding_distance(objectives, front)
+                for idx, c in zip(front, cd):
+                    all_crowding[idx] = c
+
+        # 4. Select diverse parents from archive
+        archive_parents = archive.sample_parents(config.population_size // 2)
+
+        # 5. Select parents from population via Pareto tournament
+        tournament_parents = pareto_tournament_select(
+            population, ranks, all_crowding,
+            n=config.population_size // 2,
+            k=config.tournament_k,
+        )
+
+        parent_pool = archive_parents + tournament_parents
+
+        # 6. Generate offspring
+        lm_budget: Dict[str, int] = {"remaining": config.lm_mutation_budget_per_gen}
+        offspring: List[VerseIndividual] = []
+        attempts = 0
+        target = config.population_size - config.num_elites - config.random_immigrants_per_gen
+
+        while len(offspring) < target and attempts < config.max_offspring_attempts:
+            attempts += 1
+            if len(parent_pool) >= 2:
+                p1, p2 = random.sample(parent_pool, 2)
+            else:
+                p1 = parent_pool[0]
+                p2 = parent_pool[0]
+
+            if random.random() < config.crossover_rate:
+                child = verse_crossover(p1, p2, crossover_config)
+            else:
+                child = VerseIndividual(lines=list(p1.lines))
+
+            child = verse_mutate(
+                child, mutation_config, mut_weights,
+                constraint_config=constraint_config,
+                lm_budget=lm_budget,
+            )
+
+            if passes_verse_constraints(child, constraint_config):
+                if config.min_fluency > 0:
+                    analyze_verse_individual(child)
+                    child_scores = score_verse(
+                        child,
+                        scheme=scheme,
+                        prompt_keywords=kw,
+                        theme_string=theme_string,
+                    )
+                    fluency_val = child_scores.get("fluency", 0.0)
+                    if fluency_val < config.min_fluency:
+                        continue
+                offspring.append(child)
+
+        # 7. Elites from archive (best per niche, diverse)
+        elites = archive.top_k(config.num_elites)
+
+        # 8. Random immigrants
+        immigrants: List[VerseIndividual] = []
+        if immigrant_generator:
+            for _ in range(config.random_immigrants_per_gen):
+                try:
+                    imm = immigrant_generator()
+                    if imm and passes_verse_constraints(imm, constraint_config):
+                        immigrants.append(imm)
+                except Exception:
+                    pass
+
+        # 9. Assemble next generation
+        population = elites + offspring + immigrants
+
+        while len(population) < config.population_size and archive.occupied_niches() > 0:
+            population.extend(archive.sample_parents(1))
+
+        # 10. Logging
+        best_fit = max((ind.fitness or 0.0 for ind in population), default=0.0)
+        mean_fit = (
+            sum(ind.fitness or 0.0 for ind in population) / max(1, len(population))
+        )
+
+        if run_logger:
+            run_logger.log_generation(
+                gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+            )
+
+        if on_generation:
+            on_generation(gen, archive, population)
+
+        logger.info(
+            "Gen %d: pop=%d archive_coverage=%.1f%% archive_best=%.3f "
+            "lm_budget_remaining=%d improved=%d",
+            gen, len(population), archive.coverage() * 100,
+            best_fit, lm_budget.get("remaining", 0), improved,
+        )
+
+    if run_logger:
+        run_logger.flush(archive)
+
+    return archive, population

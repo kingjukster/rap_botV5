@@ -82,7 +82,7 @@ import string
 import pronouncing
 from functools import lru_cache
 
-from rapbot.rhyme_scorer import SiameseRhymeScorer
+from evo_rhyme.siamese_scorer import SiameseRhymeScorer
 
 
 # ---------------------------------------------------------------------------
