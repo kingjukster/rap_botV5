@@ -77,13 +77,13 @@ def main() -> None:
         "--population",
         type=int,
         default=80,
-        help="Population size",
+        help="Population size (max 5000)",
     )
     parser.add_argument(
         "--generations",
         type=int,
         default=30,
-        help="Number of generations",
+        help="Number of generations (max 1000)",
     )
     parser.add_argument(
         "--scheme",
@@ -151,6 +151,11 @@ def main() -> None:
         help="Use niching in elite selection (preserve top per rhyme family)",
     )
     args = parser.parse_args()
+
+    if args.population > 5000:
+        parser.error(f"--population {args.population} exceeds max 5000")
+    if args.generations > 1000:
+        parser.error(f"--generations {args.generations} exceeds max 1000")
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

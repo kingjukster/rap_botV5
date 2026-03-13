@@ -8,6 +8,7 @@ from evo_rhyme.phonetics import (
     count_syllables,
     extract_last_syllable,
     extract_rhyme_tail,
+    has_custom_pronunciations,
     multisyllable_overlap,
     phonetic_similarity,
 )
@@ -82,6 +83,10 @@ class TestPhoneticSimilarity:
         assert phonetic_similarity(f1, None) == 0.0
 
 
+@pytest.mark.skipif(
+    not has_custom_pronunciations(),
+    reason="custom_pronunciation.json not available (git-lfs pointer or missing)",
+)
 class TestCustomPronunciation:
     """Test custom_pronunciation.json OOV words (tryna, fiya, opp)."""
 

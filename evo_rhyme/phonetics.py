@@ -31,6 +31,7 @@ ARPA_VOWELS = {
 }
 
 _CUSTOM_PRONUNCIATIONS: Optional[dict[str, List[str]]] = None
+_CUSTOM_PRONUNCIATIONS_LOADED: bool = False  # True when real JSON loaded (not git-lfs pointer)
 
 
 def _get_custom_pronunciations_path() -> Path:
@@ -41,7 +42,7 @@ def _get_custom_pronunciations_path() -> Path:
 
 def _load_custom_pronunciations() -> dict[str, List[str]]:
     """Load custom pronunciations for OOV words (tryna, fiya, opp, etc.)."""
-    global _CUSTOM_PRONUNCIATIONS
+    global _CUSTOM_PRONUNCIATIONS, _CUSTOM_PRONUNCIATIONS_LOADED
     if _CUSTOM_PRONUNCIATIONS is not None:
         return _CUSTOM_PRONUNCIATIONS
     path = _get_custom_pronunciations_path()
@@ -49,7 +50,13 @@ def _load_custom_pronunciations() -> dict[str, List[str]]:
         _CUSTOM_PRONUNCIATIONS = {}
         return _CUSTOM_PRONUNCIATIONS
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        raw = f.read()
+    # Git-LFS pointer: file not pulled yet; treat as empty
+    if raw.strip().startswith("version https://git-lfs.github.com/spec/v1"):
+        _CUSTOM_PRONUNCIATIONS = {}
+        return _CUSTOM_PRONUNCIATIONS
+    data = json.loads(raw)
+    _CUSTOM_PRONUNCIATIONS_LOADED = True
     result: dict[str, List[str]] = {}
     for k, v in data.items():
         key = str(k).lower()
@@ -64,6 +71,12 @@ def _load_custom_pronunciations() -> dict[str, List[str]]:
             result[key] = [str(v)]
     _CUSTOM_PRONUNCIATIONS = result
     return _CUSTOM_PRONUNCIATIONS
+
+
+def has_custom_pronunciations() -> bool:
+    """True if custom_pronunciation.json was loaded (not git-lfs pointer or missing)."""
+    _load_custom_pronunciations()
+    return _CUSTOM_PRONUNCIATIONS_LOADED
 
 
 def strip_stress(phone: str) -> str:

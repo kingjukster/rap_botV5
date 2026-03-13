@@ -32,6 +32,7 @@ class TestScoreCouplet:
             "novelty",
             "weak_tail_penalty",
             "repetition_penalty",
+            "theme_word_repetition_penalty",
             "rhyme_family_repetition_penalty",
             "identical_line_penalty",
             "near_duplicate_penalty",

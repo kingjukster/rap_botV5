@@ -21,9 +21,26 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
+def _resolve_safe_path(user_path: str, base: Path, desc: str = "file") -> Path:
+    """Resolve path and ensure it stays under base (prevents path traversal)."""
+    path = Path(user_path)
+    if not path.is_absolute():
+        path = base / path
+    path = path.resolve()
+    try:
+        path.relative_to(base.resolve())
+    except ValueError:
+        print(f"Error: {desc} path must be within project directory", file=sys.stderr)
+        sys.exit(1)
+    return path
+
+
 from evo_rhyme.constraints import passes_constraints
 from evo_rhyme.fitness import DEFAULT_WEIGHTS, compute_fitness, score_couplet
 from evo_rhyme.individual import CoupletIndividual, analyze_individual
+
+MAX_LINE_LENGTH = 500
 
 
 def main():
@@ -46,9 +63,7 @@ def main():
     individuals: List[CoupletIndividual] = []
 
     if args.file:
-        path = Path(args.file)
-        if not path.is_absolute():
-            path = ROOT / path
+        path = _resolve_safe_path(args.file, ROOT, "file")
         if not path.exists():
             print(f"File not found: {path}", file=sys.stderr)
             sys.exit(1)
@@ -56,20 +71,24 @@ def main():
             data = json.load(f)
         if "candidates" in data:
             for c in data["candidates"]:
-                individuals.append(
-                    CoupletIndividual(
-                        line1=c.get("line1", ""),
-                        line2=c.get("line2", ""),
-                    )
-                )
+                l1, l2 = c.get("line1", ""), c.get("line2", "")
+                if len(l1) > MAX_LINE_LENGTH or len(l2) > MAX_LINE_LENGTH:
+                    print(f"Error: line length exceeds max {MAX_LINE_LENGTH} chars", file=sys.stderr)
+                    sys.exit(1)
+                individuals.append(CoupletIndividual(line1=l1, line2=l2))
         elif "line1" in data and "line2" in data:
-            individuals.append(
-                CoupletIndividual(line1=data["line1"], line2=data["line2"])
-            )
+            l1, l2 = data["line1"], data["line2"]
+            if len(l1) > MAX_LINE_LENGTH or len(l2) > MAX_LINE_LENGTH:
+                print(f"Error: line length exceeds max {MAX_LINE_LENGTH} chars", file=sys.stderr)
+                sys.exit(1)
+            individuals.append(CoupletIndividual(line1=l1, line2=l2))
         else:
             print("JSON must have 'line1'/'line2' or 'candidates' array", file=sys.stderr)
             sys.exit(1)
     elif args.line1 is not None and args.line2 is not None:
+        if len(args.line1) > MAX_LINE_LENGTH or len(args.line2) > MAX_LINE_LENGTH:
+            print(f"Error: line length exceeds max {MAX_LINE_LENGTH} chars", file=sys.stderr)
+            sys.exit(1)
         individuals.append(
             CoupletIndividual(line1=args.line1, line2=args.line2)
         )

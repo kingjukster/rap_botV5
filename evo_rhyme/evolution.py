@@ -600,11 +600,12 @@ def evolve(
         prev_acceptance_rate = accepted / max(1, attempts)
         logger.info(f"  Mutation acceptance: {accepted}/{attempts} = {prev_acceptance_rate:.2%}")
 
-        # Inject immigrants
+        # Inject immigrants (use effective config so theme presence is enforced when required)
         if cfg.random_immigrants_per_gen > 0 and immigrant_generator:
             immigrants = immigrant_generator(cfg.random_immigrants_per_gen)
+            eff_cc = _effective_constraint_config(cfg, prompt_keywords)
             for ind in immigrants:
-                if passes_constraints(ind, cfg.constraint_config):
+                if passes_constraints(ind, eff_cc):
                     next_pop.append(ind)
                     if len(next_pop) >= target_size:
                         break

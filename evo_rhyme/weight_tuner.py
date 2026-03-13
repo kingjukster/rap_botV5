@@ -63,6 +63,7 @@ FIXED_PENALTIES: Dict[str, float] = {
     "template_penalty": -0.08,
     "corpus_overlap_penalty": -0.20,
     "theme_penalty": -0.18,
+    "theme_word_repetition_penalty": -0.12,
 }
 
 

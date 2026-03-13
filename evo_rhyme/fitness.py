@@ -41,7 +41,8 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "ngram_fluency": 0.15,  # Strong: penalizes unnatural phrase sequences
     "novelty": 0.05,
     "weak_tail_penalty": -0.03,
-    "repetition_penalty": -0.03,
+    "repetition_penalty": -0.08,
+    "theme_word_repetition_penalty": -0.12,
     "rhyme_family_repetition_penalty": -0.15,
     "identical_line_penalty": -0.20,
     "near_duplicate_penalty": -0.15,
@@ -261,6 +262,29 @@ def _score_theme_penalty(
     return 0.8
 
 
+def _score_theme_word_repetition_penalty(
+    individual: CoupletIndividual,
+    prompt_keywords: Optional[Set[str]] = None,
+) -> float:
+    """
+    Penalty when theme keywords appear more than once in a couplet.
+    E.g. "survival got tight but survival got" -> penalize repeated "survival".
+    Returns [0,1]: 0 = no theme repeat, 1 = heavy theme word stuffing.
+    """
+    if not prompt_keywords:
+        return 0.0
+    import re
+    word_re = re.compile(r"[A-Za-z']+")
+    tokens = word_re.findall((individual.line1 + " " + individual.line2).lower())
+    theme_counts = Counter(t for t in tokens if t in prompt_keywords)
+    if not theme_counts:
+        return 0.0
+    max_theme_repeats = max(theme_counts.values())
+    if max_theme_repeats <= 1:
+        return 0.0
+    return min(1.0, (max_theme_repeats - 1) / 2.0)  # 2->0.5, 3->1.0, 4+->1.0
+
+
 def _score_near_duplicate_penalty(individual: CoupletIndividual) -> float:
     """Penalty [0,1] when line1 and line2 are nearly identical (e.g. 1 word diff)."""
     import re
@@ -374,18 +398,23 @@ def _weak_tail_penalty_raw(f1: Optional[LineFeatures], f2: Optional[LineFeatures
 
 
 def _repetition_penalty_raw(individual: CoupletIndividual) -> float:
-    """Repetition penalty [0,1] for repeated tokens."""
+    """Repetition penalty [0,1] for repeated content tokens (2+ = penalty)."""
     f1, f2 = individual.features1, individual.features2
     if not f1 or not f2:
         return 0.0
-    tokens = f1.tokens + f2.tokens
-    if not tokens:
+    stopwords = {"a", "an", "and", "at", "be", "but", "by", "for", "from", "go",
+                 "had", "he", "her", "him", "his", "i", "in", "is", "it", "me",
+                 "my", "no", "of", "on", "or", "our", "out", "she", "so", "that",
+                 "the", "them", "then", "there", "they", "this", "to", "was",
+                 "we", "you", "got", "like", "just", "all", "say", "said"}
+    content = [t.lower() for t in (f1.tokens + f2.tokens) if t.lower() not in stopwords]
+    if not content:
         return 0.0
-    counts = Counter(t.lower() for t in tokens)
+    counts = Counter(content)
     max_count = max(counts.values()) if counts else 0
-    if max_count <= 2:
+    if max_count <= 1:
         return 0.0
-    return min(1.0, (max_count - 2) / 3.0)  # 3+ = penalty
+    return min(1.0, (max_count - 1) / 2.0)  # 2->0.5, 3->1.0, 4+->1.0
 
 
 def _score_rhyme_family_repetition_penalty(individual: CoupletIndividual) -> float:
@@ -556,6 +585,9 @@ def score_couplet(
         "novelty": _score_novelty(individual),
         "weak_tail_penalty": _weak_tail_penalty_raw(f1, f2),
         "repetition_penalty": _repetition_penalty_raw(individual),
+        "theme_word_repetition_penalty": _score_theme_word_repetition_penalty(
+            individual, prompt_keywords=kw
+        ),
         "rhyme_family_repetition_penalty": _score_rhyme_family_repetition_penalty(individual),
         "identical_line_penalty": _score_identical_line_penalty(individual),
         "near_duplicate_penalty": _score_near_duplicate_penalty(individual),

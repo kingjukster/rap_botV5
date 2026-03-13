@@ -23,6 +23,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
+def _resolve_safe_path(user_path: str, base: Path, desc: str = "path") -> Path:
+    """Resolve path and ensure it stays under base (prevents path traversal)."""
+    path = Path(user_path)
+    if not path.is_absolute():
+        path = base / path
+    path = path.resolve()
+    try:
+        path.relative_to(base.resolve())
+    except ValueError:
+        raise ValueError(f"{desc} path must be within project directory")
+    return path
+
+
 from evo_rhyme.constraints import passes_constraints
 from evo_rhyme.evolution import EvolutionConfig, _effective_constraint_config, evolve, evolve_multiobjective
 from evo_rhyme.individual import analyze_individual
@@ -72,13 +86,13 @@ def main():
         "--population",
         type=int,
         default=100,
-        help="Population size",
+        help="Population size (max 5000)",
     )
     parser.add_argument(
         "--generations",
         type=int,
         default=10,
-        help="Number of generations",
+        help="Number of generations (max 1000)",
     )
     parser.add_argument(
         "--output",
@@ -208,6 +222,11 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.population > 5000:
+        parser.error(f"--population {args.population} exceeds max 5000")
+    if args.generations > 1000:
+        parser.error(f"--generations {args.generations} exceeds max 1000")
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(message)s",
@@ -231,17 +250,21 @@ def main():
     corpus_lines = load_corpus_lines(corpus_path)
     if corpus_lines:
         corpus_lines = corpus_lines[:2000]
+    # When corpus empty, still apply 0.2 floor if --lm-fluency (LM provides fluency signal)
+    # to block nonsense exploitation (valid words + rhyme + theme = high score, but nonsense)
     min_ngram_fluency_accept = (
         args.min_ngram if args.min_ngram is not None
-        else (0.2 if corpus_lines else 0.0)
+        else (0.2 if corpus_lines else (0.2 if args.lm_fluency else 0.0))
     )
 
     style_profile = None
     style_weight = 0.0
     if args.style_corpus:
-        style_path = Path(args.style_corpus)
-        if not style_path.is_absolute():
-            style_path = ROOT / style_path
+        try:
+            style_path = _resolve_safe_path(args.style_corpus, ROOT, "style-corpus")
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
         lines = load_lines_from_file(style_path)
         if lines:
             style_profile = build_style_profile(lines)
@@ -267,9 +290,11 @@ def main():
 
     fitness_weights = None
     if args.weights:
-        wpath = Path(args.weights)
-        if not wpath.is_absolute():
-            wpath = ROOT / wpath
+        try:
+            wpath = _resolve_safe_path(args.weights, ROOT, "weights")
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
         if wpath.exists():
             with wpath.open("r", encoding="utf-8") as f:
                 data = json.load(f)
