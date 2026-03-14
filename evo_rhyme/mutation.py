@@ -1134,21 +1134,30 @@ _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
 }
 
 
+_SAFE_LEGACY_OPS: Set[str] = {"syllable_adjust", "compression"}
+
+
 def mutate(
     individual: CoupletIndividual,
     config: Optional[Any] = None,
     weights: Optional[Dict[str, float]] = None,
     lm_budget: Optional[Dict[str, int]] = None,
+    lm_only: bool = False,
 ) -> CoupletIndividual:
     """
     Apply one mutation to individual. Selects mutation type by MUTATION_WEIGHTS,
     makes one conservative change, returns new CoupletIndividual.
     If selected mutation fails, tries others; if all fail, returns copy unchanged.
 
-    *lm_budget*: if provided, a mutable dict like ``{"remaining": 50}``.
+    *lm_budget*: if provided, a mutable dict like ``{"remaining": 200}``.
     LM operators (keys starting with ``lm_``) are excluded when the budget is
     exhausted, and each successful LM mutation decrements the counter by 1.
     Pass ``None`` for unlimited LM calls.
+
+    *lm_only*: if True, only LM operators and safe legacy operators (syllable_adjust,
+    compression) are used. Destructive legacy word-swaps are never tried, even as
+    fallback. When an LM mutation fails, the individual is returned unchanged rather
+    than corrupted by a random word swap.
     """
     w = weights or MUTATION_WEIGHTS
     tail_to_words = get_tail_to_words()
@@ -1161,6 +1170,13 @@ def mutate(
         and k in _MUTATION_FUNCS
         and (lm_allowed or not k.startswith("lm_"))
     ]
+
+    if lm_only:
+        choices = [
+            k for k in choices
+            if k.startswith("lm_") or k in _SAFE_LEGACY_OPS
+        ]
+
     if not choices:
         return _copy_individual(individual, individual.line1, individual.line2)
 
@@ -1184,7 +1200,7 @@ def mutate(
                 lm_budget["remaining"] -= 1
             return result
 
-    # Fallback: try each mutation once
+    # Fallback: try each mutation once (only from allowed choices)
     for name in random.sample(choices, len(choices)):
         result = _MUTATION_FUNCS[name](individual, tail_to_words, config)
         if result is not None:
