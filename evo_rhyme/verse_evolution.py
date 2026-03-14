@@ -167,6 +167,7 @@ def verse_mutate(
     weights: Optional[Dict[str, float]] = None,
     constraint_config: Optional[Any] = None,
     lm_budget: Optional[Dict[str, int]] = None,
+    lm_only: bool = False,
 ) -> VerseIndividual:
     """
     Mutate one line pair (1-2 or 3-4) using couplet mutation.
@@ -179,7 +180,7 @@ def verse_mutate(
     line2 = individual.lines[pair_idx * 2 + 1]
 
     couplet = CoupletIndividual(line1=line1, line2=line2)
-    mutated = mutate(couplet, config, weights, lm_budget=lm_budget)
+    mutated = mutate(couplet, config, weights, lm_budget=lm_budget, lm_only=lm_only)
 
     if not passes_constraints(mutated, constraint_config):
         return VerseIndividual(
@@ -687,6 +688,7 @@ def evolve_verse_qd(
                 child, mutation_config, mut_weights,
                 constraint_config=constraint_config,
                 lm_budget=lm_budget,
+                lm_only=True,
             )
 
             if passes_verse_constraints(child, constraint_config):

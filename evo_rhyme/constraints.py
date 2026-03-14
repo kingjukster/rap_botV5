@@ -120,8 +120,9 @@ def _check_weak_end_words(
     return None
 
 
-def _check_consecutive_duplicates(tokens: list, max_run: int = 2) -> Optional[str]:
-    """Reject if any word (including stopwords) appears max_run+ times consecutively."""
+def _check_consecutive_duplicates(tokens: list, max_run: int = 1) -> Optional[str]:
+    """Reject if any word (including stopwords) appears more than max_run times
+    consecutively. Default max_run=1 means no consecutive duplicates allowed."""
     if len(tokens) < 2:
         return None
     run_len = 1
