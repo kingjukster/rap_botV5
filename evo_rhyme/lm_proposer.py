@@ -47,7 +47,7 @@ _QUOTE_RE = re.compile(r'^["\']|["\']$')
 @dataclass
 class ProposerConfig:
     backend: str = "openai"
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-4.1-nano"
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     bars_per_slot: int = 80
@@ -219,32 +219,31 @@ class BarProposer:
         if self.cfg.api_base:
             client_kwargs["base_url"] = self.cfg.api_base
 
-        client = openai.AsyncOpenAI(**client_kwargs)
+        async with openai.AsyncOpenAI(**client_kwargs) as client:
+            for attempt in range(1, self.cfg.max_retries + 1):
+                try:
+                    resp = await client.chat.completions.create(
+                        model=self.cfg.model,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": f"Generate {n} bars now."},
+                        ],
+                        temperature=self.cfg.temperature,
+                        top_p=self.cfg.top_p,
+                        max_tokens=self.cfg.max_tokens * n,
+                    )
+                    text = resp.choices[0].message.content or ""
+                    return [l for l in text.splitlines() if l.strip()]
 
-        for attempt in range(1, self.cfg.max_retries + 1):
-            try:
-                resp = await client.chat.completions.create(
-                    model=self.cfg.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": f"Generate {n} bars now."},
-                    ],
-                    temperature=self.cfg.temperature,
-                    top_p=self.cfg.top_p,
-                    max_tokens=self.cfg.max_tokens * n,
-                )
-                text = resp.choices[0].message.content or ""
-                return [l for l in text.splitlines() if l.strip()]
+                except openai.RateLimitError:
+                    wait = 2 ** attempt
+                    logger.warning("Rate-limited, backing off %ds (attempt %d/%d)", wait, attempt, self.cfg.max_retries)
+                    await asyncio.sleep(wait)
 
-            except openai.RateLimitError:
-                wait = 2 ** attempt
-                logger.warning("Rate-limited, backing off %ds (attempt %d/%d)", wait, attempt, self.cfg.max_retries)
-                await asyncio.sleep(wait)
-
-            except openai.APIError as exc:
-                wait = 2 ** attempt
-                logger.warning("API error: %s – retrying in %ds (attempt %d/%d)", exc, wait, attempt, self.cfg.max_retries)
-                await asyncio.sleep(wait)
+                except openai.APIError as exc:
+                    wait = 2 ** attempt
+                    logger.warning("API error: %s – retrying in %ds (attempt %d/%d)", exc, wait, attempt, self.cfg.max_retries)
+                    await asyncio.sleep(wait)
 
         logger.error("All %d API attempts exhausted", self.cfg.max_retries)
         return []

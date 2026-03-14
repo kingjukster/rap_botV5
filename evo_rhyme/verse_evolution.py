@@ -17,12 +17,17 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from evo_rhyme.constraints import passes_verse_constraints
 from evo_rhyme.archive import MAPElitesArchive, create_verse_archive
+from evo_rhyme.line_archive import ScoredLine, LineArchive
+from evo_rhyme.line_evolution import LineEvolutionConfig, evolve_lines, score_line
+from evo_rhyme.verse_builder import build_verse_batch
+from evo_rhyme.scoring.novelty import NoveltyArchive, embed_texts, compute_verse_novelty
 from evo_rhyme.fitness import (
     OBJECTIVE_KEYS,
     VERSE_DEFAULT_WEIGHTS,
     compute_verse_fitness,
     score_vector,
     score_verse,
+    score_verses_batch,
 )
 from evo_rhyme.selection import (
     compute_population_objectives,
@@ -39,6 +44,7 @@ from evo_rhyme.individual import (
 )
 from evo_rhyme.mutation import MUTATION_WEIGHTS, mutate
 from evo_rhyme.phonetics import tokenize_line, syllable_count_line
+from evo_rhyme.template_grammar import get_template_pool
 
 logger = logging.getLogger(__name__)
 
@@ -67,23 +73,25 @@ class VerseEvolutionConfig:
 class QDEvolutionConfig:
     """Configuration for quality-diversity verse evolution."""
     population_size: int = 120
-    num_generations: int = 30
-    num_elites: int = 10
-    tournament_k: int = 3
-    random_immigrants_per_gen: int = 5
+    num_generations: int = 100
+    num_elites: int = 5
+    tournament_k: int = 4
+    random_immigrants_per_gen: int = 20
     rhyme_scheme: str = "AABB"
     theme_keywords: List[str] = field(default_factory=list)
     num_lines: int = 4
 
-    lm_mutation_budget_per_gen: int = 200
+    lm_mutation_budget_per_gen: int = 20
 
     archive_dims: Optional[List] = None
 
-    min_fluency: float = 0.3
+    min_fluency: float = 0.4
+    min_lm_fluency: float = 0.4
+    min_coherence: float = 0.25
     min_semantic: float = 0.0
 
     max_offspring_attempts: int = 200
-    crossover_rate: float = 0.7
+    crossover_rate: float = 0.6
 
     output_dir: Optional[str] = None
 
@@ -92,7 +100,19 @@ class QDEvolutionConfig:
 
     corpus_vocab: Optional[set] = None
     use_embeddings: bool = False
-    embedding_weight: float = 0.10
+    embedding_weight: float = 0.40
+
+    use_emitters: bool = True
+    novelty_weight: float = 0.3
+    allowed_schemes: List[str] = field(default_factory=lambda: ["AABB", "ABAB", "ABBA", "ABCB", "AABA", "AAAA"])
+
+    # Two-tier line evolution
+    line_population_size: int = 1500
+    line_generations_per_verse_gen: int = 3
+    line_lm_seed_count: int = 80
+    composed_offspring_ratio: float = 0.5
+    max_lines_per_rhyme_group: int = 200
+    line_lm_mutation_budget: int = 15
 
 
 def verse_crossover(
@@ -101,23 +121,41 @@ def verse_crossover(
     config: Optional[Any] = None,
 ) -> VerseIndividual:
     """
-    Crossover two verse parents.
-    - Swap 2-line halves: lines 1-2 from A, 3-4 from B (or vice versa)
-    - Or phrase-slice: swap phrase slices between verses when structure matches
+    Crossover two verse parents. Three strategies:
+    1. Half swap: lines 1-2 from A, 3-4 from B (preserves rhyming couplets)
+    2. Single-line swap: replace one line from A with the same-position line from B
+    3. Phrase-slice: swap phrase slices when structure matches
     """
     cfg = config or {}
     try_phrase_slice = cfg.get("phrase_slice", False)
 
-    if try_phrase_slice and random.random() < 0.3:
+    if try_phrase_slice and random.random() < 0.2:
         child = _verse_phrase_slice_crossover(parent1, parent2)
         if child is not None:
             return child
 
-    # Standard 2-line half swap
-    if random.random() < 0.5:
-        lines = parent1.lines[:2] + parent2.lines[2:]
+    r = random.random()
+    if r < 0.5:
+        # Half swap (preserves rhyming couplets within AABB)
+        if random.random() < 0.5:
+            lines = parent1.lines[:2] + parent2.lines[2:]
+        else:
+            lines = parent2.lines[:2] + parent1.lines[2:]
+    elif r < 0.8:
+        # Single-line swap (minimal disruption)
+        idx = random.randint(0, 3)
+        lines = list(parent1.lines)
+        lines[idx] = parent2.lines[idx]
     else:
-        lines = parent2.lines[:2] + parent1.lines[2:]
+        # Best-of-each: pick best-scoring parent's line at each position
+        lines = []
+        for i in range(4):
+            s1 = parent1.fitness or 0
+            s2 = parent2.fitness or 0
+            if s1 >= s2:
+                lines.append(parent1.lines[i] if random.random() < 0.7 else parent2.lines[i])
+            else:
+                lines.append(parent2.lines[i] if random.random() < 0.7 else parent1.lines[i])
 
     return VerseIndividual(
         lines=lines,
@@ -161,6 +199,82 @@ def _verse_phrase_slice_crossover(
     return VerseIndividual(lines=lines, features=None, scores=None, fitness=None, metadata={})
 
 
+def _lm_verse_rewrite(
+    individual: VerseIndividual,
+    config: Optional[Any] = None,
+    lm_budget: Optional[Dict[str, int]] = None,
+) -> Optional[VerseIndividual]:
+    """Full 4-line LM rewrite preserving rhyme scheme and theme."""
+    try:
+        from evo_rhyme.mutation import get_rewriter
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords = []
+        if config and isinstance(config, dict):
+            theme_keywords = config.get("theme_keywords", [])
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+        verse_text = "\n".join(individual.lines)
+
+        prompt = (
+            f'Rewrite this entire rap verse with fresh imagery and structure.\n'
+            f'Keep the AABB rhyme scheme (lines 1-2 rhyme, lines 3-4 rhyme).\n'
+            f'Theme: {theme}\n'
+            f'Each line should be 8-16 syllables.\n\n'
+            f'Original verse:\n{verse_text}\n\n'
+            f'Write ONE rewritten verse (4 lines). Output ONLY the 4 lines.'
+        )
+
+        from evo_rhyme.lm_rewriter import _cache_key
+        key = _cache_key(verse_text, "verse_rewrite", (theme,))
+        raw = rewriter._call_lm(prompt, key)
+        if lm_budget:
+            lm_budget["remaining"] = lm_budget.get("remaining", 0) - 1
+
+        new_lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
+        if len(new_lines) != 4:
+            return None
+
+        return VerseIndividual(
+            lines=new_lines,
+            features=None,
+            scores=None,
+            fitness=None,
+            metadata={"origin": "lm_verse_rewrite"},
+        )
+    except Exception:
+        logger.warning("_lm_verse_rewrite failed", exc_info=True)
+        return None
+
+
+def _lm_repair_couplet(
+    couplet: CoupletIndividual,
+    config: Optional[Any] = None,
+    lm_budget: Optional[Dict[str, int]] = None,
+) -> Optional[CoupletIndividual]:
+    """Repair a constraint-violating couplet via LM."""
+    try:
+        from evo_rhyme.mutation import get_rewriter
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        min_syl = config.get("min_syllables", 6) if isinstance(config, dict) else 6
+        max_syl = config.get("max_syllables", 18) if isinstance(config, dict) else 18
+
+        tokens2 = tokenize_line(couplet.line2)
+        rhyme_target = tokens2[-1] if tokens2 else "night"
+
+        repaired_lines = rewriter.repair(
+            couplet.line1, rhyme_target, (min_syl, max_syl),
+        )
+        if lm_budget:
+            lm_budget["remaining"] = lm_budget.get("remaining", 0) - 1
+
+        if repaired_lines:
+            from evo_rhyme.individual import CoupletIndividual as CI
+            return CI(line1=repaired_lines[0], line2=couplet.line2)
+        return None
+    except Exception:
+        logger.warning("_lm_repair_couplet failed", exc_info=True)
+        return None
+
+
 def verse_mutate(
     individual: VerseIndividual,
     config: Optional[Any] = None,
@@ -168,31 +282,39 @@ def verse_mutate(
     constraint_config: Optional[Any] = None,
     lm_budget: Optional[Dict[str, int]] = None,
 ) -> VerseIndividual:
-    """
-    Mutate one line pair (1-2 or 3-4) using couplet mutation.
-    Validates mutated couplet against constraints; discards mutation if it fails.
-    """
+    """Mutate verse: 80% single couplet, 15% both couplets, 5% verse LM rewrite."""
     from evo_rhyme.constraints import passes_constraints
 
-    pair_idx = random.randint(0, 1)  # 0 = lines 1-2, 1 = lines 3-4
-    line1 = individual.lines[pair_idx * 2]
-    line2 = individual.lines[pair_idx * 2 + 1]
+    r = random.random()
 
-    couplet = CoupletIndividual(line1=line1, line2=line2)
-    mutated = mutate(couplet, config, weights, lm_budget=lm_budget)
+    # 5% chance: whole-verse LM rewrite
+    if r < 0.05 and lm_budget and lm_budget.get("remaining", 0) > 0:
+        result = _lm_verse_rewrite(individual, config, lm_budget)
+        if result is not None:
+            return result
 
-    if not passes_constraints(mutated, constraint_config):
-        return VerseIndividual(
-            lines=list(individual.lines),
-            features=None,
-            scores=None,
-            fitness=None,
-            metadata=dict(individual.metadata),
-        )
+    # 15% chance: mutate both couplets
+    if r < 0.20:
+        pair_indices = [0, 1]
+    else:
+        pair_indices = [random.randint(0, 1)]
 
     lines = list(individual.lines)
-    lines[pair_idx * 2] = mutated.line1
-    lines[pair_idx * 2 + 1] = mutated.line2
+    for pair_idx in pair_indices:
+        line1 = lines[pair_idx * 2]
+        line2 = lines[pair_idx * 2 + 1]
+        couplet = CoupletIndividual(line1=line1, line2=line2)
+        mutated = mutate(couplet, config, weights, lm_budget=lm_budget)
+        if passes_constraints(mutated, constraint_config):
+            lines[pair_idx * 2] = mutated.line1
+            lines[pair_idx * 2 + 1] = mutated.line2
+        else:
+            # Try LM repair instead of discarding
+            if lm_budget and lm_budget.get("remaining", 0) > 0:
+                repaired = _lm_repair_couplet(mutated, config, lm_budget)
+                if repaired and passes_constraints(repaired, constraint_config):
+                    lines[pair_idx * 2] = repaired.line1
+                    lines[pair_idx * 2 + 1] = repaired.line2
 
     return VerseIndividual(
         lines=lines,
@@ -274,8 +396,8 @@ def evolve_verse_population(
     if cfg.use_embeddings:
         try:
             from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
-            semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cpu")
-            logger.info("Loaded SiameseRhymeScorer for verse semantic scoring")
+            semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cuda")
+            logger.info("Loaded SiameseRhymeScorer for verse semantic scoring (CUDA)")
         except Exception as e:
             logger.warning("Failed to load SiameseRhymeScorer: %s", e)
 
@@ -611,8 +733,8 @@ def evolve_verse_qd(
     if config.use_embeddings:
         try:
             from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
-            semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cpu")
-            logger.info("Loaded SiameseRhymeScorer for QD verse semantic scoring")
+            semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cuda")
+            logger.info("Loaded SiameseRhymeScorer for QD verse semantic scoring (CUDA)")
         except Exception as e:
             logger.warning("Failed to load SiameseRhymeScorer: %s", e)
 
@@ -623,19 +745,86 @@ def evolve_verse_qd(
 
     archive = create_verse_archive(config.archive_dims)
 
+    # Novelty archives
+    verse_novelty_archive = NoveltyArchive(max_size=5000, k_nearest=10)
+    line_novelty_archive = NoveltyArchive(max_size=10000, k_nearest=15)
+
+    # Line evolution config
+    line_evo_config = LineEvolutionConfig(
+        population_size=config.line_population_size,
+        num_generations=config.line_generations_per_verse_gen,
+        lm_seed_count=config.line_lm_seed_count,
+        lm_mutation_budget=config.line_lm_mutation_budget,
+        max_per_rhyme_group=config.max_lines_per_rhyme_group,
+        theme_keywords=list(theme_keywords),
+        min_syllables=config.min_syllables,
+        max_syllables=config.max_syllables,
+        use_embeddings=config.use_embeddings,
+        embedding_weight=config.embedding_weight,
+    )
+    line_archive: Optional[LineArchive] = None
+
+    # Template pool for evolved template selection
+    try:
+        template_pool = get_template_pool()
+        logger.info("Initialized template pool with %d templates", template_pool.size())
+    except Exception:
+        template_pool = None
+        logger.warning("Template pool initialization failed, using static templates")
+
     for gen in range(config.num_generations):
-        # 1. Analyze & score all individuals
+        # 1. Analyze & batch-score all individuals
         for ind in population:
             analyze_verse_individual(ind)
-            ind.scores = score_verse(
-                ind,
-                scheme=scheme,
-                prompt_keywords=kw,
-                theme_string=theme_string,
-                semantic_scorer=semantic_scorer if config.use_embeddings else None,
-                embedding_weight=config.embedding_weight,
+        pop_scores = score_verses_batch(
+            population,
+            scheme=scheme,
+            prompt_keywords=kw,
+            theme_string=theme_string,
+            semantic_scorer=semantic_scorer if config.use_embeddings else None,
+            embedding_weight=config.embedding_weight,
+        )
+        for ind, sc in zip(population, pop_scores):
+            ind.scores = sc
+            ind.fitness = compute_verse_fitness(sc, weights)
+
+        # --- Line evolution stage (incremental: reuse archive across generations) ---
+        population_sorted = sorted(population, key=lambda i: i.fitness or 0.0, reverse=True)
+        initial_scored_lines: List[ScoredLine] = []
+        for ind in population_sorted:
+            for line_text in ind.lines:
+                try:
+                    sl = score_line(
+                        line_text, kw, theme_string, semantic_scorer,
+                        embedding_weight=config.embedding_weight,
+                    )
+                    initial_scored_lines.append(sl)
+                except Exception:
+                    pass
+
+        incremental_config = LineEvolutionConfig(
+            population_size=line_evo_config.population_size,
+            num_generations=line_evo_config.num_generations if gen == 0 else max(1, line_evo_config.num_generations // 3),
+            lm_seed_count=line_evo_config.lm_seed_count if gen == 0 else 0,
+            lm_mutation_budget=line_evo_config.lm_mutation_budget,
+            max_per_rhyme_group=line_evo_config.max_per_rhyme_group,
+            theme_keywords=line_evo_config.theme_keywords,
+            min_syllables=line_evo_config.min_syllables,
+            max_syllables=line_evo_config.max_syllables,
+            use_embeddings=line_evo_config.use_embeddings,
+            embedding_weight=line_evo_config.embedding_weight,
+        )
+
+        try:
+            line_archive = evolve_lines(
+                incremental_config,
+                initial_lines=initial_scored_lines,
+                semantic_scorer=semantic_scorer,
+                novelty_archive=line_novelty_archive,
+                existing_archive=line_archive,
             )
-            ind.fitness = compute_verse_fitness(ind.scores, weights)
+        except Exception:
+            logger.warning("Line evolution failed, using previous archive", exc_info=True)
 
         # 2. Add all to archive
         improved = archive.add_batch(population)
@@ -664,13 +853,36 @@ def evolve_verse_qd(
 
         parent_pool = archive_parents + tournament_parents
 
-        # 6. Generate offspring
-        lm_budget: Dict[str, int] = {"remaining": config.lm_mutation_budget_per_gen}
-        offspring: List[VerseIndividual] = []
-        attempts = 0
-        target = config.population_size - config.num_elites - config.random_immigrants_per_gen
+        # 6. Generate offspring (two-pass: generate candidates, then batch-score)
+        # LM budget reserved exclusively for repair (Phase 3) -- not used in mutation
+        lm_repair_budget: Dict[str, int] = {"remaining": config.lm_mutation_budget_per_gen}
+        target = max(0, config.population_size - config.num_elites - config.random_immigrants_per_gen)
 
-        while len(offspring) < target and attempts < config.max_offspring_attempts:
+        # --- Phase 1: Generate all candidate offspring (fast: no GPU scoring) ---
+        candidates: List[VerseIndividual] = []
+
+        # 6a. Composed offspring from line archive (no LM)
+        if line_archive is not None and line_archive.size() > 0 and target > 0:
+            composed_target = max(1, int(target * config.composed_offspring_ratio))
+            try:
+                raw_composed = build_verse_batch(
+                    line_archive, composed_target, scheme,
+                    optimize_transitions=True,
+                    lm_budget=None,
+                )
+                for v in raw_composed:
+                    if passes_verse_constraints(v, constraint_config):
+                        analyze_verse_individual(v)
+                        candidates.append(v)
+            except Exception:
+                logger.warning("Verse building from archive failed", exc_info=True)
+
+        # 6b. Evolved offspring via crossover/mutation (no LM -- pure evolutionary)
+        evolved_target = target - len(candidates)
+        attempts = 0
+        evolved_candidates: List[VerseIndividual] = []
+
+        while len(evolved_candidates) < evolved_target and attempts < config.max_offspring_attempts:
             attempts += 1
             if len(parent_pool) >= 2:
                 p1, p2 = random.sample(parent_pool, 2)
@@ -686,22 +898,105 @@ def evolve_verse_qd(
             child = verse_mutate(
                 child, mutation_config, mut_weights,
                 constraint_config=constraint_config,
-                lm_budget=lm_budget,
+                lm_budget=None,
             )
 
             if passes_verse_constraints(child, constraint_config):
-                if config.min_fluency > 0:
-                    analyze_verse_individual(child)
-                    child_scores = score_verse(
-                        child,
-                        scheme=scheme,
-                        prompt_keywords=kw,
-                        theme_string=theme_string,
-                    )
-                    fluency_val = child_scores.get("fluency", 0.0)
-                    if fluency_val < config.min_fluency:
-                        continue
-                offspring.append(child)
+                analyze_verse_individual(child)
+                evolved_candidates.append(child)
+
+        candidates.extend(evolved_candidates)
+
+        # --- Phase 2: Batch-score all candidates (one GPU pass) ---
+        if candidates:
+            batch_scores = score_verses_batch(
+                candidates,
+                scheme=scheme,
+                prompt_keywords=kw,
+                theme_string=theme_string,
+                semantic_scorer=semantic_scorer if config.use_embeddings else None,
+                embedding_weight=config.embedding_weight,
+            )
+            for cand, sc in zip(candidates, batch_scores):
+                cand.scores = sc
+        else:
+            batch_scores = []
+
+        # --- Phase 3: LM repair for low-fluency candidates (all LM budget reserved for this) ---
+        if config.min_lm_fluency > 0:
+            for i, cand in enumerate(candidates):
+                lm_f = cand.scores.get("lm_fluency", 0.0)
+                if lm_f < config.min_lm_fluency and lm_repair_budget.get("remaining", 0) > 0:
+                    lines = list(cand.lines)
+                    repaired_lines = list(lines)
+                    did_repair = False
+                    for pair_idx in range(len(lines) // 2):
+                        cpl = CoupletIndividual(
+                            line1=lines[pair_idx * 2],
+                            line2=lines[pair_idx * 2 + 1],
+                        )
+                        repaired = _lm_repair_couplet(cpl, mutation_config, lm_repair_budget)
+                        if repaired:
+                            repaired_lines[pair_idx * 2] = repaired.line1
+                            repaired_lines[pair_idx * 2 + 1] = repaired.line2
+                            did_repair = True
+                    if did_repair:
+                        new_cand = VerseIndividual(
+                            lines=repaired_lines, features=None, scores=None,
+                            fitness=None, metadata=dict(cand.metadata),
+                        )
+                        if passes_verse_constraints(new_cand, constraint_config):
+                            analyze_verse_individual(new_cand)
+                            candidates[i] = new_cand
+
+            repaired_indices = [
+                i for i, c in enumerate(candidates) if c.scores is None
+            ]
+            if repaired_indices:
+                repaired_cands = [candidates[i] for i in repaired_indices]
+                repaired_scores = score_verses_batch(
+                    repaired_cands,
+                    scheme=scheme,
+                    prompt_keywords=kw,
+                    theme_string=theme_string,
+                    semantic_scorer=semantic_scorer if config.use_embeddings else None,
+                    embedding_weight=config.embedding_weight,
+                )
+                for idx, sc in zip(repaired_indices, repaired_scores):
+                    candidates[idx].scores = sc
+
+        # --- Phase 4: Filter by quality thresholds ---
+        filtered: List[VerseIndividual] = []
+        for cand in candidates:
+            sc = cand.scores or {}
+            if config.min_fluency > 0 and sc.get("fluency", 0.0) < config.min_fluency:
+                continue
+            if config.min_lm_fluency > 0 and sc.get("lm_fluency", 0.0) < config.min_lm_fluency:
+                continue
+            if config.min_coherence > 0 and sc.get("coherence", 0.0) < config.min_coherence:
+                continue
+            if sc.get("garbled_line_penalty", 0.0) > 0.25:
+                continue
+            filtered.append(cand)
+
+        # --- Phase 5: Batch novelty + fitness (single embed_texts call) ---
+        try:
+            if filtered:
+                verse_texts = [" ".join(c.lines) for c in filtered]
+                verse_embs = embed_texts(verse_texts)
+                novelties = verse_novelty_archive.compute_novelty_batch(verse_embs)
+                for cand, nov in zip(filtered, novelties):
+                    cand.scores["novelty"] = float(nov)
+                verse_novelty_archive.add_batch(verse_embs)
+        except Exception:
+            for cand in filtered:
+                if cand.scores is not None:
+                    cand.scores.setdefault("novelty", 0.5)
+
+        for cand in filtered:
+            cand.fitness = compute_verse_fitness(cand.scores, weights)
+
+        all_offspring = sorted(filtered, key=lambda c: c.fitness or 0.0, reverse=True)[:target]
 
         # 7. Elites from archive (best per niche, diverse)
         elites = archive.top_k(config.num_elites)
@@ -718,10 +1013,27 @@ def evolve_verse_qd(
                     pass
 
         # 9. Assemble next generation
-        population = elites + offspring + immigrants
+        population = elites + all_offspring + immigrants
 
         while len(population) < config.population_size and archive.occupied_niches() > 0:
             population.extend(archive.sample_parents(1))
+
+        # Template pool evolution
+        if template_pool is not None:
+            # Record fitness for templates used in this generation's population
+            for ind in population:
+                if hasattr(ind, 'template_ids') and ind.template_ids and ind.fitness:
+                    for tid in ind.template_ids:
+                        if tid:
+                            template_pool.record_fitness(tid, ind.fitness)
+            # Evolve templates every 3 generations
+            if gen > 0 and gen % 3 == 0:
+                template_pool.evolve(mutation_rate=0.2, crossover_rate=0.1)
+                logger.info(
+                    "Evolved template pool: %d templates, top fitness=%.3f",
+                    template_pool.size(),
+                    template_pool.top_k(1)[0].avg_fitness if template_pool.top_k(1) else 0.0,
+                )
 
         # 10. Logging
         best_fit = max((ind.fitness or 0.0 for ind in population), default=0.0)
@@ -741,7 +1053,138 @@ def evolve_verse_qd(
             "Gen %d: pop=%d archive_coverage=%.1f%% archive_best=%.3f "
             "lm_budget_remaining=%d improved=%d",
             gen, len(population), archive.coverage() * 100,
-            best_fit, lm_budget.get("remaining", 0), improved,
+            best_fit, lm_repair_budget.get("remaining", 0), improved,
+        )
+
+    if run_logger:
+        run_logger.flush(archive)
+
+    return archive, population
+
+
+# ---------------------------------------------------------------------------
+# Emitter-based MAP-Elites evolution
+# ---------------------------------------------------------------------------
+
+
+def evolve_verse_qd_emitters(
+    population: List[VerseIndividual],
+    config: QDEvolutionConfig,
+    immigrant_generator: Optional[Callable[[], VerseIndividual]] = None,
+    on_generation: Optional[Callable[[int, MAPElitesArchive, List[VerseIndividual]], None]] = None,
+) -> Tuple[MAPElitesArchive, List[VerseIndividual]]:
+    """Emitter-based MAP-Elites QD evolution.
+
+    Uses 4 specialized emitters (Random, Mutation, NicheTargeting, Repair)
+    coordinated by an adaptive scheduler for better coverage.
+    """
+    from evo_rhyme.emitters import (
+        create_emitters, run_emitter_generation,
+    )
+
+    scheme = config.rhyme_scheme or "AABB"
+    weights = VERSE_DEFAULT_WEIGHTS
+    theme_keywords = config.theme_keywords or []
+    kw = set(w.lower() for w in theme_keywords) if theme_keywords else None
+    theme_string = " ".join(theme_keywords) if theme_keywords else None
+
+    semantic_scorer = None
+    if config.use_embeddings:
+        try:
+            from evo_rhyme.siamese_scorer import SiameseRhymeScorer, SIAMESE_MODEL_DIR
+            semantic_scorer = SiameseRhymeScorer(str(SIAMESE_MODEL_DIR), device="cuda")
+        except Exception as e:
+            logger.warning("Failed to load SiameseRhymeScorer: %s", e)
+
+    run_logger = None
+    if config.output_dir:
+        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir))
+        run_logger.write_config(config)
+
+    archive = create_verse_archive(config.archive_dims)
+
+    for ind in population:
+        analyze_verse_individual(ind)
+    pop_scores = score_verses_batch(
+        population, scheme=scheme, prompt_keywords=kw, theme_string=theme_string,
+        semantic_scorer=semantic_scorer if config.use_embeddings else None,
+        embedding_weight=config.embedding_weight,
+    )
+    for ind, sc in zip(population, pop_scores):
+        ind.scores = sc
+        ind.fitness = compute_verse_fitness(sc, weights)
+    archive.add_batch(population)
+
+    logger.info(
+        "Initial archive: %d/%d niches (%.1f%% coverage), best=%.3f",
+        archive.occupied_niches(), archive.total_niches(),
+        archive.coverage() * 100,
+        max((ind.fitness or 0 for ind in population), default=0),
+    )
+
+    emitter_config = {
+        "theme_keywords": list(theme_keywords),
+        "corpus_path": None,
+        "min_syllables": config.min_syllables,
+        "max_syllables": config.max_syllables,
+        "schemes": config.allowed_schemes if hasattr(config, 'allowed_schemes') else ["AABB", "ABAB", "ABBA", "ABCB"],
+        "crossover_rate": config.crossover_rate,
+    }
+    emitters, scheduler = create_emitters(emitter_config)
+
+    def batch_score(candidates):
+        for c in candidates:
+            if c.features is None:
+                analyze_verse_individual(c)
+        return score_verses_batch(
+            candidates, scheme=scheme, prompt_keywords=kw, theme_string=theme_string,
+            semantic_scorer=semantic_scorer if config.use_embeddings else None,
+            embedding_weight=config.embedding_weight,
+        )
+
+    def fitness_fn(scores):
+        return compute_verse_fitness(scores, weights)
+
+    for gen in range(config.num_generations):
+        total_budget = config.population_size
+
+        gen_stats = run_emitter_generation(
+            archive=archive,
+            emitters=emitters,
+            scheduler=scheduler,
+            total_budget=total_budget,
+            generation=gen,
+            score_fn=batch_score,
+            fitness_fn=fitness_fn,
+            novelty_weight=config.novelty_weight if hasattr(config, 'novelty_weight') else 0.3,
+        )
+
+        population = list(archive.top_k(min(config.population_size, archive.occupied_niches())))
+        while len(population) < config.population_size and archive.occupied_niches() > 0:
+            population.extend(archive.sample_parents(1))
+
+        best_fit = max((ind.fitness or 0.0 for ind in population), default=0.0)
+        mean_fit = sum(ind.fitness or 0.0 for ind in population) / max(1, len(population))
+
+        if run_logger:
+            run_logger.log_generation(
+                gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+            )
+
+        if on_generation:
+            on_generation(gen, archive, population)
+
+        sched_weights = {k: f"{v:.2f}" for k, v in scheduler._weights.items()}
+        logger.info(
+            "Gen %d: coverage=%.1f%% (%d/%d) best=%.3f inserted=%d new_niches=%d weights=%s",
+            gen,
+            archive.coverage() * 100,
+            archive.occupied_niches(),
+            archive.total_niches(),
+            best_fit,
+            gen_stats.get("inserted", 0),
+            gen_stats.get("new_niches", 0),
+            sched_weights,
         )
 
     if run_logger:

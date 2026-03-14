@@ -31,16 +31,24 @@ from evo_rhyme.rhyme_graph import build_rhyme_graph
 logger = logging.getLogger(__name__)
 
 MUTATION_WEIGHTS: Dict[str, float] = {
-    "lm_rhyme_rewrite": 0.28,
-    "lm_internal_rhyme": 0.18,
-    "lm_theme_rewrite": 0.14,
-    "lm_paraphrase": 0.12,
-    "lm_tighten": 0.08,
-    "lm_expand": 0.04,
+    "lm_rhyme_rewrite": 0.10,
+    "lm_internal_rhyme": 0.08,
+    "lm_theme_rewrite": 0.08,
+    "lm_paraphrase": 0.06,
+    "lm_structural_rewrite": 0.06,
+    "lm_metaphor_inject": 0.08,
+    "lm_contrast_swap": 0.06,
+    "lm_score_guided": 0.10,
+    "lm_tighten": 0.04,
+    "lm_expand": 0.02,
     "stressed_vowel_swap": 0.06,
     "syllable_adjust": 0.04,
     "rhyme_graph_expand": 0.04,
+    "chain_extension": 0.06,
     "end_word_swap": 0.02,
+    "multisyllable_rhyme": 0.02,
+    "line_replace": 0.06,
+    "block_replace": 0.04,
 }
 
 LEGACY_MUTATION_WEIGHTS: Dict[str, float] = {
@@ -809,6 +817,291 @@ def _lm_expand(
         return None
 
 
+def _lm_structural_rewrite(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Rewrite a line with completely different sentence structure."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+        pick_line1 = random.random() < 0.5
+        if pick_line1:
+            line, other_line = individual.line1, individual.line2
+        else:
+            line, other_line = individual.line2, individual.line1
+        other_tokens = tokenize_line(other_line)
+        if not other_tokens:
+            return None
+        rhyme_target = other_tokens[-1]
+        candidates = rewriter.structural_rewrite(line, rhyme_target, theme_keywords, syllable_range)
+        if not candidates:
+            return None
+        best_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, best_line, individual.line2)
+        return _copy_individual(individual, individual.line1, best_line)
+    except Exception:
+        logger.warning("_lm_structural_rewrite failed", exc_info=True)
+        return None
+
+
+def _lm_metaphor_inject(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Rewrite a line using vivid metaphor."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+        pick_line1 = random.random() < 0.5
+        if pick_line1:
+            line, other_line = individual.line1, individual.line2
+        else:
+            line, other_line = individual.line2, individual.line1
+        other_tokens = tokenize_line(other_line)
+        if not other_tokens:
+            return None
+        rhyme_target = other_tokens[-1]
+        candidates = rewriter.metaphor_inject(line, rhyme_target, theme_keywords, syllable_range)
+        if not candidates:
+            return None
+        best_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, best_line, individual.line2)
+        return _copy_individual(individual, individual.line1, best_line)
+    except Exception:
+        logger.warning("_lm_metaphor_inject failed", exc_info=True)
+        return None
+
+
+def _lm_contrast_swap(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Rewrite a line with opposing emotional tone."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+        pick_line1 = random.random() < 0.5
+        if pick_line1:
+            line, other_line = individual.line1, individual.line2
+        else:
+            line, other_line = individual.line2, individual.line1
+        other_tokens = tokenize_line(other_line)
+        if not other_tokens:
+            return None
+        rhyme_target = other_tokens[-1]
+        candidates = rewriter.contrast_swap(line, rhyme_target, theme_keywords, syllable_range)
+        if not candidates:
+            return None
+        best_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, best_line, individual.line2)
+        return _copy_individual(individual, individual.line1, best_line)
+    except Exception:
+        logger.warning("_lm_contrast_swap failed", exc_info=True)
+        return None
+
+
+def _lm_score_guided(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Score-aware mutation: find weakest dimension and target it."""
+    try:
+        scores = individual.scores or {}
+        weakness_map = {
+            "internal_rhyme": "internal_rhyme",
+            "semantic": "semantic",
+            "fluency": "fluency",
+            "rhyme_graph": "rhyme_chain_density",
+        }
+        weakest_key = min(weakness_map, key=lambda k: scores.get(k, 0.5))
+        weakest_score = scores.get(weakest_key, 0.5)
+        if weakest_score >= 0.5:
+            return None
+
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+        pick_line1 = random.random() < 0.5
+        if pick_line1:
+            line, other_line = individual.line1, individual.line2
+        else:
+            line, other_line = individual.line2, individual.line1
+        other_tokens = tokenize_line(other_line)
+        if not other_tokens:
+            return None
+        rhyme_target = other_tokens[-1]
+
+        candidates = rewriter.score_guided_rewrite(
+            line, weakness_map[weakest_key], weakest_score,
+            rhyme_target, theme_keywords, syllable_range,
+        )
+        if not candidates:
+            return None
+        best_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, best_line, individual.line2)
+        return _copy_individual(individual, individual.line1, best_line)
+    except Exception:
+        logger.warning("_lm_score_guided failed", exc_info=True)
+        return None
+
+
+def _chain_extension(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Extend a phoneme chain by substituting a word with one sharing the same cluster."""
+    corpus_vocab = config.get("corpus_vocab") if config and isinstance(config, dict) else None
+    lines = [individual.line1, individual.line2]
+    line_idx = random.randint(0, 1)
+    other_idx = 1 - line_idx
+    tokens_src = tokenize_line(lines[other_idx])
+    tokens_tgt = tokenize_line(lines[line_idx])
+    if len(tokens_src) < 2 or len(tokens_tgt) < 3:
+        return None
+    src_word = random.choice(tokens_src[:-1])
+    src_tail = extract_rhyme_tail(src_word)
+    if src_tail is None:
+        return None
+    if src_tail not in tail_to_words:
+        return None
+    alts = [w for w in tail_to_words[src_tail] if w != src_word.lower()]
+    if corpus_vocab:
+        alts = [w for w in alts if w in corpus_vocab]
+    if not alts:
+        return None
+    new_word = random.choice(alts)
+    mid_indices = list(range(1, len(tokens_tgt) - 1))
+    if not mid_indices:
+        return None
+    swap_idx = random.choice(mid_indices)
+    new_tokens = tokens_tgt[:swap_idx] + [new_word] + tokens_tgt[swap_idx + 1:]
+    new_line = " ".join(new_tokens)
+    if line_idx == 0:
+        return _copy_individual(individual, new_line, individual.line2)
+    return _copy_individual(individual, individual.line1, new_line)
+
+
+def _multisyllable_rhyme(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Replace end word with one having higher multisyllable overlap with the paired line."""
+    corpus_vocab = config.get("corpus_vocab") if config and isinstance(config, dict) else None
+    tokens1 = tokenize_line(individual.line1)
+    tokens2 = tokenize_line(individual.line2)
+    if not tokens1 or not tokens2:
+        return None
+    end1, end2 = tokens1[-1].lower(), tokens2[-1].lower()
+    tail2 = extract_rhyme_tail(end2)
+    if tail2 is None:
+        return None
+    current_overlap = multisyllable_overlap(extract_rhyme_tail(end1), tail2)
+    best_word = None
+    best_overlap = current_overlap
+    for tail, words in tail_to_words.items():
+        for w in words:
+            if w == end1:
+                continue
+            if corpus_vocab and w not in corpus_vocab:
+                continue
+            w_tail = extract_rhyme_tail(w)
+            ov = multisyllable_overlap(w_tail, tail2)
+            if ov > best_overlap:
+                best_overlap = ov
+                best_word = w
+    if best_word is None:
+        return None
+    new_tokens = tokens1[:-1] + [best_word]
+    new_line = " ".join(new_tokens)
+    return _copy_individual(individual, new_line, individual.line2)
+
+
+def _line_replace_mutation(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Replace an entire line with a freshly LM-generated one. Medium-scale mutation."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+
+        pick_line1 = random.random() < 0.5
+        if pick_line1:
+            other_line = individual.line2
+        else:
+            other_line = individual.line1
+
+        other_tokens = tokenize_line(other_line)
+        if not other_tokens:
+            return None
+        rhyme_target = other_tokens[-1]
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+
+        candidates = rewriter.structural_rewrite(
+            "write a new line",
+            rhyme_target, theme_keywords, syllable_range,
+        )
+        if not candidates:
+            candidates = rewriter.rhyme_rewrite(
+                other_line, rhyme_target, theme_keywords, syllable_range,
+            )
+        if not candidates:
+            return None
+
+        new_line = candidates[0]
+        if pick_line1:
+            return _copy_individual(individual, new_line, individual.line2)
+        return _copy_individual(individual, individual.line1, new_line)
+    except Exception:
+        logger.warning("_line_replace_mutation failed", exc_info=True)
+        return None
+
+
+def _block_replace_mutation(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Replace the entire couplet with a freshly generated one. Large-scale mutation."""
+    try:
+        rewriter = get_rewriter(config if isinstance(config, dict) else None)
+        theme_keywords, syllable_range = _lm_config_helpers(config)
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+
+        verse_text = f"{individual.line1}\n{individual.line2}"
+        prompt = (
+            f'Write 2 completely new rap lines with fresh imagery.\n'
+            f'Lines must rhyme with each other (end words rhyme).\n'
+            f'Theme: {theme}\n'
+            f'Each line: {syllable_range[0]}-{syllable_range[1]} syllables.\n\n'
+            f'Write ONLY the 2 lines, nothing else.'
+        )
+
+        from evo_rhyme.lm_rewriter import _cache_key
+        key = _cache_key(verse_text, "block_replace", (theme,))
+        raw = rewriter._call_lm(prompt, key)
+
+        new_lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
+        if len(new_lines) < 2:
+            return None
+
+        return _copy_individual(individual, new_lines[0], new_lines[1])
+    except Exception:
+        logger.warning("_block_replace_mutation failed", exc_info=True)
+        return None
+
+
 # Registry of mutation functions
 _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
     # LM-backed operators
@@ -818,6 +1111,10 @@ _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
     "lm_paraphrase": _lm_paraphrase,
     "lm_tighten": _lm_tighten,
     "lm_expand": _lm_expand,
+    "lm_structural_rewrite": _lm_structural_rewrite,
+    "lm_metaphor_inject": _lm_metaphor_inject,
+    "lm_contrast_swap": _lm_contrast_swap,
+    "lm_score_guided": _lm_score_guided,
     # Legacy operators (cheap fallbacks)
     "end_word_swap": _end_word_swap,
     "internal_rhyme_insert": _internal_rhyme_insert,
@@ -830,6 +1127,10 @@ _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
     "phrase_replace": _phrase_replace,
     "rhyme_graph_expand": _rhyme_graph_expand,
     "stress_repair": _stress_repair,
+    "chain_extension": _chain_extension,
+    "multisyllable_rhyme": _multisyllable_rhyme,
+    "line_replace": _line_replace_mutation,
+    "block_replace": _block_replace_mutation,
 }
 
 

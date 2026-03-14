@@ -10,6 +10,7 @@ tightness, and thematic breadth.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 import random
@@ -50,11 +51,15 @@ class ArchiveDimension:
 
 def _extract_rhyme_density(individual: VerseIndividual) -> int:
     score = (individual.scores or {}).get("internal_rhyme", 0.0)
+    if score < 0.08:
+        return 0  # very_low
     if score < 0.15:
-        return 0
-    if score <= 0.35:
-        return 1
-    return 2
+        return 1  # low
+    if score < 0.25:
+        return 2  # medium
+    if score < 0.40:
+        return 3  # high
+    return 4  # very_high
 
 
 def _extract_intensity(individual: VerseIndividual) -> int:
@@ -65,11 +70,15 @@ def _extract_intensity(individual: VerseIndividual) -> int:
         return 0
     hits = sum(1 for w in words if w in AGGRESSIVE_KEYWORDS)
     ratio = hits / len(words)
-    if ratio < 0.05:
-        return 0
-    if ratio <= 0.15:
-        return 1
-    return 2
+    if ratio < 0.03:
+        return 0  # very_calm
+    if ratio < 0.08:
+        return 1  # calm
+    if ratio < 0.15:
+        return 2  # moderate
+    if ratio < 0.25:
+        return 3  # aggressive
+    return 4  # very_aggressive
 
 
 def _extract_syllable_tightness(individual: VerseIndividual) -> int:
@@ -93,19 +102,83 @@ def _extract_theme_balance(individual: VerseIndividual) -> int:
     return 1 if score > 0.3 else 0
 
 
+def _extract_line_length_variance(individual: VerseIndividual) -> int:
+    if individual.features and individual.features.syllable_counts:
+        counts = individual.features.syllable_counts
+    else:
+        from evo_rhyme.phonetics import syllable_count_line
+        counts = [syllable_count_line(line) for line in individual.lines]
+    if len(counts) < 2:
+        return 1
+    mean = sum(counts) / len(counts)
+    variance = sum((c - mean) ** 2 for c in counts) / len(counts)
+    std = math.sqrt(variance)
+    if std < 1.5:
+        return 0  # uniform
+    if std <= 3.0:
+        return 1  # moderate
+    return 2  # varied
+
+
+_METAPHOR_RE = re.compile(
+    r"\b(?:like\s+a|like\s+the|i'?m\s+the|i'?m\s+a|as\s+(?:a|the))\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_metaphor_density(individual: VerseIndividual) -> int:
+    text = " ".join(individual.lines).lower()
+    hits = len(_METAPHOR_RE.findall(text))
+    if hits == 0:
+        return 0  # none
+    if hits <= 1:
+        return 1  # some
+    return 2  # rich
+
+
+_DARK_WORDS = frozenset({
+    "pain", "death", "blood", "dark", "shadow", "grave", "suffer", "cry",
+    "fear", "lost", "broke", "drown", "fall", "bleed", "scar", "wound",
+    "trapped", "chains", "prison", "hell", "burn", "ashes", "cold", "alone",
+    "hate", "rage", "agony", "doom", "curse",
+})
+_HOPEFUL_WORDS = frozenset({
+    "light", "hope", "rise", "dream", "shine", "fly", "free", "love", "win",
+    "gold", "crown", "glory", "bless", "peace", "faith", "bright", "heal",
+    "grow", "build", "strength", "alive", "heaven", "soar", "triumph", "joy",
+})
+
+
+def _extract_sentiment_polarity(individual: VerseIndividual) -> int:
+    words = []
+    for line in individual.lines:
+        words.extend(_WORD_RE.findall(line.lower()))
+    dark = sum(1 for w in words if w in _DARK_WORDS)
+    hopeful = sum(1 for w in words if w in _HOPEFUL_WORDS)
+    total = dark + hopeful
+    if total == 0:
+        return 1  # neutral
+    ratio = dark / total
+    if ratio > 0.65:
+        return 0  # dark
+    if ratio < 0.35:
+        return 2  # hopeful
+    return 1  # neutral
+
+
 def default_verse_dimensions() -> List[ArchiveDimension]:
-    """Return the default 4-dimensional behavioral space (54 niches)."""
+    """Return the default 7-dimensional behavioral space (4050 niches)."""
     return [
         ArchiveDimension(
             name="rhyme_density",
-            bins=3,
-            bin_labels=["low", "medium", "high"],
+            bins=5,
+            bin_labels=["very_low", "low", "medium", "high", "very_high"],
             extractor=_extract_rhyme_density,
         ),
         ArchiveDimension(
             name="intensity",
-            bins=3,
-            bin_labels=["calm", "moderate", "aggressive"],
+            bins=5,
+            bin_labels=["very_calm", "calm", "moderate", "aggressive", "very_aggressive"],
             extractor=_extract_intensity,
         ),
         ArchiveDimension(
@@ -119,6 +192,24 @@ def default_verse_dimensions() -> List[ArchiveDimension]:
             bins=2,
             bin_labels=["single_theme", "multi_theme"],
             extractor=_extract_theme_balance,
+        ),
+        ArchiveDimension(
+            name="line_length_variance",
+            bins=3,
+            bin_labels=["uniform", "moderate", "varied"],
+            extractor=_extract_line_length_variance,
+        ),
+        ArchiveDimension(
+            name="metaphor_density",
+            bins=3,
+            bin_labels=["none", "some", "rich"],
+            extractor=_extract_metaphor_density,
+        ),
+        ArchiveDimension(
+            name="sentiment_polarity",
+            bins=3,
+            bin_labels=["dark", "neutral", "hopeful"],
+            extractor=_extract_sentiment_polarity,
         ),
     ]
 
@@ -202,6 +293,59 @@ class MAPElitesArchive:
 
     def occupied_niches(self) -> int:
         return len(self._grid)
+
+    # -- exploration helpers ------------------------------------------------
+
+    def empty_niches(self) -> List[Tuple[int, ...]]:
+        """Return list of unoccupied niche coordinates."""
+        all_coords: List[Tuple[int, ...]] = []
+        ranges = [range(d.bins) for d in self.dimensions]
+        for coord in itertools.product(*ranges):
+            if coord not in self._grid:
+                all_coords.append(coord)
+        return all_coords
+
+    def nearest_occupied(self, target: Tuple[int, ...]) -> Optional[VerseIndividual]:
+        """Find the archive occupant nearest to *target* niche (Manhattan distance)."""
+        if not self._grid:
+            return None
+        best_dist = float("inf")
+        best_ind: Optional[VerseIndividual] = None
+        for coord, ind in self._grid.items():
+            dist = sum(abs(a - b) for a, b in zip(coord, target))
+            if dist < best_dist:
+                best_dist = dist
+                best_ind = ind
+        return best_ind
+
+    def sample_distant_parents(
+        self, n: int
+    ) -> List[Tuple[VerseIndividual, VerseIndividual]]:
+        """Sample *n* parent pairs from maximally distant niches."""
+        if len(self._grid) < 2:
+            return []
+        coords = list(self._grid.keys())
+        pairs: List[Tuple[VerseIndividual, VerseIndividual]] = []
+        for _ in range(n):
+            c1 = random.choice(coords)
+            best_c2 = max(
+                (c for c in coords if c != c1),
+                key=lambda c: sum(abs(a - b) for a, b in zip(c1, c)),
+                default=c1,
+            )
+            pairs.append((self._grid[c1], self._grid[best_c2]))
+        return pairs
+
+    def niche_label(self, coord: Tuple[int, ...]) -> Dict[str, str]:
+        """Return human-readable labels for a niche coordinate."""
+        labels: Dict[str, str] = {}
+        for i, dim in enumerate(self.dimensions):
+            idx = coord[i] if i < len(coord) else 0
+            if idx < len(dim.bin_labels):
+                labels[dim.name] = dim.bin_labels[idx]
+            else:
+                labels[dim.name] = str(idx)
+        return labels
 
     # -- reporting ----------------------------------------------------------
 

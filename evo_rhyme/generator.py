@@ -13,13 +13,41 @@ from __future__ import annotations
 import csv
 import random
 import re
+import re as _re
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 from evo_rhyme.individual import CoupletIndividual, analyze_individual
 
 from evo_rhyme.rhyme_resources import RHYME_GROUPS, load_rhyme_groups
+
+# ---------------------------------------------------------------------------
+# Rhyme-tagged slot parsing
+# ---------------------------------------------------------------------------
+
+_RHYME_TAG_RE = _re.compile(r"^(\w+?)_rhyme_([A-Z])$")
+
+
+def _parse_slot_name(name: str):
+    """Parse a placeholder name into (base_type, rhyme_tag).
+
+    'noun_rhyme_A' -> ('noun', 'A')
+    'verb_rhyme_B' -> ('verb', 'B')
+    'noun'         -> ('noun', None)
+    """
+    m = _RHYME_TAG_RE.match(name)
+    if m:
+        return m.group(1), m.group(2)
+    return name, None
+
+
+@dataclass
+class TemplateEntry:
+    """A template with optional metadata."""
+    text: str
+    target_syllables: Optional[int] = None
 
 # ---------------------------------------------------------------------------
 # Paths for template/vocab seed generation
@@ -84,11 +112,11 @@ def _ensure_vocab_files() -> None:
 
 
 def _load_lines(path: Path) -> List[str]:
-    """Load non-empty stripped lines from a text file."""
+    """Load non-empty, non-comment stripped lines from a text file."""
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8")
-    return [line.strip() for line in text.splitlines() if line.strip()]
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
 _IRREGULAR_ING: Dict[str, str] = {
@@ -114,10 +142,34 @@ def _verb_to_ing(verb: str) -> str:
     return v + "ing"
 
 
-def load_templates() -> List[str]:
-    """Load templates from data/evo_rhyme/templates.txt. Creates minimal file if missing."""
+_SYL_ANNOTATION_RE = re.compile(r"^#\s*@syl\s*:\s*(\d+)\s*$")
+
+
+def load_templates() -> List[TemplateEntry]:
+    """Load templates from data/evo_rhyme/templates.txt. Creates minimal file if missing.
+
+    Returns list of TemplateEntry with text and optional target_syllables.
+    Lines starting with '#' are treated as comments/annotations.
+    A comment of the form '# @syl:N' sets target_syllables for the next template.
+    """
     _ensure_vocab_files()
-    return _load_lines(TEMPLATES_PATH)
+    if not TEMPLATES_PATH.exists():
+        return []
+    full_text = TEMPLATES_PATH.read_text(encoding="utf-8")
+    entries: List[TemplateEntry] = []
+    pending_syl: Optional[int] = None
+    for raw in full_text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            m = _SYL_ANNOTATION_RE.match(stripped)
+            if m:
+                pending_syl = int(m.group(1))
+            continue
+        entries.append(TemplateEntry(text=stripped, target_syllables=pending_syl))
+        pending_syl = None
+    return entries
 
 
 def load_vocab() -> Dict[str, List[str]]:
@@ -239,8 +291,6 @@ def _pick_word(
     if rhyme_group_words:
         candidates = [w for w in words if w.lower() in rhyme_group_words]
         if not candidates:
-            candidates = list(rhyme_group_words)[:20]
-        if not candidates:
             candidates = words
     else:
         candidates = words
@@ -258,22 +308,67 @@ def _fill_template(
     vocab: Dict[str, List[str]],
     theme_keywords: Set[str],
     end_word: Optional[str] = None,
+    group_to_words: Optional[Dict[int, List[str]]] = None,
 ) -> str:
-    """Fill template placeholders. If end_word is provided, use it for the last placeholder."""
+    """Fill template placeholders. If end_word is provided, use it for the last placeholder.
+
+    Supports rhyme-tagged slots: {type_rhyme_TAG}. All slots sharing the same TAG
+    are filled with words from the same rhyme group.
+    """
     placeholders = _parse_template(template)
     if not placeholders:
         return template
 
+    # Pass 1: identify rhyme tags and assign rhyme groups
+    rhyme_group_assignments: Dict[str, Set[str]] = {}
+    if group_to_words:
+        tag_slots: Dict[str, List[str]] = {}
+        for name, _, _ in placeholders:
+            base_type, tag = _parse_slot_name(name)
+            if tag:
+                tag_slots.setdefault(tag, []).append(base_type)
+
+        for tag, base_types in tag_slots.items():
+            viable_groups = []
+            for gid, words in group_to_words.items():
+                if len(words) >= 2:
+                    viable_groups.append((gid, words))
+            if viable_groups:
+                gid, words = random.choice(viable_groups)
+                rhyme_group_assignments[tag] = set(w.lower() for w in words)
+
+    # Pass 2: fill slots (reverse order to preserve indices)
     result = template
     for i in range(len(placeholders) - 1, -1, -1):
         name, start, end = placeholders[i]
         if end_word is not None and i == len(placeholders) - 1:
             word = end_word
         else:
-            word = _pick_word(vocab, name, theme_keywords)
+            base_type, tag = _parse_slot_name(name)
+            if tag and tag in rhyme_group_assignments:
+                word = _pick_word(vocab, base_type, theme_keywords,
+                                  rhyme_group_words=rhyme_group_assignments[tag])
+            else:
+                word = _pick_word(vocab, base_type, theme_keywords)
         result = result[:start] + word + result[end:]
 
     return result
+
+
+def _select_template(
+    templates: List[TemplateEntry],
+    min_syl: int = 6,
+    max_syl: int = 18,
+) -> TemplateEntry:
+    """Select a template, preferring those with target_syllables in range."""
+    if not templates:
+        return TemplateEntry(text="{noun} in the {noun}")
+
+    preferred = [t for t in templates if t.target_syllables is not None
+                 and min_syl <= t.target_syllables <= max_syl]
+    if preferred and random.random() < 0.6:
+        return random.choice(preferred)
+    return random.choice(templates)
 
 
 def generate_seed_couplets(
@@ -281,6 +376,8 @@ def generate_seed_couplets(
     count: int = 10,
     rhyme_targets: Optional[List[str]] = None,
     analyze: bool = True,
+    min_syllables: int = 6,
+    max_syllables: int = 18,
 ) -> List[CoupletIndividual]:
     """
     Generate seed couplets from templates with theme-aware word filling.
@@ -292,6 +389,8 @@ def generate_seed_couplets(
         rhyme_targets: Optional list of words; end-word pairs chosen from
             words in rhyme_targets that share a rhyme group. If None, any rhyme group.
         analyze: If True, populate features1/features2 via analyze_individual.
+        min_syllables: Minimum target syllable count for template selection bias.
+        max_syllables: Maximum target syllable count for template selection bias.
 
     Returns:
         List of CoupletIndividual instances.
@@ -333,14 +432,18 @@ def generate_seed_couplets(
 
     results: List[CoupletIndividual] = []
     for _ in range(count):
-        t1 = random.choice(templates)
-        t2 = random.choice(templates)
+        t1_entry = _select_template(templates, min_syllables, max_syllables)
+        t2_entry = _select_template(templates, min_syllables, max_syllables)
+        t1 = t1_entry.text
+        t2 = t2_entry.text
         ph1 = _parse_template(t1)
         ph2 = _parse_template(t2)
-        slot1 = ph1[-1][0] if ph1 else "noun"
-        slot2 = ph2[-1][0] if ph2 else "noun"
-        key1 = _slot_mapping().get(slot1, "nouns")
-        key2 = _slot_mapping().get(slot2, "nouns")
+        slot1_name = ph1[-1][0] if ph1 else "noun"
+        slot2_name = ph2[-1][0] if ph2 else "noun"
+        base1, _ = _parse_slot_name(slot1_name)
+        base2, _ = _parse_slot_name(slot2_name)
+        key1 = _slot_mapping().get(base1, "nouns")
+        key2 = _slot_mapping().get(base2, "nouns")
 
         if viable_groups:
             gid = random.choice(viable_groups)
@@ -353,7 +456,6 @@ def generate_seed_couplets(
             else:
                 candidates = words_in_group
 
-            # Only use rhyme group words that are in our vocab for the slot type
             v1 = set(w.lower() for w in vocab.get(key1, []))
             v2 = set(w.lower() for w in vocab.get(key2, []))
             fit1 = [w for w in candidates if w in v1]
@@ -362,15 +464,16 @@ def generate_seed_couplets(
                 end1 = random.choice(fit1)
                 end2 = random.choice([w for w in fit2 if w != end1] or fit2)
             else:
-                # No vocab overlap: use random vocab words (coherent but may not rhyme)
-                end1 = _pick_word(vocab, slot1, theme_set)
-                end2 = _pick_word(vocab, slot2, theme_set)
+                end1 = _pick_word(vocab, base1, theme_set)
+                end2 = _pick_word(vocab, base2, theme_set)
         else:
-            end1 = _pick_word(vocab, slot1, theme_set)
-            end2 = _pick_word(vocab, slot2, theme_set)
+            end1 = _pick_word(vocab, base1, theme_set)
+            end2 = _pick_word(vocab, base2, theme_set)
 
-        line1 = _fill_template(t1, vocab, theme_set, end_word=end1)
-        line2 = _fill_template(t2, vocab, theme_set, end_word=end2)
+        line1 = _fill_template(t1, vocab, theme_set, end_word=end1,
+                               group_to_words=group_to_words)
+        line2 = _fill_template(t2, vocab, theme_set, end_word=end2,
+                               group_to_words=group_to_words)
 
         ind = CoupletIndividual(line1=line1, line2=line2)
         if analyze:
@@ -391,6 +494,7 @@ def generate_random_couplets(
     """
     templates = load_templates()
     vocab = load_vocab()
+    group_to_words = get_group_to_words()
     theme_set = set(w.lower() for w in (theme_keywords or []))
 
     if not templates:
@@ -398,10 +502,12 @@ def generate_random_couplets(
 
     results: List[CoupletIndividual] = []
     for _ in range(count):
-        t1 = random.choice(templates)
-        t2 = random.choice(templates)
-        line1 = _fill_template(t1, vocab, theme_set, end_word=None)
-        line2 = _fill_template(t2, vocab, theme_set, end_word=None)
+        t1_entry = random.choice(templates)
+        t2_entry = random.choice(templates)
+        line1 = _fill_template(t1_entry.text, vocab, theme_set, end_word=None,
+                               group_to_words=group_to_words)
+        line2 = _fill_template(t2_entry.text, vocab, theme_set, end_word=None,
+                               group_to_words=group_to_words)
         ind = CoupletIndividual(line1=line1, line2=line2)
         if analyze:
             analyze_individual(ind)

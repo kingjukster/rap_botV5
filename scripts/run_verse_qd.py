@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -71,19 +72,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--population",
         type=int,
-        default=120,
+        default=100,
         help="Population size (max 5000)",
     )
     parser.add_argument(
         "--generations",
         type=int,
-        default=30,
+        default=100,
         help="Number of generations (max 1000)",
     )
     parser.add_argument(
         "--scheme",
         type=str,
-        choices=["AABB", "ABAB", "ABBA", "AAAA"],
+        choices=["AABB", "ABAB", "ABBA", "AAAA", "ABCB", "AABA"],
         default="AABB",
         help="Rhyme scheme (default: AABB)",
     )
@@ -97,20 +98,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--elites",
         type=int,
-        default=10,
+        default=5,
         help="Number of elites per generation",
     )
     parser.add_argument(
         "--immigrants",
         type=int,
-        default=5,
+        default=20,
         help="Immigrants per generation",
     )
     parser.add_argument(
         "--lm-budget",
         type=int,
-        default=200,
-        help="LM mutation budget per generation (default: 200)",
+        default=20,
+        help="LM mutation budget per verse generation (default: 20)",
     )
     parser.add_argument(
         "--init",
@@ -144,14 +145,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding-weight",
         type=float,
-        default=0.10,
-        help="Weight for embedding scorer (default: 0.10)",
+        default=0.40,
+        help="Weight for embedding scorer (default: 0.40)",
     )
     parser.add_argument(
         "--proposer-model",
         type=str,
-        default="gpt-4o-mini",
-        help="Model name for bar proposer (default: gpt-4o-mini)",
+        default="gpt-4.1-nano",
+        help="Model name for bar proposer (default: gpt-4.1-nano)",
     )
     parser.add_argument(
         "--proposer-backend",
@@ -185,10 +186,59 @@ def parse_args() -> argparse.Namespace:
         help="Minimum semantic floor (default: 0.0)",
     )
     parser.add_argument(
+        "--line-pop",
+        type=int,
+        default=1500,
+        help="Line population size for two-tier evolution",
+    )
+    parser.add_argument(
+        "--line-gens",
+        type=int,
+        default=3,
+        help="Line evolution generations per verse generation",
+    )
+    parser.add_argument(
+        "--line-seeds",
+        type=int,
+        default=80,
+        help="LM seed lines for line evolution (gen 0 only)",
+    )
+    parser.add_argument(
+        "--line-lm-budget",
+        type=int,
+        default=15,
+        help="LM mutation budget per line evolution generation (default: 15)",
+    )
+    parser.add_argument(
+        "--compose-ratio",
+        type=float,
+        default=0.5,
+        help="Fraction of offspring from line archive assembly",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Verbose (DEBUG) logging",
+    )
+    parser.add_argument(
+        "--emitter-strategy",
+        type=str,
+        choices=["multi", "classic"],
+        default="multi",
+        help="Evolution strategy: multi (emitter-based MAP-Elites) or classic (default: multi)",
+    )
+    parser.add_argument(
+        "--novelty-weight",
+        type=float,
+        default=0.3,
+        help="Novelty weight in effective fitness (0.0-1.0, default: 0.3)",
+    )
+    parser.add_argument(
+        "--schemes",
+        type=str,
+        default="AABB,ABAB,ABBA,ABCB",
+        help="Comma-separated allowed rhyme schemes (default: AABB,ABAB,ABBA,ABCB)",
     )
 
     args = parser.parse_args()
@@ -208,6 +258,8 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    for noisy in ("httpx", "httpcore", "asyncio", "huggingface_hub", "transformers"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     logger = logging.getLogger(__name__)
 
     try:
@@ -275,12 +327,22 @@ def main() -> None:
         num_lines=args.num_lines,
         lm_mutation_budget_per_gen=args.lm_budget,
         min_fluency=args.min_fluency,
+        min_coherence=0.25,
         min_semantic=args.min_semantic,
         corpus_vocab=corpus_vocab,
         use_embeddings=args.use_embeddings,
         embedding_weight=args.embedding_weight,
         output_dir=output_dir if args.runs_dir else None,
+        line_population_size=args.line_pop,
+        line_generations_per_verse_gen=args.line_gens,
+        line_lm_seed_count=args.line_seeds,
+        line_lm_mutation_budget=args.line_lm_budget,
+        composed_offspring_ratio=args.compose_ratio,
     )
+    # Set emitter-specific config
+    qd_config.use_emitters = (args.emitter_strategy == "multi")
+    qd_config.novelty_weight = args.novelty_weight
+    qd_config.allowed_schemes = [s.strip() for s in args.schemes.split(",")]
 
     # ---- Initial population -------------------------------------------
     if args.init == "lm":
@@ -371,39 +433,108 @@ def main() -> None:
     logger.info("Final seed population: %d verses", len(population))
 
     # ---- Immigrant generator ------------------------------------------
-    def immigrant_generator(size: int):
-        if args.init == "lm":
-            try:
-                from evo_rhyme.population import LMVerseSeedGenerator
-                proposer_cfg = {
-                    "model": args.proposer_model,
-                    "backend": args.proposer_backend,
-                }
-                if args.api_base:
-                    proposer_cfg["api_base"] = args.api_base
-                lm_gen = LMVerseSeedGenerator(
-                    theme_keywords=theme_keywords,
-                    scheme=args.scheme,
-                    num_lines=args.num_lines,
-                    proposer_config=proposer_cfg,
-                    roles=roles,
-                )
-                return lm_gen.generate(size)
-            except Exception:
-                pass
-        # Fallback to template-based immigrants
+    # Returns a single VerseIndividual per call (matches evolve_verse_qd signature).
+    # Uses template-based generation to avoid burning API budget on immigrants.
+    def immigrant_generator():
         from evo_rhyme.population import VerseSeedGenerator
         fallback = VerseSeedGenerator(corpus_path=corpus_path, init_mode="mixed")
-        return fallback.generate_seed_verses(theme_keywords=theme_keywords, size=size)
+        results = fallback.generate_seed_verses(theme_keywords=theme_keywords, size=1)
+        if results:
+            return results[0]
+        return None
 
     # ---- Run QD evolution ---------------------------------------------
     logger.info("Starting QD evolution (%d generations)...", args.generations)
+    verse_16_results = []
 
-    archive, final_pop = evolve_verse_qd(
-        population=population,
-        config=qd_config,
-        immigrant_generator=immigrant_generator,
-    )
+    if getattr(qd_config, 'use_emitters', False):
+        from evo_rhyme.verse_evolution import evolve_verse_qd_emitters
+        logger.info("Using emitter-based MAP-Elites strategy")
+        archive, final_pop = evolve_verse_qd_emitters(
+            population=population,
+            config=qd_config,
+            immigrant_generator=immigrant_generator,
+        )
+    else:
+        archive, final_pop = evolve_verse_qd(
+            population=population,
+            config=qd_config,
+            immigrant_generator=immigrant_generator,
+        )
+
+    # ---- 16-bar composition (when --num-lines 16) --------------------
+    if args.num_lines == 16:
+        logger.info("Starting 16-bar verse composition from 4-bar block archive...")
+        try:
+            from evo_rhyme.block_archive import BlockArchive
+            from evo_rhyme.verse_composer import (
+                compose_verse_batch,
+                verse_16_crossover,
+                verse_16_mutate,
+            )
+            from evo_rhyme.fitness import score_verse_16, compute_verse_16_fitness
+
+            top_blocks = archive.top_k(200)
+            block_archive = BlockArchive.from_verse_individuals(top_blocks)
+            logger.info(
+                "Block archive: %d blocks, roles: %s",
+                block_archive.size(), block_archive.role_sizes(),
+            )
+
+            if block_archive.size() >= 4:
+                verses_16 = compose_verse_batch(
+                    block_archive,
+                    count=min(50, args.population),
+                    scheme=args.scheme,
+                )
+                logger.info("Composed %d initial 16-bar verses", len(verses_16))
+
+                for evo_gen in range(10):
+                    for v in verses_16:
+                        block_fits = v.metadata.get("block_fitnesses", [])
+                        v.scores = score_verse_16(v, block_fitnesses=block_fits)
+                        v.fitness = compute_verse_16_fitness(v.scores)
+
+                    verses_16.sort(key=lambda x: x.fitness or 0.0, reverse=True)
+
+                    elites = verses_16[:5]
+                    offspring = []
+                    for _ in range(len(verses_16) - 5):
+                        p1 = random.choice(verses_16[:20])
+                        p2 = random.choice(verses_16[:20])
+                        child = verse_16_crossover(p1, p2)
+                        child = verse_16_mutate(child, config={
+                            "theme_keywords": theme_keywords,
+                            "min_syllables": 6,
+                            "max_syllables": 18,
+                        })
+                        offspring.append(child)
+
+                    for v in offspring:
+                        v.scores = score_verse_16(v)
+                        v.fitness = compute_verse_16_fitness(v.scores)
+
+                    verses_16 = elites + offspring
+                    best_16 = max(v.fitness or 0.0 for v in verses_16)
+                    if evo_gen % 3 == 0:
+                        logger.info(
+                            "16-bar gen %d: best=%.3f, pop=%d",
+                            evo_gen, best_16, len(verses_16),
+                        )
+
+                verses_16.sort(key=lambda x: x.fitness or 0.0, reverse=True)
+                verse_16_results = verses_16[:20]
+                logger.info(
+                    "16-bar evolution complete. Top fitness: %.3f",
+                    verse_16_results[0].fitness if verse_16_results else 0.0,
+                )
+            else:
+                logger.warning(
+                    "Not enough blocks for 16-bar composition (need 4, have %d)",
+                    block_archive.size(),
+                )
+        except Exception as e:
+            logger.error("16-bar composition failed: %s", e, exc_info=True)
 
     # ---- Output results -----------------------------------------------
     print(f"\nArchive coverage: {archive.coverage() * 100:.1f}%")
@@ -425,8 +556,15 @@ def main() -> None:
             "embedding_weight": args.embedding_weight,
             "min_fluency": args.min_fluency,
             "min_semantic": args.min_semantic,
+            "emitter_strategy": args.emitter_strategy,
+            "novelty_weight": args.novelty_weight,
+            "schemes": args.schemes,
         },
         "archive_summary": archive.summary(),
+        "archive_dimensions": {
+            "total_niches": archive.total_niches(),
+            "dimensions": [d.name for d in archive.dimensions],
+        },
         "candidates": [
             {
                 "lines": ind.lines,
@@ -436,6 +574,20 @@ def main() -> None:
             for ind in top
         ],
     }
+
+    if verse_16_results:
+        results["verses_16"] = [
+            {
+                "lines": ind.lines,
+                "fitness": ind.fitness,
+                "scores": ind.scores,
+                "metadata": {
+                    k: v for k, v in (ind.metadata or {}).items()
+                    if k in ("block_roles", "block_fitnesses", "origin")
+                },
+            }
+            for ind in verse_16_results
+        ]
 
     out_path = Path(args.output)
     if not out_path.is_absolute():
@@ -465,6 +617,24 @@ def main() -> None:
                 if isinstance(v, float) and abs(v) > 0.001
             }
             print(f"  scores: {key_scores}")
+
+    if verse_16_results:
+        print("\n=== Top 3 16-Bar Verses ===")
+        for i, ind in enumerate(verse_16_results[:3], 1):
+            print(f"\n--- 16-Bar #{i} (fitness={ind.fitness:.4f}) ---")
+            for block_idx in range(len(ind.lines) // 4):
+                start = block_idx * 4
+                role = ind.metadata.get("block_roles", ["?"] * 4)[block_idx] if ind.metadata else "?"
+                print(f"  [Block {block_idx + 1}: {role}]")
+                for line in ind.lines[start:start + 4]:
+                    print(f"    {line}")
+            if ind.scores:
+                key_scores = {
+                    k: f"{v:.3f}"
+                    for k, v in ind.scores.items()
+                    if isinstance(v, float) and abs(v) > 0.001
+                }
+                print(f"  scores: {key_scores}")
 
 
 if __name__ == "__main__":

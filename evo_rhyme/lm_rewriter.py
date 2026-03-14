@@ -34,10 +34,10 @@ _NUMBERING_RE = re.compile(r"^\s*(?:\d+[\.\)\-]|\-|\*)\s*")
 @dataclass
 class RewriterConfig:
     backend: str = "openai"
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-4.1-nano"
     api_base: Optional[str] = None
     api_key: Optional[str] = None
-    temperature: float = 0.85
+    temperature: float = 0.92
     max_tokens: int = 60
     candidates_per_rewrite: int = 5
     timeout: float = 20.0
@@ -140,6 +140,100 @@ class BarRewriter:
 
         logger.error("LM call failed after %d attempts: %s", self._config.max_retries + 1, last_err)
         return ""
+
+    # ------------------------------------------------------------------
+    # Async batch LM calls (concurrent API requests)
+    # ------------------------------------------------------------------
+
+    def batch_rewrite(
+        self,
+        requests: List[Tuple[str, str, str]],
+        concurrency: int = 20,
+    ) -> List[str]:
+        """Run multiple LM calls concurrently.
+
+        Each request is (prompt, cache_key, request_id).
+        Returns list of raw LM responses in the same order.
+        """
+        if not requests:
+            return []
+
+        import asyncio
+        import concurrent.futures
+
+        cache = self._cache
+        config = self._config
+
+        # Check cache first and only send uncached requests
+        cached_results: Dict[int, str] = {}
+        uncached: List[Tuple[int, str, str]] = []
+        for i, (prompt, cache_key, _rid) in enumerate(requests):
+            hit = cache.get(cache_key)
+            if hit is not None:
+                cached_results[i] = hit
+            else:
+                uncached.append((i, prompt, cache_key))
+
+        if not uncached:
+            return [cached_results.get(i, "") for i in range(len(requests))]
+
+        api_results: Dict[int, str] = {}
+
+        def _run():
+            async def _batch():
+                try:
+                    from dotenv import load_dotenv
+                    load_dotenv(override=True)
+                except ImportError:
+                    pass
+                from openai import AsyncOpenAI
+                api_key = config.api_key or os.environ.get("OPENAI_API_KEY")
+                kwargs: Dict = {"api_key": api_key}
+                if config.api_base:
+                    kwargs["base_url"] = config.api_base
+
+                sem = asyncio.Semaphore(concurrency)
+
+                async def _one(client, idx: int, prompt: str, ck: str) -> Tuple[int, str]:
+                    async with sem:
+                        for attempt in range(1, config.max_retries + 2):
+                            try:
+                                resp = await client.chat.completions.create(
+                                    model=config.model,
+                                    messages=[{"role": "user", "content": prompt}],
+                                    temperature=config.temperature,
+                                    max_tokens=config.max_tokens,
+                                    timeout=config.timeout,
+                                )
+                                text = resp.choices[0].message.content or ""
+                                cache.put(ck, text)
+                                return (idx, text)
+                            except Exception as exc:
+                                if attempt <= config.max_retries:
+                                    await asyncio.sleep(2 ** attempt)
+                                else:
+                                    logger.warning("Async LM call failed: %s", exc)
+                                    return (idx, "")
+                        return (idx, "")
+
+                async with AsyncOpenAI(**kwargs) as client:
+                    tasks = [_one(client, idx, p, ck) for idx, p, ck in uncached]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                return results
+
+            return asyncio.run(_batch())
+
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            raw_results = pool.submit(_run).result()
+
+        for r in raw_results:
+            if isinstance(r, tuple):
+                api_results[r[0]] = r[1]
+
+        return [
+            cached_results.get(i, api_results.get(i, ""))
+            for i in range(len(requests))
+        ]
 
     # ------------------------------------------------------------------
     # Response parsing & filtering
@@ -354,3 +448,140 @@ class BarRewriter:
         logger.debug("expand line=%r target_syl=%d", line[:40], target_syllables)
         raw = self._call_lm(prompt, key)
         return self._post_process(raw, line, syllable_range)
+
+    def structural_rewrite(
+        self,
+        line: str,
+        rhyme_target: str,
+        theme_keywords: List[str],
+        syllable_range: Tuple[int, int] = (8, 14),
+    ) -> List[str]:
+        """Rewrite bar with completely different sentence structure, preserving end rhyme."""
+        n = self._config.candidates_per_rewrite
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+        prompt = (
+            f'Rewrite this rap bar with a COMPLETELY DIFFERENT sentence structure.\n'
+            f'Change the syntax dramatically - if it starts with a noun, start with a verb.\n'
+            f'If it uses a simile, use a metaphor instead. Flip the perspective.\n'
+            f'The last word MUST rhyme with "{rhyme_target}".\n'
+            f'Stay between {syllable_range[0]}-{syllable_range[1]} syllables.\n'
+            f'Theme: {theme}\n\n'
+            f'Original: "{line}"\n\n'
+            f'Write {n} structurally different rewrites, one per line. Output ONLY the rewritten bars.'
+        )
+        key = _cache_key(line, "structural_rewrite", (rhyme_target, tuple(theme_keywords), syllable_range))
+        logger.debug("structural_rewrite line=%r target=%r", line[:40], rhyme_target)
+        raw = self._call_lm(prompt, key)
+        return self._post_process(raw, line, syllable_range, rhyme_target=rhyme_target)
+
+    def metaphor_inject(
+        self,
+        line: str,
+        rhyme_target: str,
+        theme_keywords: List[str],
+        syllable_range: Tuple[int, int] = (8, 14),
+    ) -> List[str]:
+        """Rewrite bar using vivid metaphor while preserving end rhyme."""
+        n = self._config.candidates_per_rewrite
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+        prompt = (
+            f'Rewrite this rap bar using a vivid, original METAPHOR.\n'
+            f'Replace any literal descriptions with figurative imagery.\n'
+            f'Avoid cliches like "rise from the dead" or "king of the night".\n'
+            f'The last word MUST rhyme with "{rhyme_target}".\n'
+            f'Stay between {syllable_range[0]}-{syllable_range[1]} syllables.\n'
+            f'Theme: {theme}\n\n'
+            f'Original: "{line}"\n\n'
+            f'Write {n} metaphorical rewrites, one per line. Output ONLY the rewritten bars.'
+        )
+        key = _cache_key(line, "metaphor_inject", (rhyme_target, tuple(theme_keywords), syllable_range))
+        logger.debug("metaphor_inject line=%r target=%r", line[:40], rhyme_target)
+        raw = self._call_lm(prompt, key)
+        return self._post_process(raw, line, syllable_range, rhyme_target=rhyme_target)
+
+    def contrast_swap(
+        self,
+        line: str,
+        rhyme_target: str,
+        theme_keywords: List[str],
+        syllable_range: Tuple[int, int] = (8, 14),
+    ) -> List[str]:
+        """Rewrite bar with opposing emotional tone for punchline contrast."""
+        n = self._config.candidates_per_rewrite
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+        prompt = (
+            f'Rewrite this rap bar with the OPPOSITE emotional tone.\n'
+            f'If it boasts, make it vulnerable. If it is dark, add dark humor.\n'
+            f'If it threatens, show introspection. Create emotional contrast.\n'
+            f'The last word MUST rhyme with "{rhyme_target}".\n'
+            f'Stay between {syllable_range[0]}-{syllable_range[1]} syllables.\n'
+            f'Theme: {theme}\n\n'
+            f'Original: "{line}"\n\n'
+            f'Write {n} emotionally contrasting rewrites, one per line. Output ONLY the rewritten bars.'
+        )
+        key = _cache_key(line, "contrast_swap", (rhyme_target, tuple(theme_keywords), syllable_range))
+        logger.debug("contrast_swap line=%r target=%r", line[:40], rhyme_target)
+        raw = self._call_lm(prompt, key)
+        return self._post_process(raw, line, syllable_range, rhyme_target=rhyme_target)
+
+    def repair(
+        self,
+        line: str,
+        rhyme_target: str,
+        syllable_range: Tuple[int, int] = (6, 18),
+    ) -> List[str]:
+        """Fix a grammatically broken or constraint-violating line."""
+        n = self._config.candidates_per_rewrite
+        prompt = (
+            f'Fix this broken rap line to be grammatically correct and natural.\n'
+            f'Keep the overall meaning. Make it flow like real rap.\n'
+            f'The last word MUST rhyme with "{rhyme_target}".\n'
+            f'Stay between {syllable_range[0]}-{syllable_range[1]} syllables.\n\n'
+            f'Broken line: "{line}"\n\n'
+            f'Write {n} fixed versions, one per line. Output ONLY the fixed bars.'
+        )
+        key = _cache_key(line, "repair", (rhyme_target, syllable_range))
+        logger.debug("repair line=%r target=%r", line[:40], rhyme_target)
+        raw = self._call_lm(prompt, key)
+        return self._post_process(raw, line, syllable_range, rhyme_target=rhyme_target)
+
+    def score_guided_rewrite(
+        self,
+        line: str,
+        weak_dimension: str,
+        score_value: float,
+        rhyme_target: str,
+        theme_keywords: List[str],
+        syllable_range: Tuple[int, int] = (8, 14),
+    ) -> List[str]:
+        """Rewrite bar targeting a specific weak score dimension."""
+        n = self._config.candidates_per_rewrite
+        theme = ", ".join(theme_keywords) if theme_keywords else "hip-hop"
+        dimension_prompts = {
+            "internal_rhyme": "Add more INTERNAL RHYMES (words that rhyme within the line, not just at the end).",
+            "semantic": f"Make it more relevant to the theme: {theme}. Use theme-specific imagery.",
+            "coherence": "Make it connect better with surrounding lines. Use transitional language.",
+            "punchline": "Make the ending more SURPRISING and impactful. Add a twist or wordplay.",
+            "fluency": "Improve the FLOW and rhythm. Make it sound more natural when spoken.",
+            "rhyme_chain_density": "Add words that share similar sounds with other words in the line (multi-syllable rhyme patterns).",
+        }
+        guidance = dimension_prompts.get(
+            weak_dimension,
+            f"Improve the {weak_dimension} quality.",
+        )
+        prompt = (
+            f'This rap line scored {score_value:.1f}/1.0 on {weak_dimension}.\n'
+            f'{guidance}\n'
+            f'The last word MUST rhyme with "{rhyme_target}".\n'
+            f'Stay between {syllable_range[0]}-{syllable_range[1]} syllables.\n'
+            f'Theme: {theme}\n\n'
+            f'Original: "{line}"\n\n'
+            f'Write {n} improved rewrites, one per line. Output ONLY the rewritten bars.'
+        )
+        key = _cache_key(
+            line, "score_guided",
+            (weak_dimension, f"{score_value:.2f}", rhyme_target, tuple(theme_keywords), syllable_range),
+        )
+        logger.debug("score_guided_rewrite line=%r dim=%s score=%.2f", line[:40], weak_dimension, score_value)
+        raw = self._call_lm(prompt, key)
+        return self._post_process(raw, line, syllable_range, rhyme_target=rhyme_target)

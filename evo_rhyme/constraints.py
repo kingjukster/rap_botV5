@@ -120,8 +120,9 @@ def _check_weak_end_words(
     return None
 
 
-def _check_consecutive_duplicates(tokens: list, max_run: int = 2) -> Optional[str]:
-    """Reject if any word (including stopwords) appears max_run+ times consecutively."""
+def _check_consecutive_duplicates(tokens: list, max_run: int = 1) -> Optional[str]:
+    """Reject if any word (including stopwords) appears max_run+ times consecutively.
+    Default max_run=1 means any immediate repetition like 'the the' is rejected."""
     if len(tokens) < 2:
         return None
     run_len = 1
@@ -440,6 +441,30 @@ def _check_verse_content_repetition(
     return None
 
 
+def _check_verse_garbled_lines(
+    individual: VerseIndividual,
+) -> Optional[str]:
+    """Reject if any line has broken contractions or word-salad patterns."""
+    import re
+    _BROKEN_PATTERNS = [
+        (re.compile(r"\bi\s+m\b", re.IGNORECASE), "broken contraction 'i m'"),
+        (re.compile(r"\bi\s+ve\b", re.IGNORECASE), "broken contraction 'i ve'"),
+        (re.compile(r"\bi\s+ll\b", re.IGNORECASE), "broken contraction 'i ll'"),
+        (re.compile(r"\bdon\s+t\b", re.IGNORECASE), "broken contraction 'don t'"),
+        (re.compile(r"\bcan\s+t\b", re.IGNORECASE), "broken contraction 'can t'"),
+        (re.compile(r"\bwon\s+t\b", re.IGNORECASE), "broken contraction 'won t'"),
+        (re.compile(r"\bdidn\s+t\b", re.IGNORECASE), "broken contraction 'didn t'"),
+        (re.compile(r"\bs\s+the\b", re.IGNORECASE), "broken possessive 's the'"),
+        (re.compile(r"\bs\s+an?\b", re.IGNORECASE), "broken possessive 's a'"),
+        (re.compile(r"\bs\s+my\b", re.IGNORECASE), "broken possessive 's my'"),
+    ]
+    for i, line in enumerate(individual.lines):
+        for pat, desc in _BROKEN_PATTERNS:
+            if pat.search(line):
+                return f"line{i+1}: {desc}"
+    return None
+
+
 def passes_verse_constraints(
     individual: VerseIndividual,
     config: Optional[Any] = None,
@@ -493,6 +518,10 @@ def passes_verse_constraints(
         return False
 
     err = _check_verse_content_repetition(individual, cfg)
+    if err:
+        return False
+
+    err = _check_verse_garbled_lines(individual)
     if err:
         return False
 

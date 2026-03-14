@@ -38,6 +38,8 @@ class CoupletIndividual:
     line2: str
     features1: Optional[LineFeatures] = None
     features2: Optional[LineFeatures] = None
+    template_id1: Optional[str] = None  # template used for line1
+    template_id2: Optional[str] = None  # template used for line2
     scores: Optional[Dict[str, float]] = None
     fitness: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -103,6 +105,7 @@ class VerseIndividual:
     lines: List[str]
     structure: Optional[VerseStructure] = None
     features: Optional[VerseFeatures] = None
+    template_ids: Optional[List[Optional[str]]] = None  # template used per line
     scores: Optional[Dict[str, float]] = None
     fitness: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -181,7 +184,9 @@ def create_verse_individual(
         structure.roles = roles
     if not structure.callbacks:
         structure.callbacks = [None] * len(lines)
-    return VerseIndividual(
+    ind = VerseIndividual(
         lines=lines,
         structure=structure,
     )
+    ind.metadata["scheme"] = scheme
+    return ind

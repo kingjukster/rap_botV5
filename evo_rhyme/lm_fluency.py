@@ -10,7 +10,7 @@ Complements corpus n-grams: ngrams catch "appears in rap corpus", LM catches
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import List, Optional, Tuple
 
 # Perplexity -> [0,1] mapping. General English: ppl ~20-80. Rap/slang: ppl 80-200.
 # Nonsense: ppl 200-500+. score = exp(-ppl/scale).
@@ -82,6 +82,55 @@ class LMPerplexityScorer:
             ppl = math.exp(loss)
 
         return _ppl_to_score(ppl)
+
+    def score_lines_batch(self, texts: List[str], batch_size: int = 64) -> List[float]:
+        """Score multiple lines in batched GPU forward passes."""
+        scores = [0.5] * len(texts)
+        valid: List[Tuple[int, str]] = []
+        for i, t in enumerate(texts):
+            t = (t or "").strip()
+            if t and len(t.split()) >= 2:
+                valid.append((i, t))
+        if not valid:
+            return scores
+
+        self._ensure_loaded()
+        import torch
+        import torch.nn.functional as F
+
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
+
+        for bs in range(0, len(valid), batch_size):
+            batch = valid[bs : bs + batch_size]
+            batch_texts = [t for _, t in batch]
+            enc = self._tokenizer(
+                batch_texts, return_tensors="pt", truncation=True,
+                max_length=128, padding=True,
+            )
+            input_ids = enc["input_ids"].to(self._model.device)
+            attn = enc["attention_mask"].to(self._model.device)
+
+            with torch.no_grad():
+                logits = self._model(input_ids, attention_mask=attn).logits
+
+            shift_logits = logits[:, :-1, :]
+            shift_labels = input_ids[:, 1:]
+            shift_mask = attn[:, 1:]
+
+            log_probs = F.log_softmax(shift_logits, dim=-1)
+            token_nll = -log_probs.gather(2, shift_labels.unsqueeze(2)).squeeze(2)
+            token_nll = token_nll * shift_mask.float()
+
+            seq_lens = shift_mask.sum(dim=1).float().clamp(min=1)
+            mean_loss = token_nll.sum(dim=1) / seq_lens
+
+            for j, (orig_idx, _) in enumerate(batch):
+                loss_val = mean_loss[j].item()
+                ppl = math.exp(min(loss_val, 10.0))
+                scores[orig_idx] = _ppl_to_score(ppl)
+
+        return scores
 
     def score_couplet(self, line1: str, line2: str) -> float:
         """Average score across both lines."""
