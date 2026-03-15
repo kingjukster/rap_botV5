@@ -164,6 +164,7 @@ class LMVerseSeedGenerator:
         proposer_config: Optional[Dict] = None,
         roles: Optional[List[str]] = None,
         constraint_config: Optional[Any] = None,
+        style_directives: Optional[Dict[str, str]] = None,
     ):
         """
         Args:
@@ -187,6 +188,7 @@ class LMVerseSeedGenerator:
         self.num_lines = num_lines
         self.roles = roles
         self.constraint_config = constraint_config
+        self.style_directives = style_directives
 
     def generate(self, count: int) -> List[VerseIndividual]:
         """Generate *count* verse individuals using LM bar proposal.
@@ -201,6 +203,7 @@ class LMVerseSeedGenerator:
             scheme=self.scheme,
             num_lines=self.num_lines,
             roles=self.roles,
+            style_directives=self.style_directives,
         )
 
         if not pool or not all(pool.get(i) for i in range(self.num_lines)):
@@ -273,7 +276,7 @@ class VerseSeedGenerator:
         self.constraint_config = constraint_config
 
     def _build_lm_generator(
-        self, theme_keywords: List[str]
+        self, theme_keywords: List[str], style_directives: Optional[Dict[str, str]] = None
     ) -> Optional[LMVerseSeedGenerator]:
         """Try to build an LMVerseSeedGenerator; return None on failure."""
         try:
@@ -284,6 +287,7 @@ class VerseSeedGenerator:
                 proposer_config=self.proposer_config,
                 roles=self.roles,
                 constraint_config=self.constraint_config,
+                style_directives=style_directives,
             )
         except Exception as exc:
             logger.warning("Could not initialise LM proposer: %s", exc)
@@ -293,6 +297,7 @@ class VerseSeedGenerator:
         self,
         theme_keywords: Optional[List[str]] = None,
         size: int = 50,
+        style_directives: Optional[Dict[str, str]] = None,
     ) -> List[VerseIndividual]:
         """
         Generate initial population of 4-line verses.
@@ -303,7 +308,9 @@ class VerseSeedGenerator:
             if not theme_keywords:
                 logger.warning("LM mode requires theme_keywords; falling back to mixed")
             else:
-                lm_gen = self._build_lm_generator(theme_keywords)
+                lm_gen = self._build_lm_generator(
+                    theme_keywords, style_directives=style_directives
+                )
                 if lm_gen is not None:
                     verses = lm_gen.generate(size)
                     if verses:
@@ -315,7 +322,9 @@ class VerseSeedGenerator:
 
         # ---- Mixed mode with optional LM blend ----------------------------
         if self.init_mode == "mixed" and self.proposer_config and theme_keywords:
-            lm_gen = self._build_lm_generator(theme_keywords)
+            lm_gen = self._build_lm_generator(
+                theme_keywords, style_directives=style_directives
+            )
             if lm_gen is not None:
                 n_lm = int(size * 0.4)
                 n_corpus_couplets = int(size * 0.3) * 2

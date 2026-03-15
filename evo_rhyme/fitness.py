@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import difflib
 import math
+import random
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from evo_rhyme.individual import CoupletIndividual, LineFeatures, VerseIndividual, VerseFeatures
 from evo_rhyme.phonetics import (
@@ -25,6 +26,7 @@ from evo_rhyme.scoring.coherence import score_coherence
 from evo_rhyme.scoring.line_penalty import score_cliche_penalty, get_ngram_index
 from evo_rhyme.scoring.punchline import score_punchline
 from evo_rhyme.scoring.rhyme_chain import score_rhyme_chain_density
+from evo_rhyme.scoring.rhyme_graph_network import score_rhyme_graph_metrics
 from evo_rhyme.style_profile import StyleProfile
 
 # MVP weights - rebalanced to avoid early saturation; max fitness rarely achieved
@@ -63,6 +65,21 @@ FITNESS_CAP = 0.95
 # Minimum ngram_fluency to survive - rejects candidates with unnatural phrase structure.
 # When corpus is available, ngram_fluency < this means phrase never appears in real language.
 NGRAM_FLOOR = 0.2
+
+_VERSE_SCORE_CACHE: Dict[Tuple[str, str], Dict[str, float]] = {}
+_VERSE_SCORE_CACHE_MAX = 20000
+
+
+def _norm_verse_key(lines: List[str], scheme: str) -> Tuple[str, str]:
+    text = "\n".join(line.strip().lower() for line in lines)
+    return (scheme.upper(), text)
+
+
+def _cache_put(key: Tuple[str, str], scores: Dict[str, float]) -> None:
+    if len(_VERSE_SCORE_CACHE) >= _VERSE_SCORE_CACHE_MAX:
+        # Lightweight bounded cache without external dependency.
+        _VERSE_SCORE_CACHE.clear()
+    _VERSE_SCORE_CACHE[key] = dict(scores)
 
 
 def _score_end_rhyme(f1: Optional[LineFeatures], f2: Optional[LineFeatures]) -> float:
@@ -707,6 +724,11 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "rhyme_scheme_score": 0.15,
     "internal_rhyme": 0.07,
     "rhyme_chain_density": 0.08,
+    "global_rhyme_chain_score": 0.08,
+    "internal_chain_score": 0.06,
+    "rhyme_graph_density": 0.05,
+    "rhyme_graph_cluster_coeff": 0.04,
+    "rhyme_graph_chain_length": 0.04,
     "syllable_balance": 0.05,
     "fluency": 0.08,
     "lm_fluency": 0.12,
@@ -727,6 +749,9 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "cross_verse_repetition_penalty": -0.20,
     "novelty": 0.25,
     "flow_alignment": 0.10,
+    "flow_continuity_score": 0.08,
+    "style_adherence": 0.06,
+    "prompt_adherence": 0.05,
 }
 
 
@@ -815,6 +840,96 @@ def _score_verse_syllable_balance(features: Optional[VerseFeatures]) -> float:
     ]
     max_diff = max(diffs) if diffs else 0
     return max(0.0, 1.0 - max_diff / 6.0)
+
+
+def _score_global_rhyme_chain(lines: List[str]) -> float:
+    tails: List[str] = []
+    for line in lines:
+        words = line.strip().split()
+        if not words:
+            continue
+        tail = extract_rhyme_tail(words[-1].lower())
+        tails.append(str(tail) if tail else "")
+    if not tails:
+        return 0.0
+    counts = Counter(t for t in tails if t)
+    if not counts:
+        return 0.0
+    max_chain = max(counts.values())
+    return max_chain / max(1, len(lines))
+
+
+def _score_internal_chain(lines: List[str]) -> float:
+    try:
+        from evo_rhyme.scoring.rhyme_chain import score_chain_structure
+        cs = score_chain_structure(lines)
+        return float(cs.get("internal_chain_density", 0.0))
+    except Exception:
+        return 0.0
+
+
+def _score_flow_continuity(individual: VerseIndividual) -> float:
+    counts: List[int] = []
+    if individual.features and individual.features.syllable_counts:
+        counts = list(individual.features.syllable_counts)
+    else:
+        try:
+            from evo_rhyme.phonetics import syllable_count_line
+            counts = [syllable_count_line(l) for l in individual.lines]
+        except Exception:
+            counts = []
+    if len(counts) < 2:
+        return 0.5
+    mean = sum(counts) / len(counts)
+    var = sum((c - mean) ** 2 for c in counts) / len(counts)
+    std = math.sqrt(var)
+    return max(0.0, min(1.0, 1.0 - std / 3.0))
+
+
+def _score_style_adherence(individual: VerseIndividual) -> float:
+    labels = (individual.metadata or {}).get("style_genome_labels")
+    if not isinstance(labels, dict):
+        return 0.5
+    parts: List[float] = []
+    ir = (individual.scores or {}).get("internal_rhyme")
+    if ir is not None:
+        target = {
+            "low": 0.10, "medium": 0.20, "high": 0.30, "very_high": 0.40,
+        }.get(labels.get("internal_rhyme_density", "medium"), 0.20)
+        parts.append(max(0.0, 1.0 - abs(float(ir) - target) / 0.35))
+    syl = (individual.features.syllable_counts if individual.features else []) or []
+    if syl:
+        avg_syl = sum(syl) / len(syl)
+        target_syl = {
+            "sparse": 9.0, "normal": 11.0, "dense": 13.0, "very_dense": 14.0,
+        }.get(labels.get("syllable_density", "normal"), 11.0)
+        parts.append(max(0.0, 1.0 - abs(avg_syl - target_syl) / 4.0))
+    metaphor = (individual.scores or {}).get("metaphor_density", (individual.scores or {}).get("cliche_penalty", 0.0))
+    if metaphor is not None:
+        target_m = {
+            "literal": 0.05, "some": 0.20, "rich": 0.45, "very_rich": 0.60,
+        }.get(labels.get("metaphor_density", "some"), 0.20)
+        parts.append(max(0.0, 1.0 - abs(float(metaphor) - target_m) / 0.6))
+    if not parts:
+        return 0.5
+    return sum(parts) / len(parts)
+
+
+def _score_prompt_adherence(individual: VerseIndividual) -> float:
+    pg = (individual.metadata or {}).get("prompt_genome")
+    if not isinstance(pg, dict):
+        return 0.5
+    strictness = float(pg.get("strictness", 0.5))
+    novelty_bias = float(pg.get("novelty_bias", 0.5))
+    rep = (individual.scores or {}).get("repetition_penalty", 0.0)
+    novelty = (individual.scores or {}).get("novelty", 0.5)
+    structure = (individual.scores or {}).get("syllable_balance", 0.5)
+    if strictness >= 0.6:
+        strict_score = structure
+    else:
+        strict_score = 1.0 - abs(structure - 0.65)
+    novelty_score = (novelty * 0.7) + ((1.0 - min(1.0, rep)) * 0.3)
+    return (strictness * strict_score) + ((1.0 - strictness) * (novelty_bias * novelty_score + (1.0 - novelty_bias) * 0.6))
 
 
 def _score_verse_fluency(individual: VerseIndividual) -> float:
@@ -1263,6 +1378,8 @@ def score_verse(
     embedding_weight: float = 0.5,
     corpus_lines: Optional[List[str]] = None,
     seen_lines: Optional[set] = None,
+    include_graph_metrics: bool = True,
+    graph_edge_mode: str = "phonetic",
 ) -> Dict[str, float]:
     """Compute all component scores for a 4-line verse."""
     f = individual.features
@@ -1270,6 +1387,8 @@ def score_verse(
     scores: Dict[str, float] = {
         "rhyme_scheme_score": _score_verse_rhyme_scheme(f, scheme),
         "internal_rhyme": _score_verse_internal_rhyme_simple(f),
+        "global_rhyme_chain_score": _score_global_rhyme_chain(individual.lines),
+        "internal_chain_score": _score_internal_chain(individual.lines),
         "syllable_balance": _score_verse_syllable_balance(f),
         "fluency": _score_verse_fluency(individual),
         "lm_fluency": _score_verse_lm_fluency(individual),
@@ -1293,7 +1412,14 @@ def score_verse(
         "rhyme_chain_density": score_rhyme_chain_density(individual.lines),
         "structural_repetition_penalty": _score_verse_structural_repetition_penalty(individual),
         "cross_verse_repetition_penalty": _score_cross_verse_repetition_penalty(individual, seen_lines),
+        "flow_continuity_score": _score_flow_continuity(individual),
     }
+    if include_graph_metrics:
+        scores.update(score_rhyme_graph_metrics(individual.lines, edge_mode=graph_edge_mode))
+    else:
+        scores["rhyme_graph_density"] = 0.0
+        scores["rhyme_graph_cluster_coeff"] = 0.0
+        scores["rhyme_graph_chain_length"] = 0.0
 
     lines = individual.lines
     try:
@@ -1311,6 +1437,12 @@ def score_verse(
         scores["flow_alignment"] = score_verse_flow(lines, features=f)
     except Exception:
         scores["flow_alignment"] = 0.5
+
+    # Adherence metrics depend on already-computed component scores.
+    individual.scores = scores
+    scores["style_adherence"] = _score_style_adherence(individual)
+    scores["prompt_adherence"] = _score_prompt_adherence(individual)
+    individual.scores = None
 
     return scores
 
@@ -1341,6 +1473,7 @@ OBJECTIVE_KEYS: List[str] = [
     "end_rhyme",
     "internal_rhyme",
     "rhyme_chain_density",
+    "global_rhyme_chain_score",
     "rhythm",
     "semantic",
     "fluency",
@@ -1381,7 +1514,7 @@ def score_vector(
         elif k == "originality":
             val = 1.0 - abs(scores.get("corpus_overlap_penalty", 0.0))
         elif k == "style_match":
-            val = scores.get("score_style_similarity", 0.0)
+            val = scores.get("score_style_similarity", scores.get("style_adherence", 0.0))
         elif k == "end_rhyme":
             val = scores.get("end_rhyme", scores.get("rhyme_scheme_score", 0.0))
         elif k == "fluency":
@@ -1440,6 +1573,10 @@ def score_verses_batch(
     embedding_weight: float = 0.5,
     corpus_lines: Optional[List[str]] = None,
     seen_lines: Optional[set] = None,
+    graph_top_k: int = 24,
+    expensive_top_k: Optional[int] = None,
+    fast_mode: bool = False,
+    graph_edge_mode: str = "phonetic",
 ) -> List[Dict[str, float]]:
     """Score multiple verses with batched GPU calls for lm_fluency, punchline, coherence.
 
@@ -1449,14 +1586,24 @@ def score_verses_batch(
     if not individuals:
         return []
 
-    all_scores: List[Dict[str, float]] = []
+    kw = set(w.lower() for w in (prompt_keywords or [])) if prompt_keywords else None
+    all_scores: List[Dict[str, float]] = [{} for _ in individuals]
+    missing_idxs: List[int] = []
 
-    for ind in individuals:
+    # Stage 1/2: cheap-medium features with cache.
+    for idx, ind in enumerate(individuals):
+        key = _norm_verse_key(ind.lines, scheme)
+        cached = _VERSE_SCORE_CACHE.get(key)
+        if cached is not None:
+            all_scores[idx] = dict(cached)
+            continue
+
         f = ind.features
-        kw = set(w.lower() for w in (prompt_keywords or [])) if prompt_keywords else None
         scores: Dict[str, float] = {
             "rhyme_scheme_score": _score_verse_rhyme_scheme(f, scheme),
             "internal_rhyme": _score_verse_internal_rhyme_simple(f),
+            "global_rhyme_chain_score": _score_global_rhyme_chain(ind.lines),
+            "internal_chain_score": _score_internal_chain(ind.lines),
             "syllable_balance": _score_verse_syllable_balance(f),
             "fluency": _score_verse_fluency(ind),
             "semantic": _score_verse_semantic(
@@ -1475,63 +1622,125 @@ def score_verses_batch(
             "cliche_penalty": score_cliche_penalty(ind.lines),
             "rhyme_chain_density": score_rhyme_chain_density(ind.lines),
             "cross_verse_repetition_penalty": _score_cross_verse_repetition_penalty(ind, seen_lines),
+            "flow_continuity_score": _score_flow_continuity(ind),
+            "rhyme_graph_density": 0.0,
+            "rhyme_graph_cluster_coeff": 0.0,
+            "rhyme_graph_chain_length": 0.0,
         }
         try:
             from evo_rhyme.flow import score_verse_flow
             scores["flow_alignment"] = score_verse_flow(ind.lines, features=f)
         except Exception:
             scores["flow_alignment"] = 0.5
-        all_scores.append(scores)
+        all_scores[idx] = scores
+        missing_idxs.append(idx)
+
+    if not missing_idxs:
+        return all_scores
+
+    # Stage 3a: graph metrics only for top-k by cheap score.
+    if graph_top_k > 0:
+        rank = sorted(
+            missing_idxs,
+            key=lambda i: (
+                all_scores[i].get("rhyme_chain_density", 0.0)
+                + all_scores[i].get("internal_rhyme", 0.0)
+                + all_scores[i].get("global_rhyme_chain_score", 0.0)
+                + all_scores[i].get("fluency", 0.0)
+                - all_scores[i].get("garbled_line_penalty", 0.0)
+            ),
+            reverse=True,
+        )[: min(graph_top_k, len(missing_idxs))]
+        # Reserve some graph-budget for exploration so graph niches are not
+        # dominated by only top-cheap-score candidates.
+        remaining = [i for i in missing_idxs if i not in set(rank)]
+        if remaining:
+            explore_k = min(max(1, graph_top_k // 4), len(remaining))
+            rank.extend(random.sample(remaining, k=explore_k))
+        for i in rank:
+            try:
+                all_scores[i].update(
+                    score_rhyme_graph_metrics(
+                        individuals[i].lines,
+                        edge_mode=graph_edge_mode,
+                    )
+                )
+            except Exception:
+                pass
+
+    # Expensive stages can be gated in fast mode.
+    expensive_candidates = list(missing_idxs)
+    if fast_mode and expensive_top_k is not None:
+        expensive_candidates = sorted(
+            missing_idxs,
+            key=lambda i: (
+                all_scores[i].get("fluency", 0.0)
+                + all_scores[i].get("semantic", 0.0)
+                + all_scores[i].get("rhyme_scheme_score", 0.0)
+            ),
+            reverse=True,
+        )[: max(0, min(expensive_top_k, len(missing_idxs)))]
 
     all_lines: List[str] = []
-    verse_spans: List[tuple] = []
-    for ind in individuals:
+    verse_spans: Dict[int, Tuple[int, int]] = {}
+    for idx in expensive_candidates:
         start = len(all_lines)
-        all_lines.extend(ind.lines)
-        verse_spans.append((start, start + len(ind.lines)))
+        all_lines.extend(individuals[idx].lines)
+        verse_spans[idx] = (start, start + len(individuals[idx].lines))
 
-    try:
-        from evo_rhyme.lm_fluency import get_lm_scorer
-        scorer = get_lm_scorer()
-        if scorer is not None:
-            line_fluencies = scorer.score_lines_batch(all_lines)
-            for idx, (start, end) in enumerate(verse_spans):
-                chunk = line_fluencies[start:end]
-                all_scores[idx]["lm_fluency"] = sum(chunk) / max(1, len(chunk))
-        else:
-            for s in all_scores:
-                s["lm_fluency"] = 0.5
-    except Exception:
-        for s in all_scores:
-            s["lm_fluency"] = 0.5
+    # LM fluency
+    for i in missing_idxs:
+        all_scores[i].setdefault("lm_fluency", 0.5)
+    if all_lines:
+        try:
+            from evo_rhyme.lm_fluency import get_lm_scorer
+            scorer = get_lm_scorer()
+            if scorer is not None:
+                line_fluencies = scorer.score_lines_batch(all_lines)
+                for idx, (start, end) in verse_spans.items():
+                    chunk = line_fluencies[start:end]
+                    all_scores[idx]["lm_fluency"] = sum(chunk) / max(1, len(chunk))
+        except Exception:
+            pass
 
-    try:
-        from evo_rhyme.scoring.punchline import score_punchlines_batch
-        verses_lines = [ind.lines for ind in individuals]
-        punch_scores = score_punchlines_batch(verses_lines)
-        for idx, ps in enumerate(punch_scores):
-            all_scores[idx]["punchline"] = ps
-    except Exception:
-        for s in all_scores:
-            s["punchline"] = 0.0
+    # Punchline
+    for i in missing_idxs:
+        all_scores[i].setdefault("punchline", 0.0)
+    if expensive_candidates:
+        try:
+            from evo_rhyme.scoring.punchline import score_punchlines_batch
+            verses_lines = [individuals[i].lines for i in expensive_candidates]
+            punch_scores = score_punchlines_batch(verses_lines)
+            for idx, ps in zip(expensive_candidates, punch_scores):
+                all_scores[idx]["punchline"] = ps
+        except Exception:
+            pass
 
-    try:
-        from evo_rhyme.scoring.coherence import score_coherence_with_embeddings
-        from evo_rhyme.scoring.novelty import embed_texts as _embed
-        if all_lines:
+    # Coherence
+    for i in missing_idxs:
+        all_scores[i].setdefault("coherence", 0.0)
+    if all_lines:
+        try:
+            from evo_rhyme.scoring.coherence import score_coherence_with_embeddings
+            from evo_rhyme.scoring.novelty import embed_texts as _embed
             line_embs = _embed(all_lines)
-            for idx, (start, end) in enumerate(verse_spans):
+            for idx, (start, end) in verse_spans.items():
                 emb_chunk = line_embs[start:end]
                 all_scores[idx]["coherence"] = score_coherence_with_embeddings(emb_chunk)
-        else:
-            for s in all_scores:
-                s["coherence"] = 0.0
-    except Exception:
-        for s in all_scores:
-            try:
-                s["coherence"] = score_coherence(individuals[all_scores.index(s)].lines)
-            except Exception:
-                s["coherence"] = 0.0
+        except Exception:
+            for idx in expensive_candidates:
+                try:
+                    all_scores[idx]["coherence"] = score_coherence(individuals[idx].lines)
+                except Exception:
+                    pass
+
+    # Adherence metrics and cache write.
+    for idx in missing_idxs:
+        individuals[idx].scores = all_scores[idx]
+        all_scores[idx]["style_adherence"] = _score_style_adherence(individuals[idx])
+        all_scores[idx]["prompt_adherence"] = _score_prompt_adherence(individuals[idx])
+        individuals[idx].scores = None
+        _cache_put(_norm_verse_key(individuals[idx].lines, scheme), all_scores[idx])
 
     return all_scores
 

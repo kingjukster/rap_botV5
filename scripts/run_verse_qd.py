@@ -240,6 +240,81 @@ def parse_args() -> argparse.Namespace:
         default="AABB,ABAB,ABBA,ABCB",
         help="Comma-separated allowed rhyme schemes (default: AABB,ABAB,ABBA,ABCB)",
     )
+    parser.add_argument(
+        "--archive-mode",
+        type=str,
+        choices=["default", "style_chain", "compact_style", "ultra_compact", "curriculum_compact"],
+        default="compact_style",
+        help="Archive dimensions mode (default: compact_style)",
+    )
+    parser.add_argument(
+        "--curriculum-switch-gen",
+        type=int,
+        default=20,
+        help="Generation index for curriculum switch to compact archive (default: 20)",
+    )
+    parser.add_argument(
+        "--fast-mode",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable staged fast scoring (default: enabled)",
+    )
+    parser.add_argument(
+        "--graph-top-k",
+        type=int,
+        default=24,
+        help="Compute rhyme-graph metrics for top-k candidates per batch (default: 24)",
+    )
+    parser.add_argument(
+        "--expensive-top-k",
+        type=int,
+        default=40,
+        help="Compute expensive LM/coherence scores for top-k candidates in fast mode",
+    )
+    parser.add_argument(
+        "--graph-edge-mode",
+        type=str,
+        choices=["phonetic", "embedding"],
+        default="phonetic",
+        help="Rhyme graph edge mode (default: phonetic)",
+    )
+    parser.add_argument(
+        "--style-genome",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable style genome metadata and evolution operators (default: enabled)",
+    )
+    parser.add_argument(
+        "--prompt-genome",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable prompt genome metadata and operators (default: enabled)",
+    )
+    parser.add_argument(
+        "--prompt-llm-fraction",
+        type=float,
+        default=0.2,
+        help="Fraction of random emitter candidates generated through prompt-conditioned LM path",
+    )
+    parser.add_argument(
+        "--enable-controllability-probes",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Log lightweight style controllability probes every few generations",
+    )
+    parser.add_argument(
+        "--coverage-target",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help="Target archive coverage (0.0-1.0). When >= 0.5, overrides population=100 and generations=150 for compact_style. For ultra_compact, 80/80 is sufficient.",
+    )
+    parser.add_argument(
+        "--weights",
+        type=str,
+        default=None,
+        help="Path to JSON file with evolved scoring weights (expects 'weights' key). Used for weight-tuned runs.",
+    )
 
     args = parser.parse_args()
 
@@ -247,6 +322,20 @@ def parse_args() -> argparse.Namespace:
         parser.error(f"--population {args.population} exceeds max 5000")
     if args.generations > 1000:
         parser.error(f"--generations {args.generations} exceeds max 1000")
+
+    # Auto-tune for 50% coverage target
+    if args.coverage_target is not None and args.coverage_target >= 0.5:
+        if args.archive_mode == "ultra_compact":
+            if args.population == 100 and args.generations == 100:
+                args.population = 80
+                args.generations = 80
+        else:
+            if args.population == 100 and args.generations == 100:
+                args.population = 100
+                args.generations = 150
+            elif args.population <= 100 and args.generations <= 100:
+                args.population = max(args.population, 100)
+                args.generations = max(args.generations, 150)
 
     return args
 
@@ -338,11 +427,38 @@ def main() -> None:
         line_lm_seed_count=args.line_seeds,
         line_lm_mutation_budget=args.line_lm_budget,
         composed_offspring_ratio=args.compose_ratio,
+        archive_mode=args.archive_mode,
+        fast_mode=args.fast_mode,
+        graph_top_k=args.graph_top_k,
+        max_expensive_scoring_candidates=args.expensive_top_k,
+        graph_edge_mode=args.graph_edge_mode,
+        enable_style_genome=args.style_genome,
+        enable_prompt_genome=args.prompt_genome,
+        prompt_llm_fraction=args.prompt_llm_fraction,
+        curriculum_switch_gen=args.curriculum_switch_gen,
+        enable_controllability_probes=args.enable_controllability_probes,
+        coverage_target=args.coverage_target,
     )
+    if args.weights:
+        wpath = Path(args.weights)
+        if not wpath.is_absolute():
+            wpath = ROOT / wpath
+        if wpath.exists():
+            with wpath.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            qd_config.fitness_weights = data.get("weights", data)
+            logger.info("Loaded fitness weights from %s", wpath)
+        else:
+            logger.warning("Weights file not found: %s", wpath)
     # Set emitter-specific config
     qd_config.use_emitters = (args.emitter_strategy == "multi")
     qd_config.novelty_weight = args.novelty_weight
     qd_config.allowed_schemes = [s.strip() for s in args.schemes.split(",")]
+    qd_config.proposer_config = {
+        "model": args.proposer_model,
+        "backend": args.proposer_backend,
+        **({"api_base": args.api_base} if args.api_base else {}),
+    }
 
     # ---- Initial population -------------------------------------------
     if args.init == "lm":
@@ -559,6 +675,16 @@ def main() -> None:
             "emitter_strategy": args.emitter_strategy,
             "novelty_weight": args.novelty_weight,
             "schemes": args.schemes,
+            "archive_mode": args.archive_mode,
+            "fast_mode": args.fast_mode,
+            "graph_top_k": args.graph_top_k,
+            "expensive_top_k": args.expensive_top_k,
+            "graph_edge_mode": args.graph_edge_mode,
+            "style_genome": args.style_genome,
+            "prompt_genome": args.prompt_genome,
+            "prompt_llm_fraction": args.prompt_llm_fraction,
+            "curriculum_switch_gen": args.curriculum_switch_gen,
+            "enable_controllability_probes": args.enable_controllability_probes,
         },
         "archive_summary": archive.summary(),
         "archive_dimensions": {

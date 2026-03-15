@@ -77,6 +77,7 @@ try:
         ArchiveDimension,
         create_verse_archive,
         default_verse_dimensions,
+        style_chain_dimensions,
     )
 except ImportError:
     pass
@@ -195,6 +196,7 @@ __all__ = [
     "ArchiveDimension",
     "create_verse_archive",
     "default_verse_dimensions",
+    "style_chain_dimensions",
     # Scoring
     "score_coherence",
     "score_coherence_with_embeddings",

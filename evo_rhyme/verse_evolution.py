@@ -11,12 +11,20 @@ import csv
 import json
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from evo_rhyme.constraints import passes_verse_constraints
-from evo_rhyme.archive import MAPElitesArchive, create_verse_archive
+from evo_rhyme.archive import (
+    MAPElitesArchive,
+    default_verse_dimensions,
+    create_verse_archive,
+    compact_style_dimensions,
+    style_chain_dimensions,
+    ultra_compact_dimensions,
+)
 from evo_rhyme.line_archive import ScoredLine, LineArchive
 from evo_rhyme.line_evolution import LineEvolutionConfig, evolve_lines, score_line
 from evo_rhyme.verse_builder import build_verse_batch
@@ -105,6 +113,25 @@ class QDEvolutionConfig:
     use_emitters: bool = True
     novelty_weight: float = 0.3
     allowed_schemes: List[str] = field(default_factory=lambda: ["AABB", "ABAB", "ABBA", "ABCB", "AABA", "AAAA"])
+    archive_mode: str = "compact_style"
+    curriculum_switch_gen: int = 20
+    coverage_target: Optional[float] = None  # e.g. 0.5 for 50% coverage; enables adaptive emitter boost
+
+    # Runtime-efficiency controls
+    fast_mode: bool = True
+    graph_top_k: int = 24
+    max_expensive_scoring_candidates: int = 40
+    graph_edge_mode: str = "phonetic"
+
+    # Prompt/style genome controls
+    enable_style_genome: bool = True
+    enable_prompt_genome: bool = True
+    prompt_llm_fraction: float = 0.0
+    prompt_dedup_enabled: bool = True
+    proposer_config: Optional[Dict[str, Any]] = None
+
+    # Scoring weight override (for evolutionary weight tuning)
+    fitness_weights: Optional[Dict[str, float]] = None
 
     # Two-tier line evolution
     line_population_size: int = 1500
@@ -113,6 +140,11 @@ class QDEvolutionConfig:
     composed_offspring_ratio: float = 0.5
     max_lines_per_rhyme_group: int = 200
     line_lm_mutation_budget: int = 15
+
+    # Optional instrumentation probes
+    enable_controllability_probes: bool = False
+    controllability_probe_every: int = 5
+    controllability_probe_batch_size: int = 8
 
 
 def verse_crossover(
@@ -554,6 +586,13 @@ class VerseRunLogger:
             "rhyme_scheme": config.rhyme_scheme,
             "use_embeddings": config.use_embeddings,
             "embedding_weight": config.embedding_weight,
+            "archive_mode": config.archive_mode,
+            "fast_mode": config.fast_mode,
+            "graph_top_k": config.graph_top_k,
+            "max_expensive_scoring_candidates": config.max_expensive_scoring_candidates,
+            "enable_style_genome": config.enable_style_genome,
+            "enable_prompt_genome": config.enable_prompt_genome,
+            "prompt_llm_fraction": config.prompt_llm_fraction,
         }
         if extra:
             data.update(extra)
@@ -636,6 +675,13 @@ class VerseQDRunLogger:
             "max_syllables": config.max_syllables,
             "use_embeddings": config.use_embeddings,
             "embedding_weight": config.embedding_weight,
+            "archive_mode": config.archive_mode,
+            "curriculum_switch_gen": config.curriculum_switch_gen,
+            "graph_edge_mode": config.graph_edge_mode,
+            "graph_top_k": config.graph_top_k,
+            "max_expensive_scoring_candidates": config.max_expensive_scoring_candidates,
+            "prompt_llm_fraction": config.prompt_llm_fraction,
+            "enable_controllability_probes": config.enable_controllability_probes,
         }
         if extra:
             data.update(extra)
@@ -650,14 +696,18 @@ class VerseQDRunLogger:
         best_fitness: float,
         mean_fitness: float,
         occupied_niches: int,
+        runtime: Optional[Dict[str, Any]] = None,
     ) -> None:
-        self.score_history.append({
+        row = {
             "generation": gen,
             "archive_coverage": archive_coverage,
             "best_fitness": best_fitness,
             "mean_fitness": mean_fitness,
             "occupied_niches": occupied_niches,
-        })
+        }
+        if runtime:
+            row.update(runtime)
+        self.score_history.append(row)
 
     def flush(self, archive: MAPElitesArchive) -> None:
         csv_path = self.run_dir / "score_history.csv"
@@ -665,10 +715,7 @@ class VerseQDRunLogger:
             with csv_path.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(
                     f,
-                    fieldnames=[
-                        "generation", "archive_coverage",
-                        "best_fitness", "mean_fitness", "occupied_niches",
-                    ],
+                    fieldnames=sorted({k for row in self.score_history for k in row.keys()}),
                 )
                 writer.writeheader()
                 writer.writerows(self.score_history)
@@ -708,7 +755,7 @@ def evolve_verse_qd(
         Tuple of (archive, final_population).
     """
     scheme = config.rhyme_scheme or "AABB"
-    weights = VERSE_DEFAULT_WEIGHTS
+    weights = config.fitness_weights or VERSE_DEFAULT_WEIGHTS
     mut_weights = MUTATION_WEIGHTS
 
     theme_keywords = config.theme_keywords or []
@@ -743,7 +790,18 @@ def evolve_verse_qd(
         run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir))
         run_logger.write_config(config)
 
-    archive = create_verse_archive(config.archive_dims)
+    dims = config.archive_dims
+    if dims is None:
+        mode = getattr(config, "archive_mode", "default")
+        if mode == "style_chain":
+            dims = style_chain_dimensions()
+        elif mode == "compact_style":
+            dims = compact_style_dimensions()
+        elif mode == "ultra_compact":
+            dims = ultra_compact_dimensions()
+        elif mode == "curriculum_compact":
+            dims = default_verse_dimensions()
+    archive = create_verse_archive(dims)
 
     # Novelty archives
     verse_novelty_archive = NoveltyArchive(max_size=5000, k_nearest=10)
@@ -773,6 +831,19 @@ def evolve_verse_qd(
         logger.warning("Template pool initialization failed, using static templates")
 
     for gen in range(config.num_generations):
+        if (
+            config.archive_mode == "curriculum_compact"
+            and gen == max(1, int(config.curriculum_switch_gen))
+        ):
+            old_entries = list(archive.best_per_niche().values())
+            archive = create_verse_archive(compact_style_dimensions())
+            archive.add_batch(old_entries)
+            logger.info(
+                "Curriculum switch: default -> compact_style at gen %d (%d niches)",
+                gen,
+                archive.total_niches(),
+            )
+
         # 1. Analyze & batch-score all individuals
         for ind in population:
             analyze_verse_individual(ind)
@@ -783,6 +854,10 @@ def evolve_verse_qd(
             theme_string=theme_string,
             semantic_scorer=semantic_scorer if config.use_embeddings else None,
             embedding_weight=config.embedding_weight,
+            graph_top_k=config.graph_top_k,
+            expensive_top_k=config.max_expensive_scoring_candidates,
+            fast_mode=config.fast_mode,
+            graph_edge_mode=config.graph_edge_mode,
         )
         for ind, sc in zip(population, pop_scores):
             ind.scores = sc
@@ -916,6 +991,10 @@ def evolve_verse_qd(
                 theme_string=theme_string,
                 semantic_scorer=semantic_scorer if config.use_embeddings else None,
                 embedding_weight=config.embedding_weight,
+                graph_top_k=config.graph_top_k,
+                expensive_top_k=config.max_expensive_scoring_candidates,
+                fast_mode=config.fast_mode,
+                graph_edge_mode=config.graph_edge_mode,
             )
             for cand, sc in zip(candidates, batch_scores):
                 cand.scores = sc
@@ -961,6 +1040,10 @@ def evolve_verse_qd(
                     theme_string=theme_string,
                     semantic_scorer=semantic_scorer if config.use_embeddings else None,
                     embedding_weight=config.embedding_weight,
+                    graph_top_k=config.graph_top_k,
+                    expensive_top_k=config.max_expensive_scoring_candidates,
+                    fast_mode=config.fast_mode,
+                    graph_edge_mode=config.graph_edge_mode,
                 )
                 for idx, sc in zip(repaired_indices, repaired_scores):
                     candidates[idx].scores = sc
@@ -1049,6 +1132,16 @@ def evolve_verse_qd(
         if on_generation:
             on_generation(gen, archive, population)
 
+        if (
+            config.enable_controllability_probes
+            and gen > 0
+            and gen % max(1, config.controllability_probe_every) == 0
+        ):
+            _log_style_controllability_probe(
+                archive=archive,
+                sample_size=max(1, config.controllability_probe_batch_size),
+            )
+
         logger.info(
             "Gen %d: pop=%d archive_coverage=%.1f%% archive_best=%.3f "
             "lm_budget_remaining=%d improved=%d",
@@ -1060,6 +1153,30 @@ def evolve_verse_qd(
         run_logger.flush(archive)
 
     return archive, population
+
+
+def _log_style_controllability_probe(archive: MAPElitesArchive, sample_size: int = 8) -> None:
+    """Cheap proxy for style genome controllability from archive occupancy."""
+    parents = archive.sample_parents(sample_size)
+    if not parents:
+        return
+    tone_counts: Dict[str, int] = {}
+    narr_counts: Dict[str, int] = {}
+    meta_counts: Dict[str, int] = {}
+    for p in parents:
+        labels = (p.metadata or {}).get("style_genome_labels", {})
+        tone = labels.get("tone", "unknown")
+        narr = labels.get("narrativity", "unknown")
+        meta = labels.get("metaphor_density", "unknown")
+        tone_counts[tone] = tone_counts.get(tone, 0) + 1
+        narr_counts[narr] = narr_counts.get(narr, 0) + 1
+        meta_counts[meta] = meta_counts.get(meta, 0) + 1
+    logger.info(
+        "Controllability probe | tone=%s narr=%s metaphor=%s",
+        tone_counts,
+        narr_counts,
+        meta_counts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1075,7 +1192,7 @@ def evolve_verse_qd_emitters(
 ) -> Tuple[MAPElitesArchive, List[VerseIndividual]]:
     """Emitter-based MAP-Elites QD evolution.
 
-    Uses 4 specialized emitters (Random, Mutation, NicheTargeting, Repair)
+    Uses specialized emitters coordinated by an adaptive scheduler
     coordinated by an adaptive scheduler for better coverage.
     """
     from evo_rhyme.emitters import (
@@ -1083,7 +1200,7 @@ def evolve_verse_qd_emitters(
     )
 
     scheme = config.rhyme_scheme or "AABB"
-    weights = VERSE_DEFAULT_WEIGHTS
+    weights = config.fitness_weights or VERSE_DEFAULT_WEIGHTS
     theme_keywords = config.theme_keywords or []
     kw = set(w.lower() for w in theme_keywords) if theme_keywords else None
     theme_string = " ".join(theme_keywords) if theme_keywords else None
@@ -1101,14 +1218,35 @@ def evolve_verse_qd_emitters(
         run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir))
         run_logger.write_config(config)
 
-    archive = create_verse_archive(config.archive_dims)
+    dims = config.archive_dims
+    if dims is None:
+        mode = getattr(config, "archive_mode", "default")
+        if mode == "style_chain":
+            dims = style_chain_dimensions()
+        elif mode == "compact_style":
+            dims = compact_style_dimensions()
+        elif mode == "ultra_compact":
+            dims = ultra_compact_dimensions()
+        elif mode == "curriculum_compact":
+            dims = default_verse_dimensions()
+    archive = create_verse_archive(dims)
 
     for ind in population:
         analyze_verse_individual(ind)
+        if config.enable_style_genome or config.enable_prompt_genome:
+            try:
+                from evo_rhyme.emitters import _attach_genomes  # type: ignore
+                _attach_genomes(ind)
+            except Exception:
+                pass
     pop_scores = score_verses_batch(
         population, scheme=scheme, prompt_keywords=kw, theme_string=theme_string,
         semantic_scorer=semantic_scorer if config.use_embeddings else None,
         embedding_weight=config.embedding_weight,
+        graph_top_k=config.graph_top_k,
+        expensive_top_k=config.max_expensive_scoring_candidates,
+        fast_mode=config.fast_mode,
+        graph_edge_mode=config.graph_edge_mode,
     )
     for ind, sc in zip(population, pop_scores):
         ind.scores = sc
@@ -1127,8 +1265,19 @@ def evolve_verse_qd_emitters(
         "corpus_path": None,
         "min_syllables": config.min_syllables,
         "max_syllables": config.max_syllables,
+        "embedding_neighbor_k": 12,
+        "embedding_min_cosine": 0.58,
         "schemes": config.allowed_schemes if hasattr(config, 'allowed_schemes') else ["AABB", "ABAB", "ABBA", "ABCB"],
         "crossover_rate": config.crossover_rate,
+        "enable_style_genome": config.enable_style_genome,
+        "enable_prompt_genome": config.enable_prompt_genome,
+        "prompt_llm_fraction": config.prompt_llm_fraction,
+        "prompt_dedup_enabled": config.prompt_dedup_enabled,
+        "proposer_config": config.proposer_config or {},
+        "niche_targeting_sample": 600,
+        "niche_targeting_queue": 400,
+        "coverage_target": config.coverage_target,
+        "coverage_boost_threshold": 0.35,
     }
     emitters, scheduler = create_emitters(emitter_config)
 
@@ -1140,12 +1289,30 @@ def evolve_verse_qd_emitters(
             candidates, scheme=scheme, prompt_keywords=kw, theme_string=theme_string,
             semantic_scorer=semantic_scorer if config.use_embeddings else None,
             embedding_weight=config.embedding_weight,
+            graph_top_k=config.graph_top_k,
+            expensive_top_k=config.max_expensive_scoring_candidates,
+            fast_mode=config.fast_mode,
+            graph_edge_mode=config.graph_edge_mode,
         )
 
     def fitness_fn(scores):
         return compute_verse_fitness(scores, weights)
 
     for gen in range(config.num_generations):
+        if (
+            config.archive_mode == "curriculum_compact"
+            and gen == max(1, int(config.curriculum_switch_gen))
+        ):
+            old_entries = list(archive.best_per_niche().values())
+            archive = create_verse_archive(compact_style_dimensions())
+            archive.add_batch(old_entries)
+            logger.info(
+                "Curriculum switch: default -> compact_style at gen %d (%d niches)",
+                gen,
+                archive.total_niches(),
+            )
+
+        gen_start = time.perf_counter()
         total_budget = config.population_size
 
         gen_stats = run_emitter_generation(
@@ -1165,18 +1332,36 @@ def evolve_verse_qd_emitters(
 
         best_fit = max((ind.fitness or 0.0 for ind in population), default=0.0)
         mean_fit = sum(ind.fitness or 0.0 for ind in population) / max(1, len(population))
+        elapsed_s = max(1e-6, time.perf_counter() - gen_start)
+        runtime = {
+            "gen_wall_time_s": elapsed_s,
+            "candidates_generated": gen_stats.get("total_candidates", 0),
+            "inserted": gen_stats.get("inserted", 0),
+            "niches_per_sec": gen_stats.get("new_niches", 0) / elapsed_s,
+            "candidates_per_sec": gen_stats.get("total_candidates", 0) / elapsed_s,
+        }
 
         if run_logger:
             run_logger.log_generation(
-                gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+                gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(), runtime=runtime,
             )
 
         if on_generation:
             on_generation(gen, archive, population)
 
+        if (
+            config.enable_controllability_probes
+            and gen > 0
+            and gen % max(1, config.controllability_probe_every) == 0
+        ):
+            _log_style_controllability_probe(
+                archive=archive,
+                sample_size=max(1, config.controllability_probe_batch_size),
+            )
+
         sched_weights = {k: f"{v:.2f}" for k, v in scheduler._weights.items()}
         logger.info(
-            "Gen %d: coverage=%.1f%% (%d/%d) best=%.3f inserted=%d new_niches=%d weights=%s",
+            "Gen %d: coverage=%.1f%% (%d/%d) best=%.3f inserted=%d new_niches=%d cand/s=%.1f niche/s=%.2f weights=%s",
             gen,
             archive.coverage() * 100,
             archive.occupied_niches(),
@@ -1184,6 +1369,8 @@ def evolve_verse_qd_emitters(
             best_fit,
             gen_stats.get("inserted", 0),
             gen_stats.get("new_niches", 0),
+            runtime["candidates_per_sec"],
+            runtime["niches_per_sec"],
             sched_weights,
         )
 

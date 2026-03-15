@@ -44,6 +44,7 @@ MUTATION_WEIGHTS: Dict[str, float] = {
     "stressed_vowel_swap": 0.06,
     "syllable_adjust": 0.04,
     "rhyme_graph_expand": 0.04,
+    "embedding_rhyme_walk": 0.05,
     "chain_extension": 0.06,
     "end_word_swap": 0.02,
     "multisyllable_rhyme": 0.02,
@@ -1026,6 +1027,52 @@ def _multisyllable_rhyme(
     return _copy_individual(individual, new_line, individual.line2)
 
 
+def _embedding_rhyme_walk(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Replace one token using nearest neighbors in rhyme embedding space."""
+    try:
+        from evo_rhyme.rhyme_embedding import get_rhyme_embedding_space
+    except Exception:
+        return None
+
+    space = get_rhyme_embedding_space()
+    corpus_vocab = config.get("corpus_vocab") if config and isinstance(config, dict) else None
+    k = int(config.get("embedding_neighbor_k", 12)) if isinstance(config, dict) else 12
+    min_cos = float(config.get("embedding_min_cosine", 0.6)) if isinstance(config, dict) else 0.6
+
+    for line, other, is_line1 in [
+        (individual.line1, individual.line2, True),
+        (individual.line2, individual.line1, False),
+    ]:
+        tokens = tokenize_line(line)
+        if len(tokens) < 3:
+            continue
+        idxs = list(range(1, len(tokens) - 1))
+        random.shuffle(idxs)
+        for idx in idxs:
+            word = tokens[idx].lower()
+            if not space.has_word(word):
+                continue
+            neighbors = space.rhyme_neighbors(word, k=k, min_cosine=min_cos)
+            if corpus_vocab:
+                neighbors = [w for w in neighbors if w in corpus_vocab]
+            if not neighbors:
+                continue
+            new_word = random.choice(neighbors)
+            if new_word == word:
+                continue
+            new_tokens = list(tokens)
+            new_tokens[idx] = new_word
+            new_line = " ".join(new_tokens)
+            if is_line1:
+                return _copy_individual(individual, new_line, other)
+            return _copy_individual(individual, other, new_line)
+    return None
+
+
 def _line_replace_mutation(
     individual: CoupletIndividual,
     tail_to_words: Dict[str, List[str]],
@@ -1129,6 +1176,7 @@ _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
     "stress_repair": _stress_repair,
     "chain_extension": _chain_extension,
     "multisyllable_rhyme": _multisyllable_rhyme,
+    "embedding_rhyme_walk": _embedding_rhyme_walk,
     "line_replace": _line_replace_mutation,
     "block_replace": _block_replace_mutation,
 }

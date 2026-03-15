@@ -39,6 +39,8 @@ class TestScoreCouplet:
             "template_penalty",
             "corpus_overlap_penalty",
             "theme_penalty",
+            "coherence",
+            "punchline",
         }
         assert set(scores.keys()) == expected_keys
 

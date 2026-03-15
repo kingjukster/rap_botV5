@@ -68,6 +68,7 @@ class BarRequest:
     role: str = "flex"
     persona: Optional[str] = None
     avoid_words: Optional[Set[str]] = None
+    style_directives: Optional[Dict[str, str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,11 @@ def _build_system_prompt(
     if request.avoid_words:
         avoid = ", ".join(sorted(request.avoid_words))
         parts.append(f"- Do NOT use these words: {avoid}")
+
+    if request.style_directives:
+        parts.append("- Follow these style directives:")
+        for key, value in request.style_directives.items():
+            parts.append(f"  - {key}: {value}")
 
     parts.append("")
     parts.append("Output ONLY the bars, one per line. No numbering, no explanations.")
@@ -279,6 +285,7 @@ class BarProposer:
         scheme: str = "AABB",
         num_lines: int = 4,
         roles: Optional[List[str]] = None,
+        style_directives: Optional[Dict[str, str]] = None,
     ) -> Dict[int, List[str]]:
         if roles is None:
             roles = _default_roles(num_lines)
@@ -303,6 +310,7 @@ class BarProposer:
                     rhyme_target=slot_rhyme_target.get(anchor),
                     syllable_range=(8, 14),
                     role=roles[idx],
+                    style_directives=style_directives,
                 )
                 tasks.append(asyncio.ensure_future(self._propose_bars_async(req)))
                 slot_map.append(idx)
@@ -313,6 +321,7 @@ class BarProposer:
                     theme_keywords=theme_keywords,
                     syllable_range=(8, 14),
                     role=roles[idx],
+                    style_directives=style_directives,
                 )
                 tasks.append(asyncio.ensure_future(self._propose_bars_async(req)))
                 slot_map.append(idx)
@@ -343,13 +352,16 @@ class BarProposer:
         scheme: str = "AABB",
         num_lines: int = 4,
         roles: Optional[List[str]] = None,
+        style_directives: Optional[Dict[str, str]] = None,
     ) -> Dict[int, List[str]]:
         """Synchronous wrapper for verse pool proposal.
 
         Returns ``{slot_index: [candidate_bars]}`` — one pool per line slot.
         """
         return _run_async(
-            self._propose_verse_pool_async(theme_keywords, scheme, num_lines, roles)
+            self._propose_verse_pool_async(
+                theme_keywords, scheme, num_lines, roles, style_directives
+            )
         )
 
 
