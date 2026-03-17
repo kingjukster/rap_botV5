@@ -8,6 +8,7 @@ aggregate fitness from weighted sum.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import math
 import random
 from collections import Counter
@@ -80,6 +81,11 @@ def _cache_put(key: Tuple[str, str], scores: Dict[str, float]) -> None:
         # Lightweight bounded cache without external dependency.
         _VERSE_SCORE_CACHE.clear()
     _VERSE_SCORE_CACHE[key] = dict(scores)
+
+
+def _text_hash(text: str) -> str:
+    """SHA256 hash of normalized text for score cache key."""
+    return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
 
 def _score_end_rhyme(f1: Optional[LineFeatures], f2: Optional[LineFeatures]) -> float:
@@ -554,6 +560,19 @@ def score_couplet(
     for stronger phrase plausibility (catches nonsense like "survival pop rough").
     """
     import re
+
+    # DB score cache lookup (L2 cache; survives across runs)
+    try:
+        from evo_rhyme import db as _db
+        if _db.db_enabled():
+            text = (individual.line1 + "\n" + individual.line2).strip().lower()
+            h = _text_hash(text)
+            cached = _db.score_cache_get(h, "couplet", "COUPLET")
+            if cached is not None:
+                return cached
+    except Exception:
+        pass
+
     f1, f2 = individual.features1, individual.features2
     kw = set(w.lower() for w in (prompt_keywords or [])) if prompt_keywords else None
 
@@ -629,6 +648,16 @@ def score_couplet(
         scores["punchline"] = score_punchline(lines)
     except Exception:
         scores["punchline"] = 0.0
+
+    # DB score cache store
+    try:
+        from evo_rhyme import db as _db
+        if _db.db_enabled():
+            text = (individual.line1 + "\n" + individual.line2).strip().lower()
+            h = _text_hash(text)
+            _db.score_cache_put(h, "couplet", "COUPLET", scores)
+    except Exception:
+        pass
 
     return scores
 
@@ -1590,13 +1619,26 @@ def score_verses_batch(
     all_scores: List[Dict[str, float]] = [{} for _ in individuals]
     missing_idxs: List[int] = []
 
-    # Stage 1/2: cheap-medium features with cache.
+    # Stage 1/2: cheap-medium features with cache (L1 in-memory, L2 DB).
     for idx, ind in enumerate(individuals):
         key = _norm_verse_key(ind.lines, scheme)
         cached = _VERSE_SCORE_CACHE.get(key)
         if cached is not None:
             all_scores[idx] = dict(cached)
             continue
+        # DB cache lookup (L2)
+        try:
+            from evo_rhyme import db as _db
+            if _db.db_enabled():
+                text = key[1]
+                h = _text_hash(text)
+                cached = _db.score_cache_get(h, "verse", scheme.upper())
+                if cached is not None:
+                    all_scores[idx] = dict(cached)
+                    _VERSE_SCORE_CACHE[key] = dict(cached)
+                    continue
+        except Exception:
+            pass
 
         f = ind.features
         scores: Dict[str, float] = {
@@ -1734,13 +1776,21 @@ def score_verses_batch(
                 except Exception:
                     pass
 
-    # Adherence metrics and cache write.
+    # Adherence metrics and cache write (L1 in-memory + L2 DB).
     for idx in missing_idxs:
         individuals[idx].scores = all_scores[idx]
         all_scores[idx]["style_adherence"] = _score_style_adherence(individuals[idx])
         all_scores[idx]["prompt_adherence"] = _score_prompt_adherence(individuals[idx])
         individuals[idx].scores = None
-        _cache_put(_norm_verse_key(individuals[idx].lines, scheme), all_scores[idx])
+        key = _norm_verse_key(individuals[idx].lines, scheme)
+        _cache_put(key, all_scores[idx])
+        try:
+            from evo_rhyme import db as _db
+            if _db.db_enabled():
+                h = _text_hash(key[1])
+                _db.score_cache_put(h, "verse", scheme.upper(), all_scores[idx])
+        except Exception:
+            pass
 
     return all_scores
 

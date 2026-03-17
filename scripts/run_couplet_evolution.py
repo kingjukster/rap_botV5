@@ -214,6 +214,11 @@ def main():
         help="Blend ngram fluency with LM perplexity (DistilGPT-2) for stronger nonsense detection.",
     )
     parser.add_argument(
+        "--db",
+        action="store_true",
+        help="Enable MySQL persistence (RAPBOT_USE_DB=1, run/generation/candidate logging)",
+    )
+    parser.add_argument(
         "--lm-fluency-weight",
         type=float,
         default=0.5,
@@ -303,12 +308,37 @@ def main():
         else:
             logger.warning(f"Weights file not found: {wpath}")
 
+    run_id = None
+    if args.db:
+        import os
+        os.environ["RAPBOT_USE_DB"] = "1"
+        try:
+            from evo_rhyme import db
+            if db.db_enabled():
+                run_id = db.insert_run(
+                    "run_couplet_evolution",
+                    ",".join(theme_keywords) if theme_keywords else "",
+                    {
+                        "theme": args.theme,
+                        "population": args.population,
+                        "generations": args.generations,
+                        "elites": args.elites,
+                        "immigrants": args.immigrants,
+                        "init": args.init,
+                    },
+                )
+                if run_id > 0:
+                    logger.info("DB run_id=%d", run_id)
+        except Exception as e:
+            logger.warning("DB insert_run failed: %s", e)
+
     config = EvolutionConfig(
         population_size=args.population,
         num_elites=args.elites,
         random_immigrants_per_gen=args.immigrants,
         fitness_weights=fitness_weights,
         output_dir=output_dir,
+        run_id=run_id if run_id and run_id > 0 else None,
         use_embeddings=args.use_embeddings,
         embedding_weight=args.embedding_weight,
         population_init=args.init,
@@ -387,14 +417,30 @@ def main():
     def immigrant_gen(size: int):
         return generator.generate_seed_couplets(theme_keywords=theme_keywords, size=size)
 
-    evolve_fn = evolve_multiobjective if args.multiobjective else evolve
-    population = evolve_fn(
-        population,
-        generations=args.generations,
-        config=config,
-        prompt_keywords=set(theme_keywords) if theme_keywords else None,
-        immigrant_generator=immigrant_gen,
-    )
+    try:
+        evolve_fn = evolve_multiobjective if args.multiobjective else evolve
+        population = evolve_fn(
+            population,
+            generations=args.generations,
+            config=config,
+            prompt_keywords=set(theme_keywords) if theme_keywords else None,
+            immigrant_generator=immigrant_gen,
+        )
+    except Exception as e:
+        if run_id and run_id > 0:
+            try:
+                from evo_rhyme import db
+                db.update_run_status(run_id, "failed")
+            except Exception:
+                pass
+        raise
+
+    if run_id and run_id > 0:
+        try:
+            from evo_rhyme import db
+            db.update_run_status(run_id, "completed")
+        except Exception as e:
+            logger.warning("DB update_run_status failed: %s", e)
 
     # Save results
     top = population[: min(50, len(population))]

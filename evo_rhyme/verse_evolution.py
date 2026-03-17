@@ -102,6 +102,8 @@ class QDEvolutionConfig:
     crossover_rate: float = 0.6
 
     output_dir: Optional[str] = None
+    run_id: Optional[int] = None  # DB run ID when RAPBOT_USE_DB=1
+    initial_archive: Optional[Any] = None  # Pre-loaded archive for resume
 
     min_syllables: int = 6
     max_syllables: int = 18
@@ -647,6 +649,7 @@ class VerseQDRunLogger:
 
     run_dir: Path
     score_history: List[Dict[str, Any]] = field(default_factory=list)
+    run_id: Optional[int] = None
 
     def __post_init__(self) -> None:
         self.run_dir = Path(self.run_dir)
@@ -708,6 +711,17 @@ class VerseQDRunLogger:
         if runtime:
             row.update(runtime)
         self.score_history.append(row)
+        if self.run_id is not None and self.run_id > 0:
+            try:
+                from evo_rhyme import db as _db
+                if _db.db_enabled():
+                    _db.insert_generation(
+                        self.run_id, gen, best_fitness, mean_fitness,
+                        archive_coverage, None,
+                        {"occupied_niches": occupied_niches, "runtime": runtime},
+                    )
+            except Exception as e:
+                logger.warning("DB log_generation failed: %s", e)
 
     def flush(self, archive: MAPElitesArchive) -> None:
         csv_path = self.run_dir / "score_history.csv"
@@ -732,6 +746,28 @@ class VerseQDRunLogger:
         ]
         with top_path.open("w", encoding="utf-8") as f:
             json.dump(candidates, f, indent=2)
+        if self.run_id is not None and self.run_id > 0:
+            try:
+                from evo_rhyme import db as _db
+                if _db.db_enabled():
+                    if self.score_history:
+                        last_gen = max(r.get("generation", 0) for r in self.score_history)
+                        scheme = "AABB"
+                        for ind in top:
+                            ct = f"verse{len(ind.lines)}"
+                            _db.insert_candidate(
+                                self.run_id, last_gen, ct, scheme,
+                                ind.lines, ind.fitness or 0.0, ind.scores,
+                            )
+                    # Sync full archive to archive_cells
+                    for coord, ind in archive.best_per_niche().items():
+                        cell_key = "_".join(str(c) for c in coord)
+                        _db.upsert_archive_cell(
+                            self.run_id, cell_key,
+                            ind.lines, ind.fitness or 0.0, ind.scores,
+                        )
+            except Exception as e:
+                logger.warning("DB insert candidates/archive failed: %s", e)
 
 
 def evolve_verse_qd(
@@ -787,7 +823,7 @@ def evolve_verse_qd(
 
     run_logger: Optional[VerseQDRunLogger] = None
     if config.output_dir:
-        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir))
+        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir), run_id=config.run_id)
         run_logger.write_config(config)
 
     dims = config.archive_dims
@@ -1215,7 +1251,7 @@ def evolve_verse_qd_emitters(
 
     run_logger = None
     if config.output_dir:
-        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir))
+        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir), run_id=getattr(config, "run_id", None))
         run_logger.write_config(config)
 
     dims = config.archive_dims
@@ -1229,7 +1265,7 @@ def evolve_verse_qd_emitters(
             dims = ultra_compact_dimensions()
         elif mode == "curriculum_compact":
             dims = default_verse_dimensions()
-    archive = create_verse_archive(dims)
+    archive = config.initial_archive if getattr(config, "initial_archive", None) else create_verse_archive(dims)
 
     for ind in population:
         analyze_verse_individual(ind)

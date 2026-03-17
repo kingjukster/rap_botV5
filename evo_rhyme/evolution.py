@@ -48,6 +48,7 @@ class EvolutionConfig:
     use_niching: bool = False
     multiobjective: bool = False  # when True, use evolve_multiobjective (Pareto ranking)
     output_dir: Optional[Path] = None  # run artifacts: config, score_history, top_candidates
+    run_id: Optional[int] = None  # DB run ID when RAPBOT_USE_DB=1
     use_embeddings: bool = False
     embedding_weight: float = 0.5  # weight of embedding score in semantic blend: semantic = (1-alpha)*keyword + alpha*embedding
     population_init: str = "mixed"  # "mixed" | "random" | "template"
@@ -295,6 +296,7 @@ class EvolutionRunLogger:
     run_dir: Path
     score_history: List[Dict[str, Any]] = field(default_factory=list)
     top_candidates_by_gen: Dict[int, List[Dict[str, Any]]] = field(default_factory=dict)
+    run_id: Optional[int] = None  # DB run ID for persistence when enabled
 
     def __post_init__(self) -> None:
         self.run_dir = Path(self.run_dir)
@@ -351,6 +353,26 @@ class EvolutionRunLogger:
             }
             for ind in top5
         ]
+        # DB persistence when enabled
+        if self.run_id is not None and self.run_id > 0:
+            try:
+                from evo_rhyme import db as _db
+                if _db.db_enabled():
+                    _db.insert_generation(
+                        self.run_id, gen, best_fitness, avg_fitness,
+                        diversity, acceptance_rate,
+                        {"best_raw": best_raw} if best_raw is not None else None,
+                    )
+                    for ind in top5:
+                        cid = _db.insert_candidate(
+                            self.run_id, gen, "couplet", "COUPLET",
+                            [ind.line1, ind.line2],
+                            ind.fitness or 0.0, ind.scores,
+                        )
+                        if cid > 0:
+                            ind.metadata["db_id"] = cid
+            except Exception as e:
+                logger.warning("DB log_generation failed: %s", e)
 
     def flush(self) -> None:
         """Write score_history.csv and top_candidates.json to run dir."""
@@ -420,7 +442,7 @@ def evolve(
 
     run_logger: Optional[EvolutionRunLogger] = None
     if cfg.output_dir:
-        run_logger = EvolutionRunLogger(run_dir=cfg.output_dir)
+        run_logger = EvolutionRunLogger(run_dir=cfg.output_dir, run_id=cfg.run_id)
         run_logger.write_config(
             cfg,
             extra={
@@ -596,6 +618,26 @@ def evolve(
                 if ngram_floor_val is not None and child_scores.get("ngram_fluency", 0.5) < ngram_floor_val:
                     continue
             accepted += 1
+            # DB: insert offspring candidate and lineage
+            if cfg.run_id is not None and cfg.run_id > 0:
+                try:
+                    from evo_rhyme import db as _db
+                    if _db.db_enabled():
+                        cid = _db.insert_candidate(
+                            cfg.run_id, gen + 1, "couplet", "COUPLET",
+                            [child.line1, child.line2],
+                            child.fitness or 0.0, child.scores,
+                        )
+                        if cid > 0:
+                            child.metadata["db_id"] = cid
+                            p1_id = p1.metadata.get("db_id")
+                            p2_id = p2.metadata.get("db_id")
+                            if p1_id and p1_id > 0:
+                                _db.insert_lineage(cid, p1_id, "crossover+mutate", gen + 1)
+                            if p2_id and p2_id > 0 and p2_id != p1_id:
+                                _db.insert_lineage(cid, p2_id, "crossover+mutate", gen + 1)
+                except Exception as e:
+                    logger.debug("DB lineage failed: %s", e)
             next_pop.append(child)
         prev_acceptance_rate = accepted / max(1, attempts)
         logger.info(f"  Mutation acceptance: {accepted}/{attempts} = {prev_acceptance_rate:.2%}")
@@ -658,7 +700,7 @@ def evolve_multiobjective(
 
     run_logger: Optional[EvolutionRunLogger] = None
     if cfg.output_dir:
-        run_logger = EvolutionRunLogger(run_dir=cfg.output_dir)
+        run_logger = EvolutionRunLogger(run_dir=cfg.output_dir, run_id=cfg.run_id)
         run_logger.write_config(
             cfg,
             extra={

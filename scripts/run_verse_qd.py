@@ -138,6 +138,18 @@ def parse_args() -> argparse.Namespace:
         help="Enable run logging to data/evo_rhyme/runs/qd_{timestamp}/",
     )
     parser.add_argument(
+        "--db",
+        action="store_true",
+        help="Enable MySQL persistence (RAPBOT_USE_DB=1)",
+    )
+    parser.add_argument(
+        "--resume",
+        type=int,
+        metavar="RUN_ID",
+        default=None,
+        help="Resume from a previous run: load archive from DB (requires --db)",
+    )
+    parser.add_argument(
         "--use-embeddings",
         action="store_true",
         help="Enable embedding-based semantic scoring",
@@ -405,6 +417,32 @@ def main() -> None:
         else None
     )
 
+    # ---- DB run -------------------------------------------------------
+    run_id = None
+    if args.db:
+        import os
+        os.environ["RAPBOT_USE_DB"] = "1"
+        try:
+            from evo_rhyme import db
+            if db.db_enabled():
+                run_id = db.insert_run(
+                    "run_verse_qd",
+                    ",".join(theme_keywords) if theme_keywords else "",
+                    {
+                        "theme": args.theme,
+                        "population": args.population,
+                        "generations": args.generations,
+                        "scheme": args.scheme,
+                        "num_lines": args.num_lines,
+                        "init": args.init,
+                        "emitter_strategy": args.emitter_strategy,
+                    },
+                )
+                if run_id > 0:
+                    logger.info("DB run_id=%d", run_id)
+        except Exception as e:
+            logger.warning("DB insert_run failed: %s", e)
+
     # ---- QD config ----------------------------------------------------
     qd_config = QDEvolutionConfig(
         population_size=args.population,
@@ -438,7 +476,50 @@ def main() -> None:
         curriculum_switch_gen=args.curriculum_switch_gen,
         enable_controllability_probes=args.enable_controllability_probes,
         coverage_target=args.coverage_target,
+        run_id=run_id if run_id and run_id > 0 else None,
+        initial_archive=None,  # Set below if --resume
     )
+    if args.resume is not None and args.resume > 0:
+        if not args.db:
+            logger.warning("--resume requires --db; enabling DB")
+            import os
+            os.environ["RAPBOT_USE_DB"] = "1"
+        try:
+            from evo_rhyme import db
+            from evo_rhyme.archive import (
+                MAPElitesArchive,
+                compact_style_dimensions,
+                style_chain_dimensions,
+                ultra_compact_dimensions,
+                default_verse_dimensions,
+            )
+            cells = db.load_archive_cells(args.resume)
+            if cells:
+                mode = getattr(args, "archive_mode", "compact_style")
+                if mode == "style_chain":
+                    dims = style_chain_dimensions()
+                elif mode == "ultra_compact":
+                    dims = ultra_compact_dimensions()
+                elif mode == "curriculum_compact":
+                    dims = default_verse_dimensions()
+                else:
+                    dims = compact_style_dimensions()
+                data = [
+                    {
+                        "niche": [int(x) for x in c["cell_key"].split("_")],
+                        "lines": c["lines"],
+                        "fitness": c["fitness"],
+                        "scores": c["scores"] or {},
+                    }
+                    for c in cells
+                ]
+                qd_config.initial_archive = MAPElitesArchive.from_json(data, dims)
+                logger.info("Resumed archive from run_id=%d (%d niches)", args.resume, len(cells))
+            else:
+                logger.warning("No archive cells found for run_id=%d", args.resume)
+        except Exception as e:
+            logger.warning("Resume failed: %s", e)
+
     if args.weights:
         wpath = Path(args.weights)
         if not wpath.is_absolute():
@@ -563,20 +644,36 @@ def main() -> None:
     logger.info("Starting QD evolution (%d generations)...", args.generations)
     verse_16_results = []
 
-    if getattr(qd_config, 'use_emitters', False):
-        from evo_rhyme.verse_evolution import evolve_verse_qd_emitters
-        logger.info("Using emitter-based MAP-Elites strategy")
-        archive, final_pop = evolve_verse_qd_emitters(
-            population=population,
-            config=qd_config,
-            immigrant_generator=immigrant_generator,
-        )
-    else:
-        archive, final_pop = evolve_verse_qd(
-            population=population,
-            config=qd_config,
-            immigrant_generator=immigrant_generator,
-        )
+    try:
+        if getattr(qd_config, 'use_emitters', False):
+            from evo_rhyme.verse_evolution import evolve_verse_qd_emitters
+            logger.info("Using emitter-based MAP-Elites strategy")
+            archive, final_pop = evolve_verse_qd_emitters(
+                population=population,
+                config=qd_config,
+                immigrant_generator=immigrant_generator,
+            )
+        else:
+            archive, final_pop = evolve_verse_qd(
+                population=population,
+                config=qd_config,
+                immigrant_generator=immigrant_generator,
+            )
+    except Exception as e:
+        if run_id and run_id > 0:
+            try:
+                from evo_rhyme import db
+                db.update_run_status(run_id, "failed")
+            except Exception:
+                pass
+        raise
+
+    if run_id and run_id > 0:
+        try:
+            from evo_rhyme import db
+            db.update_run_status(run_id, "completed")
+        except Exception as e:
+            logger.warning("DB update_run_status failed: %s", e)
 
     # ---- 16-bar composition (when --num-lines 16) --------------------
     if args.num_lines == 16:
