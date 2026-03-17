@@ -50,30 +50,6 @@ from evo_rhyme.population import (
 from evo_rhyme.seed_generator import SeedGenerator, load_corpus_lines
 
 
-def _load_corpus_path():
-    """Load elite corpus path from config/settings or env. Falls back to phaseA_kaggle_verse.txt if primary doesn't exist."""
-    path = None
-    try:
-        from config.settings import load_settings
-        settings = load_settings()
-        path = Path(settings.elite_corpus_path)
-        if not path.is_absolute():
-            path = ROOT / path
-    except Exception:
-        pass
-    if path is None:
-        env_path = __import__("os").environ.get("RAPBOT_ELITE_CORPUS")
-        if env_path:
-            path = Path(env_path)
-    if path is None:
-        path = ROOT / "data" / "elite_kaggle_corpus_clean.txt"
-    if not path.exists():
-        path = ROOT / "data" / "elite_kaggle_corpus_clean_plus.jsonl"
-    if not path.exists():
-        path = ROOT / "data" / "phaseA_kaggle_verse.txt"
-    return path
-
-
 def main():
     parser = argparse.ArgumentParser(description="Run couplet evolution")
     parser.add_argument(
@@ -239,7 +215,8 @@ def main():
     logger = logging.getLogger(__name__)
 
     theme_keywords = [w.strip() for w in args.theme.split(",") if w.strip()] or None
-    corpus_path = Path(args.corpus) if args.corpus else _load_corpus_path()
+    from config import get_elite_corpus_path
+    corpus_path = Path(args.corpus) if args.corpus else get_elite_corpus_path()
 
     # Theme-aware defaults for min_fluency/min_semantic: when theme set, default 0.6/0.25; else 0.0 (disabled)
     min_fluency_accept = (

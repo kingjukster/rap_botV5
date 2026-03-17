@@ -33,8 +33,10 @@ DB_PORT = int(os.environ.get("RAPBOT_DB_PORT", "3306"))
 DB_USER = os.environ.get("RAPBOT_DB_USER", "root")
 DB_PASSWORD = os.environ.get("RAPBOT_DB_PASSWORD", "")
 
-SCHEMA_SQL = """
--- runs: evolution run metadata
+# Individual CREATE TABLE statements - robust against semicolons in strings/comments
+SCHEMA_STATEMENTS = [
+    # runs: evolution run metadata
+    """
 CREATE TABLE IF NOT EXISTS runs (
     run_id INT AUTO_INCREMENT PRIMARY KEY,
     script_name VARCHAR(255) NOT NULL,
@@ -44,8 +46,9 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- generations: per-generation stats
+""",
+    # generations: per-generation stats
+    """
 CREATE TABLE IF NOT EXISTS generations (
     id INT AUTO_INCREMENT PRIMARY KEY,
     run_id INT NOT NULL,
@@ -59,8 +62,9 @@ CREATE TABLE IF NOT EXISTS generations (
     FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE,
     INDEX idx_run_gen (run_id, gen)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- candidates: evolved candidates per run/generation
+""",
+    # candidates: evolved candidates per run/generation
+    """
 CREATE TABLE IF NOT EXISTS candidates (
     candidate_id INT AUTO_INCREMENT PRIMARY KEY,
     run_id INT NOT NULL,
@@ -75,8 +79,9 @@ CREATE TABLE IF NOT EXISTS candidates (
     INDEX idx_run_gen (run_id, gen),
     INDEX idx_candidate_type (candidate_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- lineage: parent-child relationships between candidates
+""",
+    # lineage: parent-child relationships between candidates
+    """
 CREATE TABLE IF NOT EXISTS lineage (
     child_id INT NOT NULL,
     parent_id INT NOT NULL,
@@ -88,8 +93,9 @@ CREATE TABLE IF NOT EXISTS lineage (
     FOREIGN KEY (parent_id) REFERENCES candidates(candidate_id) ON DELETE CASCADE,
     INDEX idx_gen (gen)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- score_cache: cache scored results by text hash
+""",
+    # score_cache: cache scored results by text hash
+    """
 CREATE TABLE IF NOT EXISTS score_cache (
     text_hash VARCHAR(128) NOT NULL,
     candidate_type VARCHAR(64) NOT NULL,
@@ -99,8 +105,9 @@ CREATE TABLE IF NOT EXISTS score_cache (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (text_hash, candidate_type, scheme)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- archive_cells: MAP-Elites archive cells per run
+""",
+    # archive_cells: MAP-Elites archive cells per run
+    """
 CREATE TABLE IF NOT EXISTS archive_cells (
     id INT AUTO_INCREMENT PRIMARY KEY,
     run_id INT NOT NULL,
@@ -115,8 +122,9 @@ CREATE TABLE IF NOT EXISTS archive_cells (
     UNIQUE KEY uk_run_cell (run_id, cell_key),
     INDEX idx_run_id (run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- seed_bank: seed lines/blocks for future use
+""",
+    # seed_bank: seed lines/blocks for future use
+    """
 CREATE TABLE IF NOT EXISTS seed_bank (
     id INT AUTO_INCREMENT PRIMARY KEY,
     run_id INT DEFAULT NULL,
@@ -126,7 +134,8 @@ CREATE TABLE IF NOT EXISTS seed_bank (
     INDEX idx_run (run_id),
     INDEX idx_seed_key (seed_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-"""
+""",
+]
 
 
 def main() -> int:
@@ -156,7 +165,7 @@ def main() -> int:
         )
         cur = conn.cursor()
 
-        for stmt in SCHEMA_SQL.strip().split(";"):
+        for stmt in SCHEMA_STATEMENTS:
             stmt = stmt.strip()
             if stmt:
                 cur.execute(stmt)

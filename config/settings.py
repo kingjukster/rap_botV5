@@ -321,3 +321,33 @@ def _stringify_section(section: Dict[str, Any]) -> Dict[str, Any]:
         else:
             rendered[key] = value
     return rendered
+
+
+def get_elite_corpus_path() -> Path:
+    """
+    Single source of truth for elite corpus path. Tries settings, then env, then
+    default paths. Falls back to alternate files if primary does not exist.
+    """
+    base = _repo_root()
+    path: Optional[Path] = None
+    try:
+        settings = load_settings()
+        path = settings.elite_corpus_path
+        if path and not path.is_absolute():
+            path = base / path
+    except Exception:
+        pass
+    if path is None:
+        env_val = os.environ.get("RAPBOT_ELITE_CORPUS")
+        if env_val:
+            path = Path(env_val).expanduser()
+            if not path.is_absolute():
+                path = base / path
+    if path is None:
+        path = base / "data" / "elite_kaggle_corpus_clean.txt"
+    if not path.exists():
+        for alt in ("data/elite_kaggle_corpus_clean_plus.jsonl", "data/phaseA_kaggle_verse.txt"):
+            candidate = base / alt
+            if candidate.exists():
+                return candidate
+    return path

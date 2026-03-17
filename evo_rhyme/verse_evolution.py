@@ -759,13 +759,12 @@ class VerseQDRunLogger:
                                 self.run_id, last_gen, ct, scheme,
                                 ind.lines, ind.fitness or 0.0, ind.scores,
                             )
-                    # Sync full archive to archive_cells
-                    for coord, ind in archive.best_per_niche().items():
-                        cell_key = "_".join(str(c) for c in coord)
-                        _db.upsert_archive_cell(
-                            self.run_id, cell_key,
-                            ind.lines, ind.fitness or 0.0, ind.scores,
-                        )
+                    # Sync full archive to archive_cells (batched for efficiency)
+                    cells = [
+                        ("_".join(str(c) for c in coord), ind.lines, ind.fitness or 0.0, ind.scores)
+                        for coord, ind in archive.best_per_niche().items()
+                    ]
+                    _db.upsert_archive_cells_batch(self.run_id, cells)
             except Exception as e:
                 logger.warning("DB insert candidates/archive failed: %s", e)
 

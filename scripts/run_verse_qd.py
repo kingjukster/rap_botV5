@@ -35,30 +35,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def _load_corpus_path() -> Path:
-    """Load elite corpus path from config/settings or env."""
-    path = None
-    try:
-        from config.settings import load_settings
-        settings = load_settings()
-        path = Path(settings.elite_corpus_path)
-        if not path.is_absolute():
-            path = ROOT / path
-    except Exception:
-        pass
-    if path is None:
-        env_path = __import__("os").environ.get("RAPBOT_ELITE_CORPUS")
-        if env_path:
-            path = Path(env_path)
-    if path is None:
-        path = ROOT / "data" / "elite_kaggle_corpus_clean.txt"
-    if not path.exists():
-        path = ROOT / "data" / "elite_kaggle_corpus_clean_plus.jsonl"
-    if not path.exists():
-        path = ROOT / "data" / "phaseA_kaggle_verse.txt"
-    return path
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Quality-Diversity verse evolution (MAP-Elites)",
@@ -383,7 +359,8 @@ def main() -> None:
 
     roles = [r.strip() for r in args.roles.split(",") if r.strip()] if args.roles else None
 
-    corpus_path = Path(args.corpus) if args.corpus else _load_corpus_path()
+    from config import get_elite_corpus_path
+    corpus_path = Path(args.corpus) if args.corpus else get_elite_corpus_path()
     logger.info("Corpus: %s", corpus_path)
     logger.info("Theme: %s", theme_keywords)
     logger.info(
