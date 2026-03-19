@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Archive — Run {{ run.run_id }} — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/runs/{{ run.run_id }}" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">← Back to Run {{ run.run_id }}</a>
+    <h1 class="text-2xl font-bold text-slate-100">MAP-Elites archive</h1>
+    <p class="text-slate-400 mt-1">Run {{ run.run_id }} — {{ run.theme_keywords or 'no theme' }}</p>
+</div>
+
+{% if not cells %}
+<div class="rounded-lg border border-slate-600 bg-slate-800/50 p-8 text-center text-slate-400">
+    <p>No archive cells for this run.</p>
+</div>
+{% else %}
+<div x-data="archiveData({{ cells | tojson }})" x-init="init()">
+    <div class="mb-6 flex flex-wrap gap-4 items-center">
+        <label class="text-slate-400 text-sm">Heatmap dimensions:</label>
+        <select x-model="dimX" @change="buildHeatmap()" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+            <template x-for="(_, i) in dimIndices" :key="'x'+i">
+                <option :value="i" x-text="'Dim ' + i"></option>
+            </template>
+        </select>
+        <span class="text-slate-500">×</span>
+        <select x-model="dimY" @change="buildHeatmap()" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+            <template x-for="(_, i) in dimIndices" :key="'y'+i">
+                <option :value="i" x-text="'Dim ' + i"></option>
+            </template>
+        </select>
+    </div>
+    <div id="heatmap-container" class="mb-8 rounded-lg border border-slate-600 bg-slate-800/50 p-4 overflow-x-auto" x-show="heatmapGrid.length > 0">
+        <div class="inline-block" style="min-width: 200px;">
+            <template x-for="(row, yi) in heatmapGrid" :key="yi">
+                <div class="flex">
+                    <template x-for="(cell, xi) in row" :key="xi">
+                        <div class="w-6 h-6 flex-shrink-0 rounded-sm border border-slate-700"
+                             :style="'background: ' + (cell ? 'rgba(251,191,36,' + (0.2 + cell.fitness * 0.8) + ')' : 'rgba(51,65,85,0.5)')"
+                             :title="cell ? (xi + ',' + yi + ' fit=' + cell.fitness.toFixed(3)) : (xi + ',' + yi)"></div>
+                    </template>
+                </div>
+            </template>
+        </div>
+        <p class="text-slate-500 text-xs mt-2">Color = fitness (darker = empty)</p>
+    </div>
+
+    <h2 class="text-lg font-semibold text-slate-100 mb-3">Cells</h2>
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" x-data="{ selected: null }">
+        {% for cell in cells %}
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4 hover:border-amber-500/40 cursor-pointer transition-colors" x-data="{ showScores: false }">
+            <p class="text-slate-500 text-xs font-mono truncate mb-2" title="{{ cell.cell_key }}">{{ cell.cell_key }}</p>
+            <p class="text-amber-400 text-sm font-medium mb-2">fitness: {{ "%.4f" | format(cell.fitness) if cell.fitness is not none else '—' }}</p>
+            <pre class="text-slate-300 text-sm whitespace-pre-wrap font-sans">{{ (cell.lines or []) | join('\n') }}</pre>
+            {% if cell.scores and cell.scores|length > 0 %}
+            <div class="mt-2">
+                <button @click="showScores = !showScores" class="text-slate-500 hover:text-slate-300 text-xs">Score breakdown</button>
+                <div x-show="showScores" class="mt-2 rounded bg-slate-800/80 p-2 text-xs font-mono text-slate-400">
+                    {% for key, val in (cell.scores or {})|items %}
+                    <div>{{ key }}: {{ val }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    <p class="mt-4 text-slate-500 text-sm">{{ cells | length }} cell(s)</p>
+</div>
+<script>
+function archiveData(cells) {
+    return {
+        cells,
+        dimX: 0,
+        dimY: 1,
+        dimIndices: [],
+        heatmapGrid: [],
+        init() {
+            let maxLen = 0;
+            cells.forEach(c => {
+                const parts = (c.cell_key || '').split('_').map(Number);
+                if (parts.every(n => !isNaN(n))) maxLen = Math.max(maxLen, parts.length);
+            });
+            this.dimIndices = Array.from({ length: Math.max(2, maxLen) }, (_, i) => i);
+            this.buildHeatmap();
+        },
+        buildHeatmap() {
+            const dx = parseInt(this.dimX, 10), dy = parseInt(this.dimY, 10);
+            const grid = {};
+            this.cells.forEach(c => {
+                const parts = (c.cell_key || '').split('_').map(Number);
+                if (parts[dx] != null && parts[dy] != null && !isNaN(parts[dx]) && !isNaN(parts[dy])) {
+                    const key = parts[dx] + ',' + parts[dy];
+                    const fit = c.fitness != null ? c.fitness : 0;
+                    if (!grid[key] || grid[key].fitness < fit) grid[key] = { fitness: fit, x: parts[dx], y: parts[dy] };
+                }
+            });
+            const xs = [...new Set(Object.values(grid).map(g => g.x))].sort((a,b)=>a-b);
+            const ys = [...new Set(Object.values(grid).map(g => g.y))].sort((a,b)=>a-b);
+            const rowMap = ys.reduce((m, y, i) => { m[y] = i; return m; }, {});
+            const colMap = xs.reduce((m, x, i) => { m[x] = i; return m; }, {});
+            const rows = Array(ys.length).fill(null).map(() => Array(xs.length).fill(null));
+            Object.values(grid).forEach(g => {
+                const r = rowMap[g.y], c = colMap[g.x];
+                if (r != null && c != null) rows[r][c] = g;
+            });
+            this.heatmapGrid = rows;
+        }
+    };
+}
+</script>
+{% endif %}
+{% endblock %}

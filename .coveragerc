@@ -1,0 +1,23 @@
+[run]
+source = evo_rhyme,webapp
+omit =
+    */tests/*
+    */__pycache__/*
+    # Heavy/integration modules (excluded from core coverage target)
+    evo_rhyme/verse_evolution.py
+    evo_rhyme/verse_weight_tuner.py
+    evo_rhyme/weight_tuner.py
+    evo_rhyme/siamese_scorer.py
+    evo_rhyme/verse_composer.py
+    evo_rhyme/block_archive.py
+    evo_rhyme/ngram_fluency.py
+    evo_rhyme/syllables.py
+    evo_rhyme/line_evolution.py
+    evo_rhyme/emitters.py
+    evo_rhyme/lm_rewriter.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError

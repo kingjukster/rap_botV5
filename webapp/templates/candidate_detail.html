@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Candidate {{ candidate.candidate_id }} — Run {{ run.run_id }} — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/runs/{{ run.run_id }}" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">← Back to Run {{ run.run_id }}</a>
+    <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-100">Candidate {{ candidate.candidate_id }}</h1>
+            <p class="text-slate-400 mt-1">Gen {{ candidate.gen }} · {{ candidate.candidate_type }} {{ candidate.scheme }}</p>
+        </div>
+        <div class="text-right">
+            <div class="text-slate-500 text-sm">Fitness</div>
+            <div class="text-amber-400 text-xl font-semibold">{{ "%.4f"|format(candidate.fitness) if candidate.fitness is not none else '—' }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="grid gap-6 lg:grid-cols-3">
+    <section class="lg:col-span-2 rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <h2 class="text-lg font-semibold text-slate-100 mb-3">Lines</h2>
+        <pre class="text-slate-300 text-sm whitespace-pre-wrap font-sans">{{ (candidate.lines or []) | join('\n') }}</pre>
+    </section>
+
+    <aside class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <h2 class="text-lg font-semibold text-slate-100 mb-3">Scores</h2>
+        {% if candidate.scores and candidate.scores|length > 0 %}
+        <div class="space-y-2 text-sm font-mono text-slate-300">
+            {% for key, val in (candidate.scores or {})|items %}
+            <div class="flex justify-between gap-3">
+                <span class="text-slate-400">{{ key }}</span>
+                <span>{{ "%.4f"|format(val) if val is number else val }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-slate-500 text-sm">No score breakdown stored.</p>
+        {% endif %}
+
+        <div class="mt-6">
+            <h3 class="text-slate-200 font-semibold mb-2">Lineage</h3>
+            <div class="text-sm space-y-2">
+                <div>
+                    <div class="text-slate-500 text-xs mb-1">Parents</div>
+                    {% if lineage.parents and lineage.parents|length > 0 %}
+                        {% for p in lineage.parents %}
+                        <div class="flex items-center justify-between gap-2">
+                            <a class="text-slate-300 hover:text-white" href="/runs/{{ run.run_id }}/candidates/{{ p.parent_id }}">{{ p.parent_id }}</a>
+                            <span class="text-slate-500 text-xs">{{ p.operation }} · gen {{ p.gen }}</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="text-slate-500 text-sm">—</div>
+                    {% endif %}
+                </div>
+                <div>
+                    <div class="text-slate-500 text-xs mb-1">Children</div>
+                    {% if lineage.children and lineage.children|length > 0 %}
+                        {% for ch in lineage.children %}
+                        <div class="flex items-center justify-between gap-2">
+                            <a class="text-slate-300 hover:text-white" href="/runs/{{ run.run_id }}/candidates/{{ ch.child_id }}">{{ ch.child_id }}</a>
+                            <span class="text-slate-500 text-xs">{{ ch.operation }} · gen {{ ch.gen }}</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="text-slate-500 text-sm">—</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6">
+            <a href="/runs/{{ run.run_id }}/lineage?gen={{ candidate.gen }}" class="text-amber-400 hover:text-amber-300 text-sm font-medium">View run lineage for gen {{ candidate.gen }}</a>
+        </div>
+    </aside>
+</div>
+{% endblock %}

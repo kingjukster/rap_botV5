@@ -12,6 +12,9 @@ import json
 import logging
 import os
 from contextlib import contextmanager
+from dataclasses import dataclass
+import gzip
+import hashlib
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -409,6 +412,355 @@ def upsert_archive_cells_batch(
     _execute(_run, default=None, commit=True)
 
 
+def list_runs(
+    limit: int = 50,
+    offset: int = 0,
+    status_filter: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List runs with metadata. Returns list of dicts with run_id, script_name, theme_keywords, config_json, status, created_at, updated_at."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            if status_filter:
+                cur.execute(
+                    """
+                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at
+                    FROM runs
+                    WHERE status = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (status_filter, limit, offset),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at
+                    FROM runs
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d: Dict[str, Any] = dict(r)
+                if d.get("config_json"):
+                    try:
+                        d["config_json"] = json.loads(d["config_json"]) if isinstance(d["config_json"], str) else d["config_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["config_json"] = {}
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def get_run(run_id: int) -> Optional[Dict[str, Any]]:
+    """Get a single run by run_id."""
+
+    def _run(conn: Any) -> Optional[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at FROM runs WHERE run_id = %s",
+                (run_id,),
+            )
+            r = cur.fetchone()
+            if not r:
+                return None
+            d = dict(r)
+            if d.get("config_json"):
+                try:
+                    d["config_json"] = json.loads(d["config_json"]) if isinstance(d["config_json"], str) else d["config_json"]
+                except (json.JSONDecodeError, TypeError):
+                    d["config_json"] = {}
+            return d
+        finally:
+            cur.close()
+
+    return _execute(_run, default=None)
+
+
+def list_generations(run_id: int) -> List[Dict[str, Any]]:
+    """List generations for a run, ordered by gen ascending."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT gen, best_fitness, avg_fitness, diversity, acceptance_rate, extra_json, created_at
+                FROM generations
+                WHERE run_id = %s
+                ORDER BY gen ASC
+                """,
+                (run_id,),
+            )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                if d.get("extra_json"):
+                    try:
+                        d["extra_json"] = json.loads(d["extra_json"]) if isinstance(d["extra_json"], str) else d["extra_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["extra_json"] = None
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_candidates(
+    run_id: int,
+    gen: Optional[int] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """List candidates for a run, optionally filtered by gen."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            if gen is not None:
+                cur.execute(
+                    """
+                    SELECT candidate_id, gen, candidate_type, scheme, lines_json, fitness, scores_json, created_at
+                    FROM candidates
+                    WHERE run_id = %s AND gen = %s
+                    ORDER BY fitness DESC
+                    LIMIT %s
+                    """,
+                    (run_id, gen, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT candidate_id, gen, candidate_type, scheme, lines_json, fitness, scores_json, created_at
+                    FROM candidates
+                    WHERE run_id = %s
+                    ORDER BY gen DESC, fitness DESC
+                    LIMIT %s
+                    """,
+                    (run_id, limit),
+                )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                if d.get("lines_json"):
+                    try:
+                        d["lines"] = json.loads(d["lines_json"]) if isinstance(d["lines_json"], str) else d["lines_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["lines"] = []
+                else:
+                    d["lines"] = []
+                if d.get("scores_json"):
+                    try:
+                        d["scores"] = json.loads(d["scores_json"]) if isinstance(d["scores_json"], str) else d["scores_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["scores"] = None
+                else:
+                    d["scores"] = None
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_top_candidates(
+    run_id: int,
+    *,
+    limit: int = 20,
+    candidate_type: Optional[str] = None,
+    scheme: Optional[str] = None,
+    gen: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """List top candidates by fitness for a run, optionally filtered."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            where = ["run_id = %s"]
+            params: list[Any] = [run_id]
+            if gen is not None:
+                where.append("gen = %s")
+                params.append(gen)
+            if candidate_type is not None:
+                where.append("candidate_type = %s")
+                params.append(candidate_type)
+            if scheme is not None:
+                where.append("scheme = %s")
+                params.append(scheme)
+
+            sql = f"""
+                SELECT candidate_id, gen, candidate_type, scheme, lines_json, fitness, scores_json, created_at
+                FROM candidates
+                WHERE {' AND '.join(where)}
+                ORDER BY fitness DESC
+                LIMIT %s
+            """
+            params.append(limit)
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                if d.get("lines_json"):
+                    try:
+                        d["lines"] = json.loads(d["lines_json"]) if isinstance(d["lines_json"], str) else d["lines_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["lines"] = []
+                else:
+                    d["lines"] = []
+                if d.get("scores_json"):
+                    try:
+                        d["scores"] = json.loads(d["scores_json"]) if isinstance(d["scores_json"], str) else d["scores_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["scores"] = None
+                else:
+                    d["scores"] = None
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def count_runs(status_filter: Optional[str] = None) -> int:
+    """Return total count of runs, optionally filtered by status."""
+
+    def _run(conn: Any) -> int:
+        cur = conn.cursor()
+        try:
+            if status_filter:
+                cur.execute("SELECT COUNT(*) FROM runs WHERE status = %s", (status_filter,))
+            else:
+                cur.execute("SELECT COUNT(*) FROM runs")
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            cur.close()
+
+    return _execute(_run, default=0)
+
+
+@dataclass(frozen=True)
+class ArtifactRecord:
+    artifact_id: int
+    sha256: str
+    kind: str
+    run_id: Optional[int]
+    run_tag: Optional[str]
+    rel_path: Optional[str]
+    content_len: int
+    created_at: Any
+
+
+def insert_artifact(
+    *,
+    kind: str,
+    content_bytes: bytes,
+    sha256: Optional[str] = None,
+    run_id: Optional[int] = None,
+    run_tag: Optional[str] = None,
+    rel_path: Optional[str] = None,
+) -> int:
+    """
+    Insert a gzipped artifact blob into the DB.
+    Returns artifact_id (or existing artifact_id if sha256 already present), or -1 on failure.
+    """
+    if sha256 is None:
+        sha256 = hashlib.sha256(content_bytes).hexdigest()
+    content_gzip = gzip.compress(content_bytes, compresslevel=9)
+    content_len = len(content_bytes)
+
+    def _run(conn: Any) -> int:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("SELECT artifact_id FROM artifacts WHERE sha256 = %s", (sha256,))
+            row = cur.fetchone()
+            if row and row.get("artifact_id"):
+                return int(row["artifact_id"])
+
+            cur.execute(
+                """
+                INSERT INTO artifacts (run_id, run_tag, kind, rel_path, sha256, content_gzip, content_len)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (run_id, run_tag, kind, rel_path, sha256, content_gzip, content_len),
+            )
+            aid = cur.lastrowid
+            return int(aid) if aid else -1
+        finally:
+            cur.close()
+
+    return _execute(_run, default=-1, commit=True)
+
+
+def get_artifact_bytes_by_sha256(sha256: str) -> Optional[bytes]:
+    """Fetch and gunzip artifact content by sha256."""
+
+    def _run(conn: Any) -> Optional[bytes]:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT content_gzip FROM artifacts WHERE sha256 = %s", (sha256,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return None
+            try:
+                return gzip.decompress(row[0])
+            except Exception:
+                return None
+        finally:
+            cur.close()
+
+    return _execute(_run, default=None)
+
+
+def list_artifacts(*, limit: int = 200, offset: int = 0, kind: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List artifact metadata (no blob payload)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            if kind:
+                cur.execute(
+                    """
+                    SELECT artifact_id, sha256, kind, run_id, run_tag, rel_path, content_len, created_at
+                    FROM artifacts
+                    WHERE kind = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (kind, limit, offset),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT artifact_id, sha256, kind, run_id, run_tag, rel_path, content_len, created_at
+                    FROM artifacts
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
 def load_archive_cells(run_id: int) -> List[Dict[str, Any]]:
     """Load all archive cells for a run as list of dicts."""
 
@@ -431,6 +783,215 @@ def load_archive_cells(run_id: int) -> List[Dict[str, Any]]:
                 }
                 out.append(d)
             return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def get_candidate(candidate_id: int) -> Optional[Dict[str, Any]]:
+    """Get a single candidate by candidate_id."""
+
+    def _run(conn: Any) -> Optional[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT candidate_id, run_id, gen, candidate_type, scheme, lines_json, fitness, scores_json, created_at
+                FROM candidates
+                WHERE candidate_id = %s
+                """,
+                (candidate_id,),
+            )
+            r = cur.fetchone()
+            if not r:
+                return None
+            d = dict(r)
+            if d.get("lines_json"):
+                try:
+                    d["lines"] = json.loads(d["lines_json"]) if isinstance(d["lines_json"], str) else d["lines_json"]
+                except (json.JSONDecodeError, TypeError):
+                    d["lines"] = []
+            else:
+                d["lines"] = []
+            if d.get("scores_json"):
+                try:
+                    d["scores"] = json.loads(d["scores_json"]) if isinstance(d["scores_json"], str) else d["scores_json"]
+                except (json.JSONDecodeError, TypeError):
+                    d["scores"] = None
+            else:
+                d["scores"] = None
+            return d
+        finally:
+            cur.close()
+
+    return _execute(_run, default=None)
+
+
+def list_lineage_edges(
+    run_id: int,
+    *,
+    gen: Optional[int] = None,
+    limit: int = 2000,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """
+    List lineage edges for a run. Joins to candidates to filter by run_id.
+
+    Returns rows like:
+      {child_id, parent_id, operation, gen, created_at, child_fitness, parent_fitness}
+    """
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            if gen is None:
+                cur.execute(
+                    """
+                    SELECT
+                        l.child_id, l.parent_id, l.operation, l.gen, l.created_at,
+                        cc.fitness AS child_fitness,
+                        pc.fitness AS parent_fitness
+                    FROM lineage l
+                    JOIN candidates cc ON cc.candidate_id = l.child_id
+                    JOIN candidates pc ON pc.candidate_id = l.parent_id
+                    WHERE cc.run_id = %s
+                    ORDER BY l.gen DESC, l.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (run_id, limit, offset),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        l.child_id, l.parent_id, l.operation, l.gen, l.created_at,
+                        cc.fitness AS child_fitness,
+                        pc.fitness AS parent_fitness
+                    FROM lineage l
+                    JOIN candidates cc ON cc.candidate_id = l.child_id
+                    JOIN candidates pc ON pc.candidate_id = l.parent_id
+                    WHERE cc.run_id = %s AND l.gen = %s
+                    ORDER BY l.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (run_id, gen, limit, offset),
+                )
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_candidate_parents(candidate_id: int, *, limit: int = 200) -> List[Dict[str, Any]]:
+    """List parent edges for a candidate (incoming lineage)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT parent_id, operation, gen, created_at
+                FROM lineage
+                WHERE child_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (candidate_id, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_candidate_children(candidate_id: int, *, limit: int = 200) -> List[Dict[str, Any]]:
+    """List child edges for a candidate (outgoing lineage)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT child_id, operation, gen, created_at
+                FROM lineage
+                WHERE parent_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (candidate_id, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_seed_bank(run_id: Optional[int] = None, *, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+    """List seed bank entries, optionally filtered to a run_id (or NULL when run_id is None)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            if run_id is None:
+                cur.execute(
+                    """
+                    SELECT id, run_id, seed_key, seed_data, created_at
+                    FROM seed_bank
+                    WHERE run_id IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, run_id, seed_key, seed_data, created_at
+                    FROM seed_bank
+                    WHERE run_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (run_id, limit, offset),
+                )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                if d.get("seed_data"):
+                    try:
+                        d["seed_data"] = json.loads(d["seed_data"]) if isinstance(d["seed_data"], str) else d["seed_data"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["seed_data"] = None
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_score_cache_recent(*, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+    """List most recently updated score_cache rows (for debugging/visibility)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT text_hash, candidate_type, scheme, created_at, updated_at
+                FROM score_cache
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            return [dict(r) for r in cur.fetchall()]
         finally:
             cur.close()
 

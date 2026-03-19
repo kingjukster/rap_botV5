@@ -1,0 +1,344 @@
+{% extends "base.html" %}
+
+{% block title %}Run {{ run.run_id }} — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">← Back to Dashboard</a>
+    <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-100">Run {{ run.run_id }}</h1>
+            <p class="text-slate-400 mt-1">{{ run.script_name }} — {{ run.theme_keywords or 'no theme' }}</p>
+        </div>
+        <span class="px-3 py-1 rounded text-sm font-medium
+            {% if run.status == 'completed' %}bg-emerald-500/20 text-emerald-400
+            {% elif run.status == 'running' %}bg-amber-500/20 text-amber-400
+            {% elif run.status == 'failed' %}bg-red-500/20 text-red-400
+            {% else %}bg-slate-600 text-slate-400{% endif %}">
+            {{ run.status or 'pending' }}
+        </span>
+    </div>
+</div>
+
+<div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3 mb-8">
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Generations</p>
+        <p class="text-xl font-semibold text-slate-100">{{ run.num_generations or 0 }}</p>
+    </div>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Best fitness</p>
+        <p class="text-xl font-semibold text-slate-100">{{ "%.4f" | format(run.last_best_fitness) if run.last_best_fitness is not none else '—' }}</p>
+    </div>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Created</p>
+        <p class="text-slate-100">{{ run.created_at.strftime("%Y-%m-%d %H:%M") if run.created_at else '—' }}</p>
+    </div>
+</div>
+
+{% if has_archive %}
+<div class="mb-6">
+    <a href="/runs/{{ run.run_id }}/archive" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500/30">
+        View MAP-Elites Archive
+    </a>
+    <a href="/runs/{{ run.run_id }}/generations" class="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50">Generations</a>
+    <a href="/runs/{{ run.run_id }}/lineage" class="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50">Lineage</a>
+    <a href="/runs/{{ run.run_id }}/seeds" class="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50">Seeds</a>
+</div>
+{% elif generations %}
+<div class="mb-6">
+    <a href="/runs/{{ run.run_id }}/generations" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50">Generations</a>
+    <a href="/runs/{{ run.run_id }}/lineage" class="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50">Lineage</a>
+    <a href="/runs/{{ run.run_id }}/seeds" class="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50">Seeds</a>
+</div>
+{% endif %}
+
+{% if (run.config_json or {})|length > 0 %}
+<section class="mb-8" x-data="{ open: false }">
+    <h2 class="text-lg font-semibold text-slate-100 mb-3">Run config</h2>
+    <button @click="open = !open" class="rounded-lg border border-slate-600 bg-slate-800/50 px-4 py-2 text-sm text-slate-300 hover:bg-slate-700/50">
+        <span x-text="open ? 'Hide' : 'Show'"></span> config
+    </button>
+    <div x-show="open" class="mt-3 rounded-lg border border-slate-600 bg-slate-800/50 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-slate-800 text-slate-400 text-left">
+                <tr><th class="px-4 py-2 font-medium">Key</th><th class="px-4 py-2 font-medium">Value</th></tr>
+            </thead>
+            <tbody class="divide-y divide-slate-700">
+                {% for key, value in (run.config_json or {})|items %}
+                <tr>
+                    <td class="px-4 py-2 text-slate-400 font-mono">{{ key }}</td>
+                    <td class="px-4 py-2 text-slate-300">{{ (value | tojson) if value is mapping or value is sequence else value }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+{% if generations %}
+<section class="mb-8">
+    <h2 class="text-lg font-semibold text-slate-100 mb-3">Fitness over generations</h2>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <div class="chart-container" style="height: 280px;">
+            <canvas id="fitness-chart"></canvas>
+        </div>
+    </div>
+    <div class="mt-4 overflow-x-auto rounded-lg border border-slate-600">
+        <table class="w-full text-sm">
+            <thead class="bg-slate-800 text-slate-400 text-left">
+                <tr>
+                    <th class="px-4 py-2 font-medium">Gen</th>
+                    <th class="px-4 py-2 font-medium">Best</th>
+                    <th class="px-4 py-2 font-medium">Avg</th>
+                    <th class="px-4 py-2 font-medium">Diversity</th>
+                    <th class="px-4 py-2 font-medium">Accept rate</th>
+                    <th class="px-4 py-2 font-medium">Extra</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-700">
+                {% for g in generations %}
+                <tr>
+                    <td class="px-4 py-2 text-slate-300">{{ g.gen }}</td>
+                    <td class="px-4 py-2 text-slate-300">{{ "%.4f" | format(g.best_fitness) if g.best_fitness is not none else '—' }}</td>
+                    <td class="px-4 py-2 text-slate-300">{{ "%.4f" | format(g.avg_fitness) if g.avg_fitness is not none else '—' }}</td>
+                    <td class="px-4 py-2 text-slate-400">{{ "%.2f" | format(g.diversity) if g.get('diversity') is not none else '—' }}</td>
+                    <td class="px-4 py-2 text-slate-400">{{ "%.2f" | format(g.acceptance_rate) if g.get('acceptance_rate') is not none else '—' }}</td>
+                    <td class="px-4 py-2 text-slate-500 text-xs">{{ (g.get('extra_json') or {}) | tojson if g.get('extra_json') else '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+{% if top_candidates %}
+<section class="mb-10">
+    <div class="flex items-end justify-between gap-4 flex-wrap mb-3">
+        <h2 class="text-lg font-semibold text-slate-100">Top verses</h2>
+        <span class="text-slate-500 text-sm">Best candidates by fitness</span>
+    </div>
+    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {% for c in top_candidates %}
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4" x-data="{ showScores: false }">
+            <div class="flex justify-between items-start gap-4 mb-2">
+                <a class="text-slate-200 hover:text-white font-semibold"
+                   href="/runs/{{ run.run_id }}/candidates/{{ c.candidate_id }}">
+                    #{{ c.candidate_id }}
+                </a>
+                <span class="text-amber-400 font-medium">{{ "%.4f" | format(c.fitness) if c.fitness is not none else '—' }}</span>
+            </div>
+            <div class="text-slate-500 text-xs mb-2">Gen {{ c.gen }} · {{ c.candidate_type }} {{ c.scheme }}</div>
+            <pre class="text-slate-300 text-sm whitespace-pre-wrap font-sans">{{ (c.lines or []) | join('\n') }}</pre>
+            {% if c.scores and c.scores|length > 0 %}
+            <div class="mt-2">
+                <button @click="showScores = !showScores" class="text-slate-500 hover:text-slate-300 text-xs">Score breakdown</button>
+                <div x-show="showScores" class="mt-2 rounded bg-slate-800/80 p-2 text-xs font-mono text-slate-400">
+                    {% for key, val in (c.scores or {})|items %}
+                    <div>{{ key }}: {{ "%.4f"|format(val) if val is number else val }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if candidates %}
+<section class="mb-10">
+    <h2 class="text-lg font-semibold text-slate-100 mb-3">Candidate graphs</h2>
+    <div class="grid gap-6 lg:grid-cols-3">
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4 lg:col-span-2">
+            <div class="chart-container" style="height: 260px;">
+                <canvas id="fitness-hist"></canvas>
+            </div>
+            <p class="text-slate-500 text-xs mt-2">Histogram of candidate fitness (sampled from the loaded candidates list).</p>
+        </div>
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <div class="chart-container" style="height: 260px;">
+                <canvas id="type-mix"></canvas>
+            </div>
+            <p class="text-slate-500 text-xs mt-2">Candidate type mix.</p>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+<section id="candidates">
+    <h2 class="text-lg font-semibold text-slate-100 mb-3">Candidates</h2>
+    {% if not candidates %}
+    <p class="text-slate-500">No candidates for this run.</p>
+    {% else %}
+    <div x-data="{
+        candidates: {{ candidates | tojson }},
+        genFilter: null,
+        page: 0,
+        perPage: 20,
+        get filtered() {
+            let list = this.genFilter != null ? this.candidates.filter(c => c.gen === this.genFilter) : this.candidates;
+            return list;
+        },
+        get paginated() {
+            const start = this.page * this.perPage;
+            return this.filtered.slice(start, start + this.perPage);
+        },
+        get totalPages() {
+            return Math.max(1, Math.ceil(this.filtered.length / this.perPage));
+        },
+        get genOptions() {
+            const g = [...new Set(this.candidates.map(c => c.gen))].sort((a,b) => a - b);
+            return g;
+        }
+    }" x-init="$watch('genFilter', () => page = 0); $watch('page', () => {});">
+        <div class="flex flex-wrap gap-2 mb-4 items-center">
+            <label class="text-slate-400 text-sm">Generation:</label>
+            <select x-model="genFilter" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+                <option :value="null">All</option>
+                <template x-for="g in genOptions" :key="g">
+                    <option :value="g" x-text="'Gen ' + g"></option>
+                </template>
+            </select>
+            <span class="text-slate-500 text-sm" x-text="'Showing ' + paginated.length + ' of ' + filtered.length"></span>
+            <div class="flex gap-1 ml-2" x-show="totalPages > 1">
+                <button @click="page = Math.max(0, page - 1)" :disabled="page === 0" class="px-2 py-1 rounded border border-slate-600 text-sm disabled:opacity-50">Prev</button>
+                <span class="px-2 py-1 text-slate-400 text-sm" x-text="(page + 1) + ' / ' + totalPages"></span>
+                <button @click="page = Math.min(totalPages - 1, page + 1)" :disabled="page >= totalPages - 1" class="px-2 py-1 rounded border border-slate-600 text-sm disabled:opacity-50">Next</button>
+            </div>
+        </div>
+        <div class="space-y-4">
+            <template x-for="(c, i) in paginated" :key="c.candidate_id || i">
+                <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4" x-data="{ showScores: false }">
+                    <div class="flex justify-between items-start gap-4 mb-2">
+                        <span class="text-slate-500 text-sm" x-text="'Gen ' + c.gen + ' · ' + (c.candidate_type || '') + (c.scheme ? ' ' + c.scheme : '')"></span>
+                        <span class="text-amber-400 font-medium" x-text="'fitness: ' + (c.fitness != null ? c.fitness.toFixed(4) : '—')"></span>
+                    </div>
+                    <template x-if="c.candidate_id">
+                        <div class="mb-2">
+                            <a class="text-xs text-amber-400 hover:text-amber-300" :href="'/runs/{{ run.run_id }}/candidates/' + c.candidate_id">Open candidate</a>
+                        </div>
+                    </template>
+                    <pre class="text-slate-300 text-sm whitespace-pre-wrap font-sans" x-text="(c.lines || []).join('\n') || '—'"></pre>
+                    <template x-if="c.scores && Object.keys(c.scores).length">
+                        <div class="mt-2">
+                            <button @click="showScores = !showScores" class="text-slate-500 hover:text-slate-300 text-xs">Score breakdown</button>
+                            <div x-show="showScores" class="mt-2 rounded bg-slate-800/80 p-2 text-xs font-mono text-slate-400 space-y-1">
+                                <template x-for="(val, key) in c.scores" :key="key">
+                                    <div><span x-text="key"></span>: <span x-text="typeof val === 'number' ? val.toFixed(4) : val"></span></div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </template>
+        </div>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if generations or candidates %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+    const candidates = {{ candidates | tojson if candidates else '[]' }};
+
+    // Candidate graphs
+    const histEl = document.getElementById('fitness-hist');
+    if (histEl && candidates.length) {
+        const vals = candidates.map(c => typeof c.fitness === 'number' ? c.fitness : null).filter(v => v != null);
+        if (vals.length) {
+            const bins = 12;
+            const min = Math.min.apply(null, vals);
+            const max = Math.max.apply(null, vals);
+            const span = Math.max(1e-9, max - min);
+            const counts = Array.from({ length: bins }, () => 0);
+            vals.forEach(v => {
+                const idx = Math.min(bins - 1, Math.max(0, Math.floor(((v - min) / span) * bins)));
+                counts[idx] += 1;
+            });
+            const labels = counts.map((_, i) => {
+                const a = min + (i / bins) * span;
+                const b = min + ((i + 1) / bins) * span;
+                return a.toFixed(2) + '–' + b.toFixed(2);
+            });
+            new Chart(histEl, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{ label: 'Count', data: counts, backgroundColor: 'rgba(251, 191, 36, 0.25)', borderColor: 'rgba(251, 191, 36, 0.9)', borderWidth: 1 }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { ticks: { color: 'rgba(148,163,184,0.9)', maxRotation: 45, minRotation: 45 } },
+                        y: { beginAtZero: true, ticks: { precision: 0, color: 'rgba(148,163,184,0.9)' } }
+                    },
+                    plugins: { legend: { labels: { color: 'rgba(226,232,240,0.9)' } } }
+                }
+            });
+        }
+    }
+
+    const mixEl = document.getElementById('type-mix');
+    if (mixEl && candidates.length) {
+        const counts = {};
+        candidates.forEach(c => {
+            const k = c.candidate_type || 'unknown';
+            counts[k] = (counts[k] || 0) + 1;
+        });
+        const labels = Object.keys(counts).sort((a,b) => counts[b] - counts[a]);
+        const data = labels.map(k => counts[k]);
+        const palette = [
+            'rgba(251,191,36,0.75)','rgba(34,197,94,0.65)','rgba(59,130,246,0.65)','rgba(244,63,94,0.65)',
+            'rgba(168,85,247,0.65)','rgba(14,165,233,0.65)','rgba(148,163,184,0.55)'
+        ];
+        new Chart(mixEl, {
+            type: 'doughnut',
+            data: { labels, datasets: [{ data, backgroundColor: labels.map((_, i) => palette[i % palette.length]) }] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'bottom', labels: { color: 'rgba(226,232,240,0.9)' } } }
+            }
+        });
+    }
+
+    // Generation chart
+    const gens = {{ generations | tojson }};
+    const ctx = document.getElementById('fitness-chart');
+    if (!ctx || !gens.length) return;
+    const labels = gens.map(function(g) { return g.gen; });
+    const best = gens.map(function(g) { return g.best_fitness != null ? g.best_fitness : null; });
+    const avg = gens.map(function(g) { return g.avg_fitness != null ? g.avg_fitness : null; });
+    const coverage = gens.map(function(g) {
+        const ex = g.extra_json || {};
+        return ex.occupied_niches != null ? ex.occupied_niches : (typeof ex.coverage === 'number' ? ex.coverage * 100 : null);
+    });
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                { label: 'Best fitness', data: best, borderColor: 'rgb(251, 191, 36)', backgroundColor: 'rgba(251, 191, 36, 0.1)', fill: true, tension: 0.2 },
+                { label: 'Avg fitness', data: avg, borderColor: 'rgb(148, 163, 184)', backgroundColor: 'rgba(148, 163, 184, 0.1)', fill: true, tension: 0.2 }
+            ].concat(coverage.some(function(c) { return c != null; }) ? [{ label: 'Niches / coverage', data: coverage, borderColor: 'rgb(34, 197, 94)', backgroundColor: 'rgba(34, 197, 94, 0.1)', fill: true, tension: 0.2, yAxisID: 'y1' }] : [])
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            scales: {
+                y: { beginAtZero: true, max: 1, title: { display: true, text: 'Fitness' } },
+                y1: { display: coverage.some(function(c) { return c != null; }), position: 'right', beginAtZero: true, title: { display: true, text: 'Niches' }, grid: { drawOnChartArea: false } }
+            }
+        }
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

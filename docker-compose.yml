@@ -19,5 +19,27 @@ services:
       timeout: 5s
       retries: 5
 
+  web:
+    build: .
+    container_name: rapbot-web
+    restart: unless-stopped
+    command: uvicorn webapp.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      RAPBOT_USE_DB: "1"
+      RAPBOT_DB_HOST: mysql
+      RAPBOT_DB_PORT: "3306"
+      RAPBOT_DB_USER: rapbot
+      RAPBOT_DB_PASSWORD: rapbot
+      RAPBOT_DB_NAME: rapbot
+    volumes:
+      - .:/app
+    working_dir: /app
+    depends_on:
+      mysql:
+        condition: service_healthy
+
 volumes:
   rapbot_mysql_data:

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Rap Bot — Dashboard{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold text-slate-100">Runs</h1>
+    <p class="text-slate-400 mt-1">Evolution runs from the database. Enable <code class="text-amber-400/80">RAPBOT_USE_DB=1</code> and use <code class="text-amber-400/80">--db</code> when running evolution to log runs here.</p>
+</div>
+
+{% if not runs %}
+<div class="rounded-lg border border-slate-600 bg-slate-800/50 p-8 text-center text-slate-400">
+    <p>No runs found. Start an evolution with <code class="text-amber-400/80">--db --runs-dir</code> to log runs to the database.</p>
+    <p class="mt-2 text-sm">Example: <code class="text-slate-300">python scripts/run_couplet_evolution.py --theme "pressure,mask" --db --runs-dir</code></p>
+</div>
+{% else %}
+{% set _summary = summary | default({"total": runs | length, "by_status": {"running": 0, "completed": 0, "failed": 0}}) %}
+{% set _by = _summary.by_status | default({"running": 0, "completed": 0, "failed": 0}) %}
+<div class="grid gap-4 grid-cols-2 sm:grid-cols-4 mb-6">
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Total runs</p>
+        <p class="text-xl font-semibold text-slate-100">{{ _summary.total }}</p>
+    </div>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Running</p>
+        <p class="text-xl font-semibold text-amber-400">{{ _by.get("running", 0) }}</p>
+    </div>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Completed</p>
+        <p class="text-xl font-semibold text-emerald-400">{{ _by.get("completed", 0) }}</p>
+    </div>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <p class="text-slate-500 text-sm">Failed</p>
+        <p class="text-xl font-semibold text-red-400">{{ _by.get("failed", 0) }}</p>
+    </div>
+</div>
+<div class="flex gap-2 mb-4">
+    <a href="/" class="px-3 py-1.5 rounded text-sm {% if not status_filter %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">All</a>
+    <a href="/?status=running" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'running' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Running</a>
+    <a href="/?status=completed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'completed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Completed</a>
+    <a href="/?status=failed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'failed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Failed</a>
+</div>
+
+<div class="overflow-x-auto rounded-lg border border-slate-600">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-800 text-slate-400 text-left">
+            <tr>
+                <th class="px-4 py-3 font-medium">ID</th>
+                <th class="px-4 py-3 font-medium">Script</th>
+                <th class="px-4 py-3 font-medium">Theme</th>
+                <th class="px-4 py-3 font-medium">Status</th>
+                <th class="px-4 py-3 font-medium">Generations</th>
+                <th class="px-4 py-3 font-medium">Best Fitness</th>
+                <th class="px-4 py-3 font-medium">Created</th>
+                <th class="px-4 py-3 font-medium"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-700">
+            {% for r in runs %}
+            <tr class="hover:bg-slate-800/50">
+                <td class="px-4 py-3 text-slate-500">{{ r.run_id }}</td>
+                <td class="px-4 py-3 text-slate-300">{{ r.script_name }}</td>
+                <td class="px-4 py-3 text-slate-300 max-w-xs truncate" title="{{ r.theme_keywords or '' }}">{{ r.theme_keywords or '—' }}</td>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-0.5 rounded text-xs font-medium
+                        {% if r.status == 'completed' %}bg-emerald-500/20 text-emerald-400
+                        {% elif r.status == 'running' %}bg-amber-500/20 text-amber-400
+                        {% elif r.status == 'failed' %}bg-red-500/20 text-red-400
+                        {% else %}bg-slate-600 text-slate-400{% endif %}">
+                        {{ r.status or 'pending' }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-slate-400">{{ r.num_generations or 0 }}</td>
+                <td class="px-4 py-3 text-slate-400">{{ "%.3f" | format(r.last_best_fitness) if r.last_best_fitness is not none else '—' }}</td>
+                <td class="px-4 py-3 text-slate-500">{{ r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else '—' }}</td>
+                <td class="px-4 py-3">
+                    <a href="/runs/{{ r.run_id }}" class="text-amber-400 hover:text-amber-300 font-medium">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="mt-2 text-slate-500 text-sm">{{ total }} run(s) total</p>
+{% endif %}
+{% endblock %}

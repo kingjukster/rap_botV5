@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Rap Bot{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+    <nav class="border-b border-slate-700 bg-slate-800/80 backdrop-blur">
+        <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/" class="text-xl font-bold tracking-tight text-amber-400 hover:text-amber-300">Rap Bot</a>
+            <div class="flex gap-4 text-sm text-slate-400">
+                <a href="/" class="hover:text-white">Dashboard</a>
+                <a href="/score-cache" class="hover:text-white">Score cache</a>
+                <a href="/about" class="hover:text-white">About</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto px-4 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="border-t border-slate-700 mt-12 py-4 text-center text-slate-500 text-sm">
+        Evolutionary rap verse generation — Rap Bot V5
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

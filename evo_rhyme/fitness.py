@@ -778,10 +778,30 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "cross_verse_repetition_penalty": -0.20,
     "novelty": 0.25,
     "flow_alignment": 0.10,
+    # Beat-fit / performability (DP alignment against 16-slot bar grid).
+    # Normalized to [0,1] in score_verse to keep scales compatible.
+    "beat_fit": 0.05,
     "flow_continuity_score": 0.08,
     "style_adherence": 0.06,
     "prompt_adherence": 0.05,
 }
+
+
+def _normalize_beat_fit(raw_total: float) -> float:
+    """
+    Map raw DP alignment totals (unbounded-ish) into [0,1].
+
+    This keeps beat-fit comparable to other verse metrics (mostly [0,1]) so it
+    can be safely combined in a weighted sum without dominating.
+    """
+    try:
+        # Typical raw totals for a single bar line tend to be within ~[-8, +12]
+        # depending on density/rest usage. Scale softly using tanh.
+        x = float(raw_total) / 12.0
+        y = math.tanh(x)
+        return max(0.0, min(1.0, (y + 1.0) / 2.0))
+    except Exception:
+        return 0.5
 
 
 def _score_verse_rhyme_scheme(
@@ -1466,6 +1486,16 @@ def score_verse(
         scores["flow_alignment"] = score_verse_flow(lines, features=f)
     except Exception:
         scores["flow_alignment"] = 0.5
+
+    # Beat-fit (performability): best plausible syllable-to-grid alignment.
+    # Uses a DP aligner that allows rests and stretching (text-only).
+    try:
+        from evo_rhyme.beat import score_verse_lines
+
+        beat = score_verse_lines(lines)
+        scores["beat_fit"] = _normalize_beat_fit(beat.total_score)
+    except Exception:
+        scores["beat_fit"] = 0.5
 
     # Adherence metrics depend on already-computed component scores.
     individual.scores = scores

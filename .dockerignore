@@ -1,0 +1,44 @@
+# Reduce build context (was 3.7GB+). Web image only needs webapp + evo_rhyme + config.
+
+# Data and artifacts (large)
+data/
+checkpoints/
+rhyme_siamese/
+models/
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.model
+*.tsv
+
+# Git and IDE
+.git/
+.gitignore
+.cursor/
+.vscode/
+.pytest_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+qwen_env/
+.qwen_env/
+
+# Env (use docker env_file instead)
+.env
+.env.*
+
+# Not needed for web server
+notebooks/
+docs/
+codex/
+tests/
+*.ipynb
+
+# Optional: exclude large CSVs if data/ is still included elsewhere
+# *.csv

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}About — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl">
+    <h1 class="text-2xl font-bold text-slate-100 mb-4">About Rap Bot</h1>
+    <p class="text-slate-300 mb-4">
+        Rap Bot is an evolutionary rap verse generation system. It uses quality-diversity (MAP-Elites)
+        and other evolution strategies to generate verses that match rhyme schemes, themes, and
+        stylistic goals.
+    </p>
+
+    <h2 class="text-lg font-semibold text-slate-100 mt-6 mb-2">Quick start</h2>
+    <p class="text-slate-300 mb-2">
+        Open the <a href="/" class="text-amber-400 hover:text-amber-300">Dashboard</a> to see runs. To log new runs here, enable the database and use <code class="text-amber-400/80 bg-slate-800 px-1 rounded">--db --runs-dir</code> when starting a run.
+    </p>
+    <p class="text-slate-400 text-sm mb-4">
+        Full example (QD verse evolution, 100 pop, 60 gens, DB logging):
+    </p>
+    <pre class="rounded-lg border border-slate-600 bg-slate-800/80 p-4 text-sm text-slate-300 overflow-x-auto mb-6"><code>python scripts/run_verse_qd.py --theme "pressure,mask,survival" --population 100 --generations 60 --scheme ABAB --init lm --db --runs-dir</code></pre>
+
+    <h2 class="text-lg font-semibold text-slate-100 mt-6 mb-2">Logging runs to the dashboard</h2>
+    <p class="text-slate-300 mb-2">
+        To see evolution runs in this dashboard, enable database logging and use <code class="text-amber-400/80 bg-slate-800 px-1 rounded">--db</code>
+        and <code class="text-amber-400/80 bg-slate-800 px-1 rounded">--runs-dir</code> when starting a run.
+    </p>
+    <ul class="list-disc list-inside text-slate-400 text-sm mb-4 space-y-1">
+        <li>Set <code class="text-amber-400/80">RAPBOT_USE_DB=1</code> in your environment (or in <code class="text-amber-400/80">.env</code>).</li>
+        <li>Configure DB connection: <code class="text-amber-400/80">RAPBOT_DB_HOST</code>, <code class="text-amber-400/80">RAPBOT_DB_PORT</code>, <code class="text-amber-400/80">RAPBOT_DB_USER</code>, <code class="text-amber-400/80">RAPBOT_DB_PASSWORD</code>, <code class="text-amber-400/80">RAPBOT_DB_NAME</code> (default: <code class="text-amber-400/80">rapbot</code>).</li>
+    </ul>
+
+    <h2 class="text-lg font-semibold text-slate-100 mt-6 mb-2">Example: QD verse evolution</h2>
+    <pre class="rounded-lg border border-slate-600 bg-slate-800/80 p-4 text-sm text-slate-300 overflow-x-auto mb-4"><code>python scripts/run_verse_qd.py --theme "pressure,flow,mask" --population 100 --generations 80 --scheme AABB --init mixed --db --runs-dir</code></pre>
+
+    <h2 class="text-lg font-semibold text-slate-100 mt-6 mb-2">Example: verse evolution (non-QD)</h2>
+    <pre class="rounded-lg border border-slate-600 bg-slate-800/80 p-4 text-sm text-slate-300 overflow-x-auto mb-4"><code>python scripts/run_verse_evolution.py --theme "pressure,mask,survival" --population 80 --generations 30 --scheme AABB --runs-dir</code></pre>
+
+    <p class="text-slate-500 text-sm mt-6">
+        <a href="/" class="text-amber-400 hover:text-amber-300">Back to Dashboard</a>
+    </p>
+</div>
+{% endblock %}

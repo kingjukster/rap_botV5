@@ -135,6 +135,25 @@ CREATE TABLE IF NOT EXISTS seed_bank (
     INDEX idx_seed_key (seed_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """,
+    # artifacts: store large run/result JSON blobs (gzipped)
+    """
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id INT DEFAULT NULL,
+    run_tag VARCHAR(128) DEFAULT NULL,
+    kind VARCHAR(64) NOT NULL,
+    rel_path VARCHAR(768) DEFAULT NULL,
+    sha256 CHAR(64) NOT NULL,
+    content_gzip LONGBLOB NOT NULL,
+    content_len BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE SET NULL,
+    UNIQUE KEY uk_sha256 (sha256),
+    INDEX idx_run_id (run_id),
+    INDEX idx_run_tag (run_tag),
+    INDEX idx_kind (kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""",
 ]
 
 

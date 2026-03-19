@@ -47,9 +47,10 @@ rhyme_siamese/
 # ML / NLP Large Files Exclusion
 # ============================
 
-# --- MODEL CHECKPOINTS (Do NOT store in Git) ---
+# --- MODEL CHECKPOINTS ---
+# This repo can optionally track checkpoints metadata/reads.
+# Large weight files are still ignored by patterns below (*.pt, *.bin, *.safetensors, etc).
 models/
-checkpoints/
 */adapter_model.safetensors
 *.safetensors
 *.bin
@@ -107,4 +108,15 @@ __pycache__
 
 # Iterative test artifacts (regenerated on run)
 data/iterative_tests/
+
+# Evolution run artifacts (archived to DB; keep repo clean)
 data/evo_rhyme/runs/
+results_qd*.json
+results*.json
+*weights*.json
+test_output.json
+smoke_qd_runtime.json
+
+# --- Local test/cache artifacts (always ignore) ---
+.coverage
+.pytest_cache/

@@ -1,5 +1,6 @@
 """
-Tests for evo_rhyme.phonetics: extract_rhyme_tail, count_syllables, phonetic_similarity.
+Tests for evo_rhyme.phonetics: extract_rhyme_tail, count_syllables, tokenize_line, syllable_count_line, phonetic_similarity.
+Area 11: Phonetics public helpers.
 """
 
 import pytest
@@ -11,6 +12,8 @@ from evo_rhyme.phonetics import (
     has_custom_pronunciations,
     multisyllable_overlap,
     phonetic_similarity,
+    syllable_count_line,
+    tokenize_line,
 )
 
 
@@ -124,3 +127,23 @@ class TestMultisyllableOverlap:
     def test_empty_returns_zero(self):
         assert multisyllable_overlap("", "IY1 N") == 0
         assert multisyllable_overlap("IY1 N", "") == 0
+
+
+class TestTokenizeLine:
+    """tokenize_line splits on words."""
+
+    def test_tokenize_simple(self):
+        assert tokenize_line("hello world") == ["hello", "world"]
+        assert tokenize_line("I got the flow") == ["i", "got", "the", "flow"]
+
+    def test_tokenize_empty(self):
+        assert tokenize_line("") == []
+
+
+class TestSyllableCountLine:
+    """syllable_count_line for full line."""
+
+    def test_syllable_count_line(self):
+        assert syllable_count_line("cat") >= 1
+        assert syllable_count_line("hello world") >= 2
+        assert syllable_count_line("") == 0

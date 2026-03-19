@@ -50,7 +50,7 @@ pip install -r requirements.txt
 | **Utilities** | `tqdm`, `matplotlib`, `gensim`, `fasttext`, `python-dotenv` |
 | **Optional (LM)** | `openai` (for `BarProposer` / `BarRewriter`) |
 
-No `setup.py` or `pyproject.toml` is present; run scripts from the project root with `python scripts/...` so that `config` and `evo_rhyme` are on `PYTHONPATH` (scripts add the repo root to `sys.path`).
+The project uses **`pyproject.toml`** for metadata and dependencies. Install in development mode with `pip install -e .` (or `pip install -e ".[full]"` for optional ML/plotting deps). Run scripts from the project root with `python scripts/...` so that `config` and `evo_rhyme` are on `PYTHONPATH` (scripts add the repo root to `sys.path`).
 
 ---
 
@@ -75,6 +75,24 @@ Configuration is resolved in this order:
 - **`config/rapbot.yaml`** — Full Rap Bot settings (base model, paths, generation, stage3, critic, stats). Used by `config/settings.py` for `load_settings()`.
 
 Override any path or evolution parameter via CLI flags or env vars.
+
+---
+
+## Web Dashboard
+
+A self-hosted web UI to browse runs, view candidates, and explore the MAP-Elites archive.
+
+```bash
+# Install web deps (or use full requirements.txt)
+pip install fastapi "uvicorn[standard]" jinja2
+
+# Run (with MySQL and RAPBOT_USE_DB=1 for data)
+uvicorn webapp.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open http://localhost:8000.
+
+**Docker:** `docker compose up` starts MySQL and the web dashboard. The dashboard and MySQL run in containers; evolution scripts (`run_verse_qd.py`, `run_verse_evolution.py`, etc.) are usually run on the **host** with the same DB env (`RAPBOT_USE_DB=1`, `RAPBOT_DB_HOST=localhost`, etc.) so runs appear in the dashboard. Use the host’s Python environment (e.g. `pip install -e ".[full]"`) for evolution; the web container is kept lightweight and does not run evolution.
 
 ---
 
@@ -211,11 +229,18 @@ Aggregate fitness is capped (e.g. 0.95) to avoid saturation. **Ngram fluency** i
 
 ## Testing
 
-Tests live under `tests/test_evo_rhyme/`. Run with pytest from the project root:
+Tests live under `tests/test_evo_rhyme/` and `tests/test_webapp/`. Run with pytest from the project root:
 
 ```bash
 cd rap_botV5
 pytest tests/ -v
+```
+
+**Coverage** (with optional heavy modules omitted via `.coveragerc`):
+
+```bash
+pip install pytest-cov
+pytest tests/ -q --cov=evo_rhyme --cov=webapp --cov-report=term
 ```
 
 Relevant test modules:
@@ -228,6 +253,18 @@ Relevant test modules:
 - `test_style_prompt_genome.py` — style genome mutation/crossover, archive dimensions
 - `test_emitters_specialized.py` — QD emitters
 - `test_rhyme_embedding.py` — rhyme embedding build and neighbors
+- `test_evolution.py` — EvolutionConfig, Pareto ranking, tournament, diversity, elites, logger, one-gen evolve
+- `test_mutation.py` — mutation weights, tail index, copy individual
+- `test_archive.py` — MAPElitesArchive, dimension extractors, compact/ultra_compact
+- `test_selection.py` — elitism, tournament, immigrants, Pareto rank, crowding
+- `test_crossover.py` — line-level and phrase-slice crossover
+- `test_flow.py` — stress pattern, flow scoring, template flow
+- `test_population.py` — RandomGenerator, TemplateGenerator, create_mixed_population
+- `test_scoring_penalties.py` — weak_tail_penalty, repetition_penalty
+- `test_syllable_balance.py` — score_syllable_balance
+- `test_template_grammar.py` — swap_connector, swap_determiner
+- `test_db.py` — db disabled/enabled, list_runs, score_cache (stubbed MySQL)
+- `test_webapp/*` — health, API routes, pages, run_service
 
 ---
 
