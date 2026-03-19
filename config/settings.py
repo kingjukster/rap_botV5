@@ -226,6 +226,19 @@ QD_SECTION_ALIASES: Dict[str, str] = {
     "population_init": "init",
 }
 
+PROPOSER_SECTION_DEFAULTS: Dict[str, Any] = {
+    "backend": "openai",
+    "model": "gpt-4o-mini",
+    "api_base": None,
+    "bars_per_slot": 80,
+    "temperature": 0.95,
+    "top_p": 0.95,
+    "max_tokens": 60,
+    "batch_size": 20,
+    "timeout": 30.0,
+    "max_retries": 3,
+}
+
 GEN_SECTION_PATHS = {"log_json"}
 STAGE3_SECTION_PATHS = {"seed_manifest"}
 CRITIC_SECTION_PATHS = {"manifest_path"}
@@ -385,6 +398,30 @@ def get_evolution_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
 def get_qd_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Canonical defaults for QD verse evolution CLI."""
     return dict(load_settings(config_path=config_path).qd)
+
+
+def get_proposer_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Proposer config from evolution.yaml proposer section. Env RAPBOT_PROPOSER_API_BASE overrides api_base."""
+    base_dir = _repo_root()
+    cfg_data: Dict[str, Any] = {}
+    cfg_path = config_path or os.environ.get("RAPBOT_CONFIG")
+    if not cfg_path:
+        for p in (base_dir / "config" / "evolution.yaml", base_dir / "config" / "rapbot.yaml"):
+            if p.exists():
+                cfg_data = _load_config_file(p)
+                break
+    elif base_dir:
+        resolved = Path(cfg_path).expanduser()
+        if not resolved.is_absolute():
+            resolved = (base_dir / resolved).resolve()
+        if resolved.exists():
+            cfg_data = _load_config_file(resolved)
+    proposer = (cfg_data.get("proposer") or {}) if isinstance(cfg_data.get("proposer"), dict) else {}
+    merged = {k: v for k, v in {**PROPOSER_SECTION_DEFAULTS, **proposer}.items() if v is not None}
+    api_base = os.environ.get("RAPBOT_PROPOSER_API_BASE")
+    if api_base:
+        merged["api_base"] = api_base
+    return merged
 
 
 def get_experiment_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:

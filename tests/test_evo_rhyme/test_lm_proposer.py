@@ -182,3 +182,24 @@ def test_propose_verse_pool_batch_exception_handled():
         )
     assert isinstance(pool, dict)
     assert 0 in pool and 1 in pool and 2 in pool and 3 in pool
+
+
+def test_local_hf_backend_uses_generate_batch():
+    """local_hf backend routes through _generate_batch and _call_local_hf_sync."""
+    valid_bars = [
+        "I got the flow when I step in the spot",
+        "You know I rock it hard when I hit the block",
+    ]
+
+    def mock_local_hf_sync(system: str, n: int):
+        return valid_bars[:n]
+
+    cfg = ProposerConfig(backend="local_hf", model="test-model", bars_per_slot=5, batch_size=5)
+    proposer = BarProposer(config=cfg)
+    with patch.object(proposer, "_call_local_hf_sync", side_effect=mock_local_hf_sync) as mock_fn:
+        result = proposer.propose_bars(
+            BarRequest(theme_keywords=["flow"], syllable_range=(8, 14))
+        )
+    assert isinstance(result, list)
+    assert len(result) >= 1
+    mock_fn.assert_called()

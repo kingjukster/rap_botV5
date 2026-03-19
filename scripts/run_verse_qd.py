@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 from datetime import datetime
@@ -207,7 +208,7 @@ def parse_args() -> argparse.Namespace:
         "--api-base",
         type=str,
         default=None,
-        help="API base URL for local LM endpoint",
+        help="API base URL for vLLM/RunPod endpoint (or set RAPBOT_PROPOSER_API_BASE)",
     )
     parser.add_argument(
         "--roles",
@@ -639,10 +640,14 @@ def main() -> None:
     qd_config.use_emitters = (args.emitter_strategy == "multi")
     qd_config.novelty_weight = args.novelty_weight
     qd_config.allowed_schemes = [s.strip() for s in args.schemes.split(",")]
+    from config.settings import get_proposer_defaults
+    proposer_defaults = get_proposer_defaults(config_path=getattr(args, "config", None))
+    api_base = args.api_base or os.environ.get("RAPBOT_PROPOSER_API_BASE") or proposer_defaults.get("api_base")
     qd_config.proposer_config = {
+        **{k: v for k, v in proposer_defaults.items() if k in ("backend", "model", "api_base", "bars_per_slot", "temperature", "device")},
         "model": args.proposer_model,
         "backend": args.proposer_backend,
-        **({"api_base": args.api_base} if args.api_base else {}),
+        **({"api_base": api_base} if api_base else {}),
     }
     if seed_info:
         # Used by VerseQDRunLogger.write_config for run-dir config.json.
@@ -659,18 +664,11 @@ def main() -> None:
             )
             sys.exit(1)
 
-        proposer_config = {
-            "model": args.proposer_model,
-            "backend": args.proposer_backend,
-        }
-        if args.api_base:
-            proposer_config["api_base"] = args.api_base
-
         gen = LMVerseSeedGenerator(
             theme_keywords=theme_keywords,
             scheme=args.scheme,
             num_lines=args.num_lines,
-            proposer_config=proposer_config,
+            proposer_config=qd_config.proposer_config,
             roles=roles,
         )
         population = gen.generate(args.population)

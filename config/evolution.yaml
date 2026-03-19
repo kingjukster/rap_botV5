@@ -71,9 +71,12 @@ experiments:
   learned_policy_path: artifacts/learned_policy.json
 
 # LM-backed bar proposer (evo_rhyme.lm_proposer.ProposerConfig)
+# For vLLM/RunPod: set api_base to http://localhost:8000/v1 (or RAPBOT_PROPOSER_API_BASE)
+# For local HuggingFace: backend: local_hf, model: Qwen/Qwen2.5-0.5B-Instruct
 proposer:
   backend: openai
   model: gpt-4o-mini
+  # api_base: http://localhost:8000/v1  # vLLM OpenAI-compatible endpoint
   bars_per_slot: 80
   temperature: 0.95
   top_p: 0.95

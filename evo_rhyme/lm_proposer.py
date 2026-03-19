@@ -46,9 +46,9 @@ _QUOTE_RE = re.compile(r'^["\']|["\']$')
 
 @dataclass
 class ProposerConfig:
-    backend: str = "openai"
-    model: str = "gpt-4.1-nano"
-    api_base: Optional[str] = None
+    backend: str = "openai"  # openai | local_hf
+    model: str = "gpt-4.1-nano"  # OpenAI model or HF model id for local_hf
+    api_base: Optional[str] = None  # For openai: vLLM/RunPod endpoint; ignored for local_hf
     api_key: Optional[str] = None
     bars_per_slot: int = 80
     temperature: float = 0.95
@@ -57,6 +57,7 @@ class ProposerConfig:
     batch_size: int = 20
     timeout: float = 30.0
     max_retries: int = 3
+    device: Optional[str] = None  # For local_hf: "cuda", "cpu", or None (auto)
 
 
 @dataclass
@@ -207,13 +208,71 @@ def _rhyme_groups(scheme: str, num_lines: int) -> List[Tuple[int, ...]]:
 # ---------------------------------------------------------------------------
 
 class BarProposer:
-    """Generate candidate rap bars via an OpenAI-compatible LM."""
+    """Generate candidate rap bars via OpenAI-compatible API or local HuggingFace model."""
 
     def __init__(self, config: ProposerConfig | None = None) -> None:
         self.cfg = config or ProposerConfig()
         self._api_key = self.cfg.api_key or os.getenv("OPENAI_API_KEY", "")
-        if not self._api_key:
+        if self.cfg.backend == "openai" and not self._api_key:
             logger.warning("No API key found – set OPENAI_API_KEY or pass api_key in config")
+        self._local_model = None  # Lazy-loaded for local_hf
+
+    # -- local_hf backend ----------------------------------------------------
+
+    def _call_local_hf_sync(self, system: str, n: int) -> List[str]:
+        """Synchronous local HF generation. Returns parsed lines."""
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except ImportError as err:
+            logger.error("local_hf requires transformers and torch: %s", err)
+            return []
+
+        if self._local_model is None:
+            device = self.cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
+            logger.info("Loading local HF model %s on %s", self.cfg.model, device)
+            self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model, trust_remote_code=True)
+            self._local_model = AutoModelForCausalLM.from_pretrained(
+                self.cfg.model,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map=device if device == "cuda" else None,
+                trust_remote_code=True,
+            )
+            if device == "cpu":
+                self._local_model = self._local_model.to(device)
+            self._local_device = device
+
+        device = getattr(self, "_local_device", "cpu")
+        prompt = f"{system}\n\nGenerate {n} bars now."
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Generate {n} bars now."},
+        ]
+        if hasattr(self._tokenizer, "apply_chat_template"):
+            text = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            text = f"{system}\n\nUser: Generate {n} bars now.\nAssistant:"
+
+        inputs = self._tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = {k: v.to(self._local_model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            out = self._local_model.generate(
+                **inputs,
+                max_new_tokens=self.cfg.max_tokens * n,
+                temperature=self.cfg.temperature,
+                top_p=self.cfg.top_p,
+                do_sample=True,
+                pad_token_id=self._tokenizer.eos_token_id,
+            )
+
+        decoded = self._tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        lines = [l.strip() for l in decoded.splitlines() if l.strip()]
+        return lines
 
     # -- async core ---------------------------------------------------------
 
@@ -254,15 +313,21 @@ class BarProposer:
         logger.error("All %d API attempts exhausted", self.cfg.max_retries)
         return []
 
+    async def _generate_batch(self, system: str, n: int) -> List[str]:
+        """Generate one batch of bars. Routes to API or local_hf."""
+        if self.cfg.backend == "local_hf":
+            return await asyncio.to_thread(self._call_local_hf_sync, system, n)
+        return await self._call_api(system, n)
+
     async def _propose_bars_async(self, request: BarRequest) -> List[str]:
-        """Generate bars across multiple batched API calls, filter, dedupe."""
+        """Generate bars across multiple batched calls, filter, dedupe."""
         total = self.cfg.bars_per_slot
         batch = self.cfg.batch_size
         num_calls = max(1, (total + batch - 1) // batch)
 
         system = _build_system_prompt(batch, request)
 
-        tasks = [self._call_api(system, batch) for _ in range(num_calls)]
+        tasks = [self._generate_batch(system, batch) for _ in range(num_calls)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         raw_lines: List[str] = []

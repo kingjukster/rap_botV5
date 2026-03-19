@@ -278,8 +278,18 @@ Relevant test modules:
 | `RAPBOT_RHYME_CSV` | Override rhyme groups CSV path. |
 | `RAPBOT_SIAMESE_DIR` | Override Siamese model directory. |
 | `OPENAI_API_KEY` | Required for LM-backed BarProposer / BarRewriter (e.g. QD with `--init lm`). |
+| `RAPBOT_PROPOSER_API_BASE` | vLLM/RunPod endpoint for proposer (e.g. `http://localhost:8000/v1`). |
+| `RAPBOT_REWRITER_API_BASE` | vLLM/RunPod endpoint for rewriter. |
 
 Use `.env` and `python-dotenv` in your own wrapper if you want to load these from a file.
+
+### RunPod / vLLM setup
+
+To avoid API cost and latency, run Qwen via vLLM on RunPod (A100 PCIe spot recommended):
+
+1. Deploy vLLM with `Qwen/Qwen2.5-7B-Instruct` on `http://localhost:8000/v1`
+2. Set `RAPBOT_PROPOSER_API_BASE=http://<pod-ip>:8000/v1` (or `--api-base`)
+3. Or use `--proposer-backend local_hf` with a HuggingFace model id for fully local inference
 
 ---
 
