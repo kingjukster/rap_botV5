@@ -18,6 +18,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -50,8 +51,31 @@ from evo_rhyme.population import (
 from evo_rhyme.seed_generator import SeedGenerator, load_corpus_lines
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Run couplet evolution")
+def _parse_args_with_defaults() -> argparse.Namespace:
+    # Two-phase parse to allow --config to influence defaults.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional config file path (YAML/JSON). Overrides defaults via config/settings.py.",
+    )
+    known, _ = pre.parse_known_args()
+
+    from config.settings import get_evolution_defaults
+
+    defaults = get_evolution_defaults(config_path=known.config)
+
+    parser = argparse.ArgumentParser(
+        description="Run couplet evolution",
+        parents=[pre],
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility. Seeds Python/NumPy/Torch when available.",
+    )
     parser.add_argument(
         "--theme",
         type=str,
@@ -61,13 +85,13 @@ def main():
     parser.add_argument(
         "--population",
         type=int,
-        default=100,
+        default=int(defaults.get("population", 100)),
         help="Population size (max 5000)",
     )
     parser.add_argument(
         "--generations",
         type=int,
-        default=10,
+        default=int(defaults.get("generations", 10)),
         help="Number of generations (max 1000)",
     )
     parser.add_argument(
@@ -79,13 +103,13 @@ def main():
     parser.add_argument(
         "--elites",
         type=int,
-        default=5,
+        default=int(defaults.get("elites", 5)),
         help="Number of elites per generation",
     )
     parser.add_argument(
         "--immigrants",
         type=int,
-        default=10,
+        default=int(defaults.get("immigrants", 10)),
         help="Random immigrants per generation (10-15%% of pop recommended to prevent stagnation)",
     )
     parser.add_argument(
@@ -98,7 +122,7 @@ def main():
         "--init",
         type=str,
         choices=["mixed", "random", "template"],
-        default="mixed",
+        default=str(defaults.get("init", "mixed")),
         help="Population init: mixed (40%% template, 40%% corpus, 20%% random; or 60/40 if no corpus), random, or template",
     )
     parser.add_argument(
@@ -114,50 +138,53 @@ def main():
     )
     parser.add_argument(
         "--use-embeddings",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("use_embeddings", False)),
         help="Use SiameseRhymeScorer for embedding-based semantic scoring (blended with keyword score)",
     )
     parser.add_argument(
         "--embedding-weight",
         type=float,
-        default=0.5,
+        default=float(defaults.get("embedding_weight", 0.5)),
         help="Weight of embedding score in semantic blend (default: 0.5)",
     )
     parser.add_argument(
         "--multiobjective",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("multiobjective", False)),
         help="Use Pareto multi-objective evolution (rhyme, fluency, semantic)",
     )
     parser.add_argument(
         "--use-niching",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("use_niching", False)),
         help="Use niching in elite selection (preserve top per rhyme family)",
     )
     parser.add_argument(
         "--min-fluency",
         type=float,
-        default=None,
+        default=defaults.get("min_fluency", None),
         metavar="FLOAT",
         help="Reject mutations with fluency below this (0=disabled). Default: 0.6 when --theme set, else 0.0.",
     )
     parser.add_argument(
         "--min-semantic",
         type=float,
-        default=None,
+        default=defaults.get("min_semantic", None),
         metavar="FLOAT",
         help="Reject mutations with semantic below this (0=disabled). Default: 0.25 when --theme set, else 0.0.",
     )
     parser.add_argument(
         "--min-lexical",
         type=float,
-        default=0.0,
+        default=float(defaults.get("min_lexical", 0.0)),
         metavar="FLOAT",
         help="Reject mutations with lexical_validity below this (0=disabled). Requires corpus. Try 0.5-0.6 to block nonsense.",
     )
     parser.add_argument(
         "--min-ngram",
         type=float,
-        default=None,
+        default=defaults.get("min_ngram", None),
         metavar="FLOAT",
         help="Reject mutations with ngram_fluency below this (0=disabled). Default: 0.2 when corpus available. Blocks nonsense phrase structure.",
     )
@@ -170,12 +197,13 @@ def main():
     parser.add_argument(
         "--style-weight",
         type=float,
-        default=0.1,
+        default=float(defaults.get("style_weight", 0.1)),
         help="Weight of style similarity in fitness when --style-corpus is provided (default: 0.1)",
     )
     parser.add_argument(
         "--require-theme",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("require_theme", False)),
         help="Enforce at least one theme keyword in each couplet (requires --theme)",
     )
     parser.add_argument(
@@ -186,7 +214,8 @@ def main():
     )
     parser.add_argument(
         "--lm-fluency",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("lm_fluency", False)),
         help="Blend ngram fluency with LM perplexity (DistilGPT-2) for stronger nonsense detection.",
     )
     parser.add_argument(
@@ -197,11 +226,24 @@ def main():
     parser.add_argument(
         "--lm-fluency-weight",
         type=float,
-        default=0.5,
+        default=float(defaults.get("lm_fluency_weight", 0.5)),
         metavar="FLOAT",
         help="Weight of LM score in ngram_fluency blend when --lm-fluency (default: 0.5).",
     )
-    args = parser.parse_args()
+    return parser.parse_args(), parser
+
+
+def main():
+    args, parser = _parse_args_with_defaults()
+
+    seed_info: Dict[str, Any] | None = None
+    if args.seed is not None:
+        try:
+            from evo_rhyme.repro import seed_everything
+
+            seed_info = seed_everything(int(args.seed))
+        except Exception:
+            seed_info = {"seed": int(args.seed), "error": "seed_everything_failed"}
 
     if args.population > 5000:
         parser.error(f"--population {args.population} exceeds max 5000")
@@ -302,6 +344,7 @@ def main():
                         "elites": args.elites,
                         "immigrants": args.immigrants,
                         "init": args.init,
+                        **({"seed_info": seed_info} if seed_info else {}),
                     },
                 )
                 if run_id > 0:
@@ -423,6 +466,7 @@ def main():
     top = population[: min(50, len(population))]
     output_data = {
         "config": {
+            **({"seed_info": seed_info} if seed_info else {}),
             "theme": args.theme,
             "population": args.population,
             "generations": args.generations,

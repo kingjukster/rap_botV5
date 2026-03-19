@@ -12,6 +12,7 @@ import hashlib
 import math
 import random
 from collections import Counter
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -67,20 +68,53 @@ FITNESS_CAP = 0.95
 # When corpus is available, ngram_fluency < this means phrase never appears in real language.
 NGRAM_FLOOR = 0.2
 
-_VERSE_SCORE_CACHE: Dict[Tuple[str, str], Dict[str, float]] = {}
-_VERSE_SCORE_CACHE_MAX = 20000
+from evo_rhyme.cache import LRUTTLCache
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = os.environ.get(name)
+        return int(v) if v is not None and v != "" else int(default)
+    except Exception:
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        v = os.environ.get(name)
+        return float(v) if v is not None and v != "" else float(default)
+    except Exception:
+        return float(default)
+
+
+_VERSE_SCORE_CACHE_MAX = _env_int("RAPBOT_VERSE_SCORE_CACHE_MAX", 20000)
+_VERSE_SCORE_CACHE_TTL_S = _env_float("RAPBOT_VERSE_SCORE_CACHE_TTL_S", 3600.0)
+_VERSE_SCORE_CACHE = LRUTTLCache[Tuple[str, str], Dict[str, float]](
+    max_size=_VERSE_SCORE_CACHE_MAX,
+    ttl_seconds=_VERSE_SCORE_CACHE_TTL_S,
+)
 
 
 def _norm_verse_key(lines: List[str], scheme: str) -> Tuple[str, str]:
     text = "\n".join(line.strip().lower() for line in lines)
     return (scheme.upper(), text)
 
-
-def _cache_put(key: Tuple[str, str], scores: Dict[str, float]) -> None:
-    if len(_VERSE_SCORE_CACHE) >= _VERSE_SCORE_CACHE_MAX:
-        # Lightweight bounded cache without external dependency.
-        _VERSE_SCORE_CACHE.clear()
-    _VERSE_SCORE_CACHE[key] = dict(scores)
+def verse_score_cache_snapshot() -> Dict[str, Any]:
+    """Snapshot in-memory verse cache stats for observability."""
+    try:
+        return _VERSE_SCORE_CACHE.snapshot()
+    except Exception:
+        return {
+            "size": None,
+            "max_size": _VERSE_SCORE_CACHE_MAX,
+            "ttl_seconds": _VERSE_SCORE_CACHE_TTL_S,
+            "hit_rate": 0.0,
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "expired": 0,
+            "error": "snapshot_failed",
+        }
 
 
 def _text_hash(text: str) -> str:
@@ -1665,7 +1699,7 @@ def score_verses_batch(
                 cached = _db.score_cache_get(h, "verse", scheme.upper())
                 if cached is not None:
                     all_scores[idx] = dict(cached)
-                    _VERSE_SCORE_CACHE[key] = dict(cached)
+                    _VERSE_SCORE_CACHE.set(key, dict(cached))
                     continue
         except Exception:
             pass
@@ -1813,7 +1847,7 @@ def score_verses_batch(
         all_scores[idx]["prompt_adherence"] = _score_prompt_adherence(individuals[idx])
         individuals[idx].scores = None
         key = _norm_verse_key(individuals[idx].lines, scheme)
-        _cache_put(key, all_scores[idx])
+        _VERSE_SCORE_CACHE.set(key, dict(all_scores[idx]))
         try:
             from evo_rhyme import db as _db
             if _db.db_enabled():

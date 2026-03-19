@@ -36,6 +36,7 @@ from evo_rhyme.fitness import (
     score_vector,
     score_verse,
     score_verses_batch,
+    verse_score_cache_snapshot,
 )
 from evo_rhyme.selection import (
     compute_population_objectives,
@@ -596,6 +597,9 @@ class VerseRunLogger:
             "enable_prompt_genome": config.enable_prompt_genome,
             "prompt_llm_fraction": config.prompt_llm_fraction,
         }
+        seed_info = getattr(config, "seed_info", None)
+        if seed_info:
+            data["seed_info"] = seed_info
         if extra:
             data.update(extra)
         path = self.run_dir / "config.json"
@@ -686,6 +690,9 @@ class VerseQDRunLogger:
             "prompt_llm_fraction": config.prompt_llm_fraction,
             "enable_controllability_probes": config.enable_controllability_probes,
         }
+        seed_info = getattr(config, "seed_info", None)
+        if seed_info:
+            data["seed_info"] = seed_info
         if extra:
             data.update(extra)
         path = self.run_dir / "config.json"
@@ -1183,6 +1190,20 @@ def evolve_verse_qd(
             gen, len(population), archive.coverage() * 100,
             best_fit, lm_repair_budget.get("remaining", 0), improved,
         )
+        try:
+            cs = verse_score_cache_snapshot()
+            logger.info(
+                "VerseScoreCache: hit_rate=%.3f size=%s hits=%s misses=%s evictions=%s expired=%s ttl_s=%s",
+                float(cs.get("hit_rate", 0.0)),
+                cs.get("size"),
+                cs.get("hits"),
+                cs.get("misses"),
+                cs.get("evictions"),
+                cs.get("expired"),
+                cs.get("ttl_seconds"),
+            )
+        except Exception:
+            pass
 
     if run_logger:
         run_logger.flush(archive)

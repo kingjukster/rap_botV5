@@ -29,6 +29,7 @@ import random
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -36,8 +37,29 @@ if str(ROOT) not in sys.path:
 
 
 def parse_args() -> argparse.Namespace:
+    # Two-phase parse to allow --config to influence defaults.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional config file path (YAML/JSON). Overrides defaults via config/settings.py.",
+    )
+    known, _ = pre.parse_known_args()
+
+    from config.settings import get_qd_defaults
+
+    defaults = get_qd_defaults(config_path=known.config)
+
     parser = argparse.ArgumentParser(
         description="Quality-Diversity verse evolution (MAP-Elites)",
+        parents=[pre],
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility. Seeds Python/NumPy/Torch when available.",
     )
     parser.add_argument(
         "--theme",
@@ -48,52 +70,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--population",
         type=int,
-        default=100,
+        default=int(defaults.get("population", 100)),
         help="Population size (max 5000)",
     )
     parser.add_argument(
         "--generations",
         type=int,
-        default=100,
+        default=int(defaults.get("generations", 100)),
         help="Number of generations (max 1000)",
     )
     parser.add_argument(
         "--scheme",
         type=str,
         choices=["AABB", "ABAB", "ABBA", "AAAA", "ABCB", "AABA"],
-        default="AABB",
+        default=str(defaults.get("scheme", "AABB")),
         help="Rhyme scheme (default: AABB)",
     )
     parser.add_argument(
         "--num-lines",
         type=int,
         choices=[4, 8, 16],
-        default=4,
+        default=int(defaults.get("num_lines", 4)),
         help="Lines per verse (default: 4)",
     )
     parser.add_argument(
         "--elites",
         type=int,
-        default=5,
+        default=int(defaults.get("elites", 5)),
         help="Number of elites per generation",
     )
     parser.add_argument(
         "--immigrants",
         type=int,
-        default=20,
+        default=int(defaults.get("immigrants", 20)),
         help="Immigrants per generation",
     )
     parser.add_argument(
         "--lm-budget",
         type=int,
-        default=20,
+        default=int(defaults.get("lm_budget", 20)),
         help="LM mutation budget per verse generation (default: 20)",
     )
     parser.add_argument(
         "--init",
         type=str,
         choices=["mixed", "random", "template", "lm"],
-        default="lm",
+        default=str(defaults.get("init", "lm")),
         help="Population init mode (default: lm)",
     )
     parser.add_argument(
@@ -127,26 +149,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--use-embeddings",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("use_embeddings", False)),
         help="Enable embedding-based semantic scoring",
     )
     parser.add_argument(
         "--embedding-weight",
         type=float,
-        default=0.40,
+        default=float(defaults.get("embedding_weight", 0.40)),
         help="Weight for embedding scorer (default: 0.40)",
     )
     parser.add_argument(
         "--proposer-model",
         type=str,
-        default="gpt-4.1-nano",
+        default=str(defaults.get("proposer_model", "gpt-4.1-nano")),
         help="Model name for bar proposer (default: gpt-4.1-nano)",
     )
     parser.add_argument(
         "--proposer-backend",
         type=str,
         choices=["openai", "local_hf"],
-        default="openai",
+        default=str(defaults.get("proposer_backend", "openai")),
         help="Backend for proposer (default: openai)",
     )
     parser.add_argument(
@@ -164,43 +187,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-fluency",
         type=float,
-        default=0.3,
+        default=float(defaults.get("min_fluency", 0.3)),
         help="Minimum fluency floor (default: 0.3)",
     )
     parser.add_argument(
         "--min-semantic",
         type=float,
-        default=0.0,
+        default=float(defaults.get("min_semantic", 0.0)),
         help="Minimum semantic floor (default: 0.0)",
     )
     parser.add_argument(
         "--line-pop",
         type=int,
-        default=1500,
+        default=int(defaults.get("line_pop", 1500)),
         help="Line population size for two-tier evolution",
     )
     parser.add_argument(
         "--line-gens",
         type=int,
-        default=3,
+        default=int(defaults.get("line_gens", 3)),
         help="Line evolution generations per verse generation",
     )
     parser.add_argument(
         "--line-seeds",
         type=int,
-        default=80,
+        default=int(defaults.get("line_seeds", 80)),
         help="LM seed lines for line evolution (gen 0 only)",
     )
     parser.add_argument(
         "--line-lm-budget",
         type=int,
-        default=15,
+        default=int(defaults.get("line_lm_budget", 15)),
         help="LM mutation budget per line evolution generation (default: 15)",
     )
     parser.add_argument(
         "--compose-ratio",
         type=float,
-        default=0.5,
+        default=float(defaults.get("compose_ratio", 0.5)),
         help="Fraction of offspring from line archive assembly",
     )
     parser.add_argument(
@@ -213,87 +236,87 @@ def parse_args() -> argparse.Namespace:
         "--emitter-strategy",
         type=str,
         choices=["multi", "classic"],
-        default="multi",
+        default=str(defaults.get("emitter_strategy", "multi")),
         help="Evolution strategy: multi (emitter-based MAP-Elites) or classic (default: multi)",
     )
     parser.add_argument(
         "--novelty-weight",
         type=float,
-        default=0.3,
+        default=float(defaults.get("novelty_weight", 0.3)),
         help="Novelty weight in effective fitness (0.0-1.0, default: 0.3)",
     )
     parser.add_argument(
         "--schemes",
         type=str,
-        default="AABB,ABAB,ABBA,ABCB",
+        default=str(defaults.get("schemes", "AABB,ABAB,ABBA,ABCB")),
         help="Comma-separated allowed rhyme schemes (default: AABB,ABAB,ABBA,ABCB)",
     )
     parser.add_argument(
         "--archive-mode",
         type=str,
         choices=["default", "style_chain", "compact_style", "ultra_compact", "curriculum_compact"],
-        default="compact_style",
+        default=str(defaults.get("archive_mode", "compact_style")),
         help="Archive dimensions mode (default: compact_style)",
     )
     parser.add_argument(
         "--curriculum-switch-gen",
         type=int,
-        default=20,
+        default=int(defaults.get("curriculum_switch_gen", 20)),
         help="Generation index for curriculum switch to compact archive (default: 20)",
     )
     parser.add_argument(
         "--fast-mode",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=bool(defaults.get("fast_mode", True)),
         help="Enable staged fast scoring (default: enabled)",
     )
     parser.add_argument(
         "--graph-top-k",
         type=int,
-        default=24,
+        default=int(defaults.get("graph_top_k", 24)),
         help="Compute rhyme-graph metrics for top-k candidates per batch (default: 24)",
     )
     parser.add_argument(
         "--expensive-top-k",
         type=int,
-        default=40,
+        default=int(defaults.get("expensive_top_k", 40)),
         help="Compute expensive LM/coherence scores for top-k candidates in fast mode",
     )
     parser.add_argument(
         "--graph-edge-mode",
         type=str,
         choices=["phonetic", "embedding"],
-        default="phonetic",
+        default=str(defaults.get("graph_edge_mode", "phonetic")),
         help="Rhyme graph edge mode (default: phonetic)",
     )
     parser.add_argument(
         "--style-genome",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=bool(defaults.get("style_genome", True)),
         help="Enable style genome metadata and evolution operators (default: enabled)",
     )
     parser.add_argument(
         "--prompt-genome",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=bool(defaults.get("prompt_genome", True)),
         help="Enable prompt genome metadata and operators (default: enabled)",
     )
     parser.add_argument(
         "--prompt-llm-fraction",
         type=float,
-        default=0.2,
+        default=float(defaults.get("prompt_llm_fraction", 0.2)),
         help="Fraction of random emitter candidates generated through prompt-conditioned LM path",
     )
     parser.add_argument(
         "--enable-controllability-probes",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=bool(defaults.get("enable_controllability_probes", False)),
         help="Log lightweight style controllability probes every few generations",
     )
     parser.add_argument(
         "--coverage-target",
         type=float,
-        default=None,
+        default=defaults.get("coverage_target", None),
         metavar="FRAC",
         help="Target archive coverage (0.0-1.0). When >= 0.5, overrides population=100 and generations=150 for compact_style. For ultra_compact, 80/80 is sufficient.",
     )
@@ -330,6 +353,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    seed_info: Optional[Dict[str, Any]] = None
+    if args.seed is not None:
+        try:
+            from evo_rhyme.repro import seed_everything
+
+            seed_info = seed_everything(int(args.seed))
+        except Exception:
+            seed_info = {"seed": int(args.seed), "error": "seed_everything_failed"}
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -413,6 +445,7 @@ def main() -> None:
                         "num_lines": args.num_lines,
                         "init": args.init,
                         "emitter_strategy": args.emitter_strategy,
+                        **({"seed_info": seed_info} if seed_info else {}),
                     },
                 )
                 if run_id > 0:
@@ -517,6 +550,9 @@ def main() -> None:
         "backend": args.proposer_backend,
         **({"api_base": args.api_base} if args.api_base else {}),
     }
+    if seed_info:
+        # Used by VerseQDRunLogger.write_config for run-dir config.json.
+        setattr(qd_config, "seed_info", seed_info)
 
     # ---- Initial population -------------------------------------------
     if args.init == "lm":
@@ -733,6 +769,7 @@ def main() -> None:
     top = archive.top_k(50)
     results = {
         "config": {
+            **({"seed_info": seed_info} if seed_info else {}),
             "theme": args.theme,
             "population": args.population,
             "generations": args.generations,

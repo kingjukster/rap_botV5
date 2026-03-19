@@ -43,6 +43,8 @@ class Settings:
     stage3: Dict[str, Any]
     critic: Dict[str, Any]
     stats: Dict[str, Any]
+    evolution: Dict[str, Any]
+    qd: Dict[str, Any]
 
     def as_dict(self) -> Dict[str, Any]:
         """
@@ -67,6 +69,8 @@ class Settings:
             "stage3": _stringify_section(self.stage3),
             "critic": _stringify_section(self.critic),
             "stats": _stringify_section(self.stats),
+            "evolution": dict(self.evolution),
+            "qd": dict(self.qd),
         }
 
 
@@ -150,6 +154,78 @@ STATS_SECTION_DEFAULTS: Dict[str, Any] = {
     "histogram_path": "data/stats/stage3_histograms.json",
 }
 
+EVOLUTION_SECTION_DEFAULTS: Dict[str, Any] = {
+    # scripts/run_couplet_evolution.py defaults
+    "population": 100,
+    "generations": 10,
+    "elites": 5,
+    "immigrants": 10,
+    "init": "mixed",  # mixed | random | template
+    "use_embeddings": False,
+    "embedding_weight": 0.5,
+    "multiobjective": False,
+    "use_niching": False,
+    "min_fluency": None,
+    "min_semantic": None,
+    "min_lexical": 0.0,
+    "min_ngram": None,
+    "style_weight": 0.1,
+    "require_theme": False,
+    "lm_fluency": False,
+    "lm_fluency_weight": 0.5,
+}
+
+QD_SECTION_DEFAULTS: Dict[str, Any] = {
+    # scripts/run_verse_qd.py defaults
+    "population": 100,
+    "generations": 100,
+    "scheme": "AABB",
+    "num_lines": 4,
+    "elites": 5,
+    "immigrants": 20,
+    "lm_budget": 20,
+    "init": "lm",  # mixed | random | template | lm
+    "use_embeddings": False,
+    "embedding_weight": 0.40,
+    "proposer_model": "gpt-4.1-nano",
+    "proposer_backend": "openai",
+    "min_fluency": 0.3,
+    "min_semantic": 0.0,
+    "line_pop": 1500,
+    "line_gens": 3,
+    "line_seeds": 80,
+    "line_lm_budget": 15,
+    "compose_ratio": 0.5,
+    "emitter_strategy": "multi",
+    "novelty_weight": 0.3,
+    "schemes": "AABB,ABAB,ABBA,ABCB",
+    "archive_mode": "compact_style",
+    "curriculum_switch_gen": 20,
+    "fast_mode": True,
+    "graph_top_k": 24,
+    "expensive_top_k": 40,
+    "graph_edge_mode": "phonetic",
+    "style_genome": True,
+    "prompt_genome": True,
+    "prompt_llm_fraction": 0.2,
+    "enable_controllability_probes": False,
+    "coverage_target": None,
+}
+
+# Aliases: YAML/evolution.yaml keys -> canonical CLI keys (evolution/qd sections)
+EVOLUTION_SECTION_ALIASES: Dict[str, str] = {
+    "population_size": "population",
+    "num_elites": "elites",
+    "random_immigrants_per_gen": "immigrants",
+    "population_init": "init",
+}
+QD_SECTION_ALIASES: Dict[str, str] = {
+    "population_size": "population",
+    "num_elites": "elites",
+    "random_immigrants_per_gen": "immigrants",
+    "population_init": "init",
+}
+
 GEN_SECTION_PATHS = {"log_json"}
 STAGE3_SECTION_PATHS = {"seed_manifest"}
 CRITIC_SECTION_PATHS = {"manifest_path"}
@@ -182,9 +258,13 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
 
     cfg_path = config_path or os.environ.get("RAPBOT_CONFIG")
     if not cfg_path:
-        default_cfg = base_dir / "config" / "rapbot.yaml"
-        if default_cfg.exists():
-            cfg_path = str(default_cfg)
+        # Prefer evolution.yaml as canonical for evolution/QD; fall back to rapbot.yaml
+        evolution_cfg = base_dir / "config" / "evolution.yaml"
+        rapbot_cfg = base_dir / "config" / "rapbot.yaml"
+        if evolution_cfg.exists():
+            cfg_path = str(evolution_cfg)
+        elif rapbot_cfg.exists():
+            cfg_path = str(rapbot_cfg)
     if cfg_path:
         cfg_file = _resolve_path(cfg_path, base_dir)
         if not cfg_file.exists():
@@ -203,10 +283,12 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
         if value is None:
             value = cfg_data.get(field)
         if value is None:
-            # Also check nested "paths" dict for convenience
+            # Also check nested "paths" dict for convenience (including YAML alias elite_corpus)
             paths_section = cfg_data.get("paths") if isinstance(cfg_data.get("paths"), dict) else {}
             if paths_section:
                 value = paths_section.get(field)
+                if value is None and field == "elite_corpus_path":
+                    value = paths_section.get("elite_corpus")
         if value is None:
             value = default_value
 
@@ -243,6 +325,22 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
         base_dir,
         STATS_SECTION_PATHS,
     )
+    evolution_defaults = _resolve_section(
+        "evolution",
+        EVOLUTION_SECTION_DEFAULTS,
+        cfg_data,
+        base_dir,
+        None,
+        section_aliases=EVOLUTION_SECTION_ALIASES,
+    )
+    qd_defaults = _resolve_section(
+        "qd",
+        QD_SECTION_DEFAULTS,
+        cfg_data,
+        base_dir,
+        None,
+        section_aliases=QD_SECTION_ALIASES,
+    )
 
     return Settings(
         base_model_name=str(resolved["base_model_name"]),
@@ -263,7 +361,19 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
         stage3=stage3_defaults,
         critic=critic_defaults,
         stats=stats_defaults,
+        evolution=evolution_defaults,
+        qd=qd_defaults,
     )
+
+
+def get_evolution_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Canonical defaults for couplet evolution CLI."""
+    return dict(load_settings(config_path=config_path).evolution)
+
+
+def get_qd_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Canonical defaults for QD verse evolution CLI."""
+    return dict(load_settings(config_path=config_path).qd)
 
 
 def _repo_root() -> Path:
@@ -303,8 +413,16 @@ def _resolve_section(
     cfg_data: Dict[str, Any],
     base_dir: Path,
     path_keys: Optional[set[str]] = None,
+    section_aliases: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     section = cfg_data.get(name) if isinstance(cfg_data.get(name), dict) else {}
+    # Normalize file section keys to canonical names (e.g. population_size -> population)
+    if section and section_aliases:
+        normalized: Dict[str, Any] = {}
+        for k, v in section.items():
+            canonical = section_aliases.get(k, k)
+            normalized[canonical] = v
+        section = normalized
     merged: Dict[str, Any] = {**defaults, **(section or {})}
     if path_keys:
         for key in path_keys:
