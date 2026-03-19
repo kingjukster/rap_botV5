@@ -39,6 +39,15 @@ def test_get_qd_defaults_returns_dict_with_canonical_keys():
     assert d["scheme"] in ("AABB", "ABAB", "ABBA", "AAAA", "ABCB", "AABA", None)
 
 
+def test_get_experiment_defaults_includes_policy_keys():
+    from config.settings import get_experiment_defaults
+
+    d = get_experiment_defaults()
+    assert d["policy_mode"] in ("static", "learned", "explore_mix")
+    assert isinstance(float(d["epsilon"]), float)
+    assert "learned_policy_path" in d
+
+
 def test_evolution_section_alias_population_size_to_population(tmp_path):
     """YAML key population_size is mapped to canonical key population."""
     cfg = tmp_path / "ev.yaml"

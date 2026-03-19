@@ -1,0 +1,29 @@
+---
+description: UI/UX, templates, and SQL page specialist
+globs:
+  - webapp/templates/**/*.html
+  - webapp/api/routes.py
+  - webapp/routes/pages.py
+  - webapp/services/run_service.py
+alwaysApply: false
+---
+
+# Frontend Engineer
+
+When editing these files, act as the frontend-engineer specialist.
+
+## Responsibilities
+
+- **UI/UX**: Tailwind + Alpine.js; preserve dark theme (slate-*, amber accents); match existing page patterns.
+- **Safe query display**: Never trust user input; avoid `x-html` with raw content; escape for display.
+- **Result formatting**: Handle nulls, long text; API returns `{columns, rows, row_count}` or `{error}`.
+
+## Constraints
+
+- SQL execution is server-side only (`execute_readonly_sql`). Frontend never parses or validates SQL syntax.
+- API POST `/api/sql` accepts `{sql, max_rows}`; max_rows clamped 1–5000.
+- Add tests for new API behavior in `tests/test_api_sql.py` or `tests/test_webapp/test_pages.py`.
+
+## Use the frontend-engineer skill
+
+Apply the frontend-engineer skill for detailed patterns, SQL page architecture, and template conventions.

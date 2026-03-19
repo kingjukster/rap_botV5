@@ -562,6 +562,56 @@ def evolve_verse_population(
     return population
 
 
+def evolve_from_seed_verse(
+    seed_lines: List[str],
+    generations: int = 5,
+    population_size: int = 25,
+    objective_weights: Optional[Dict[str, float]] = None,
+    scheme: str = "AABB",
+    prompt_keywords: Optional[Set[str]] = None,
+    edit_aggressiveness: float = 0.5,
+) -> List[VerseIndividual]:
+    """
+    Improve an existing verse by evolving from a seed. Population is built by
+    mutating the seed; no random immigrants. Returns population sorted by fitness (best first).
+
+    edit_aggressiveness: 0 = minimal mutation, 1 = more aggressive (not yet wired to mutation rate).
+    """
+    if len(seed_lines) != 4:
+        raise ValueError("seed_lines must be 4 lines")
+    seed = VerseIndividual(
+        lines=list(seed_lines),
+        features=None,
+        scores=None,
+        fitness=None,
+        metadata={"origin": "seed"},
+    )
+    mutation_config = {
+        "theme_keywords": list(prompt_keywords or []),
+        "min_syllables": 6,
+        "max_syllables": 18,
+    }
+    population: List[VerseIndividual] = [seed]
+    for _ in range(population_size - 1):
+        mutated = verse_mutate(seed, mutation_config, MUTATION_WEIGHTS, constraint_config=None)
+        population.append(mutated)
+    cfg = VerseEvolutionConfig(
+        population_size=population_size,
+        num_elites=min(3, population_size // 5),
+        random_immigrants_per_gen=0,
+        fitness_weights=objective_weights or VERSE_DEFAULT_WEIGHTS,
+        rhyme_scheme=scheme,
+        output_dir=None,
+    )
+    return evolve_verse_population(
+        population,
+        generations,
+        config=cfg,
+        prompt_keywords=prompt_keywords,
+        immigrant_generator=None,
+    )
+
+
 @dataclass
 class VerseRunLogger:
     """Write verse run artifacts to run_dir."""
@@ -649,21 +699,27 @@ class VerseRunLogger:
 
 @dataclass
 class VerseQDRunLogger:
-    """Write QD verse run artifacts to run_dir."""
+    """Write QD verse run artifacts to run_dir.
+    When run_dir is None but run_id is set, only DB persistence is performed
+    (used by control experiments with --db but without --runs-dir).
+    """
 
-    run_dir: Path
+    run_dir: Optional[Path] = None
     score_history: List[Dict[str, Any]] = field(default_factory=list)
     run_id: Optional[int] = None
 
     def __post_init__(self) -> None:
-        self.run_dir = Path(self.run_dir)
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        if self.run_dir is not None:
+            self.run_dir = Path(self.run_dir)
+            self.run_dir.mkdir(parents=True, exist_ok=True)
 
     def write_config(
         self,
         config: QDEvolutionConfig,
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
+        if self.run_dir is None:
+            return
         data: Dict[str, Any] = {
             "population_size": config.population_size,
             "num_generations": config.num_generations,
@@ -731,28 +787,27 @@ class VerseQDRunLogger:
                 logger.warning("DB log_generation failed: %s", e)
 
     def flush(self, archive: MAPElitesArchive) -> None:
-        csv_path = self.run_dir / "score_history.csv"
-        if self.score_history:
-            with csv_path.open("w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=sorted({k for row in self.score_history for k in row.keys()}),
-                )
-                writer.writeheader()
-                writer.writerows(self.score_history)
-
-        archive_path = self.run_dir / "archive.json"
-        with archive_path.open("w", encoding="utf-8") as f:
-            json.dump(archive.to_json(), f, indent=2)
-
-        top_path = self.run_dir / "top_candidates.json"
         top = archive.top_k(50)
-        candidates = [
-            {"lines": ind.lines, "fitness": ind.fitness, "scores": ind.scores}
-            for ind in top
-        ]
-        with top_path.open("w", encoding="utf-8") as f:
-            json.dump(candidates, f, indent=2)
+        if self.run_dir is not None:
+            csv_path = self.run_dir / "score_history.csv"
+            if self.score_history:
+                with csv_path.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=sorted({k for row in self.score_history for k in row.keys()}),
+                    )
+                    writer.writeheader()
+                    writer.writerows(self.score_history)
+            archive_path = self.run_dir / "archive.json"
+            with archive_path.open("w", encoding="utf-8") as f:
+                json.dump(archive.to_json(), f, indent=2)
+            top_path = self.run_dir / "top_candidates.json"
+            candidates = [
+                {"lines": ind.lines, "fitness": ind.fitness, "scores": ind.scores}
+                for ind in top
+            ]
+            with top_path.open("w", encoding="utf-8") as f:
+                json.dump(candidates, f, indent=2)
         if self.run_id is not None and self.run_id > 0:
             try:
                 from evo_rhyme import db as _db
@@ -816,6 +871,8 @@ def evolve_verse_qd(
         "min_syllables": config.min_syllables,
         "max_syllables": config.max_syllables,
     }
+    if theme_keywords:
+        constraint_config["prompt_keywords"] = list(theme_keywords)
     crossover_config: Dict[str, Any] = {}
 
     semantic_scorer: Optional[Any] = None
@@ -828,8 +885,9 @@ def evolve_verse_qd(
             logger.warning("Failed to load SiameseRhymeScorer: %s", e)
 
     run_logger: Optional[VerseQDRunLogger] = None
-    if config.output_dir:
-        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir), run_id=config.run_id)
+    if config.output_dir or (config.run_id is not None and config.run_id > 0):
+        run_dir = Path(config.output_dir) if config.output_dir else None
+        run_logger = VerseQDRunLogger(run_dir=run_dir, run_id=config.run_id)
         run_logger.write_config(config)
 
     dims = config.archive_dims
@@ -1270,8 +1328,10 @@ def evolve_verse_qd_emitters(
             logger.warning("Failed to load SiameseRhymeScorer: %s", e)
 
     run_logger = None
-    if config.output_dir:
-        run_logger = VerseQDRunLogger(run_dir=Path(config.output_dir), run_id=getattr(config, "run_id", None))
+    run_id = getattr(config, "run_id", None)
+    if config.output_dir or (run_id is not None and run_id > 0):
+        run_dir = Path(config.output_dir) if config.output_dir else None
+        run_logger = VerseQDRunLogger(run_dir=run_dir, run_id=run_id)
         run_logger.write_config(config)
 
     dims = config.archive_dims

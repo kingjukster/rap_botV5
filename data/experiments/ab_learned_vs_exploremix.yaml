@@ -1,0 +1,21 @@
+runner: couplet
+experiment_name: ab_learned_vs_exploremix
+description: exploration impact test learned vs explore_mix
+mode: single_control
+n_seeds_per_arm: 6
+run_timeout_seconds: 7200
+fixed_controls:
+  theme: pressure,mask,survival
+  population: 60
+  generations: 10
+  elites: 5
+  immigrants: 8
+  init: mixed
+treatments:
+  - arm_name: learned
+    controls:
+      policy_mode: learned
+  - arm_name: explore_mix
+    controls:
+      policy_mode: explore_mix
+      epsilon: 0.10

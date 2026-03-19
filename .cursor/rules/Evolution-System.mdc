@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+
+When modifying evolutionary code:
+- Do not break reproducibility
+- Ensure all randomness is seed-controlled
+- Preserve logging of runs, configs, and results
+- Avoid silent mutations (always log mutation type)

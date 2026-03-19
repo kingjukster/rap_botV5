@@ -34,11 +34,19 @@
         <p class="text-xl font-semibold text-red-400">{{ _by.get("failed", 0) }}</p>
     </div>
 </div>
-<div class="flex gap-2 mb-4">
+<div class="flex flex-wrap gap-2 mb-4 items-center">
+    {% if stale_marked is not none and stale_marked > 0 %}
+    <p class="text-emerald-400 text-sm">Marked {{ stale_marked }} stale run(s) as failed.</p>
+    {% endif %}
     <a href="/" class="px-3 py-1.5 rounded text-sm {% if not status_filter %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">All</a>
     <a href="/?status=running" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'running' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Running</a>
     <a href="/?status=completed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'completed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Completed</a>
     <a href="/?status=failed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'failed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Failed</a>
+    {% if _by.get("running", 0) > 0 %}
+    <form action="/mark-stale-runs" method="post" class="ml-auto">
+        <button type="submit" class="px-3 py-1.5 rounded text-sm border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200">Mark stale runs as failed</button>
+    </form>
+    {% endif %}
 </div>
 
 <div class="overflow-x-auto rounded-lg border border-slate-600">
@@ -72,7 +80,7 @@
                 </td>
                 <td class="px-4 py-3 text-slate-400">{{ r.num_generations or 0 }}</td>
                 <td class="px-4 py-3 text-slate-400">{{ "%.3f" | format(r.last_best_fitness) if r.last_best_fitness is not none else '—' }}</td>
-                <td class="px-4 py-3 text-slate-500">{{ r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else '—' }}</td>
+                <td class="px-4 py-3 text-slate-500">{{ r.created_at or '—' }}</td>
                 <td class="px-4 py-3">
                     <a href="/runs/{{ r.run_id }}" class="text-amber-400 hover:text-amber-300 font-medium">View</a>
                 </td>

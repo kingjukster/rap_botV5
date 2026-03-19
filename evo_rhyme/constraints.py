@@ -37,6 +37,15 @@ DEFAULT_REPETITION_STOPWORDS: Set[str] = frozenset({
 })
 
 
+# Known orphan phrases (Plan 2: template contamination) - lines from unrelated templates
+# that commonly appear mixed with empire/crown/flow verses.
+DEFAULT_ORPHAN_PHRASES: Set[str] = frozenset({
+    "shot in the leg",
+    "played around",
+    "caught a shot",
+})
+
+
 @dataclass
 class ConstraintConfig:
     """Configuration for constraint checks."""
@@ -51,6 +60,7 @@ class ConstraintConfig:
     )
     require_theme_presence: bool = False
     prompt_keywords: Optional[Set[str]] = None
+    orphan_phrases: Optional[Set[str]] = None  # Reject verses with these in theme-mismatched lines
 
 
 def _end_word(line: str) -> str:
@@ -229,6 +239,8 @@ def _resolve_config(config: Optional[Any]) -> ConstraintConfig:
             cfg.require_theme_presence = bool(config["require_theme_presence"])
         if "prompt_keywords" in config and config["prompt_keywords"]:
             cfg.prompt_keywords = set(w.lower() for w in config["prompt_keywords"])
+        if "orphan_phrases" in config and config["orphan_phrases"]:
+            cfg.orphan_phrases = set(config["orphan_phrases"])
         return cfg
     return ConstraintConfig()
 
@@ -441,6 +453,31 @@ def _check_verse_content_repetition(
     return None
 
 
+def _check_verse_orphan_lines(
+    individual: VerseIndividual,
+    config: ConstraintConfig,
+) -> Optional[str]:
+    """Reject verses with orphan lines (Plan 2: template contamination).
+
+    When theme_keywords exist and orphan_phrases are set: if a line contains an
+    orphan phrase but has no theme keyword, reject (mixed-topic contamination).
+    """
+    kw = config.prompt_keywords
+    phrases = config.orphan_phrases if config.orphan_phrases is not None else DEFAULT_ORPHAN_PHRASES
+    if not kw or not phrases:
+        return None
+    for i, line in enumerate(individual.lines):
+        line_lower = line.lower()
+        line_words = set(re.findall(r"[A-Za-z']+", line_lower))
+        has_theme = bool(line_words & kw)
+        if has_theme:
+            continue
+        for phrase in phrases:
+            if phrase in line_lower:
+                return f"line{i+1}: orphan phrase '{phrase}' with no theme keyword"
+    return None
+
+
 def _check_verse_garbled_lines(
     individual: VerseIndividual,
 ) -> Optional[str]:
@@ -522,6 +559,10 @@ def passes_verse_constraints(
         return False
 
     err = _check_verse_garbled_lines(individual)
+    if err:
+        return False
+
+    err = _check_verse_orphan_lines(individual, cfg)
     if err:
         return False
 

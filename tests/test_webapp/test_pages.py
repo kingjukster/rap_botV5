@@ -107,6 +107,10 @@ class _RunServiceStub:
     def get_score_cache_recent(self, *, limit=200, offset=0):
         return [{"text_hash": "abc", "candidate_type": "verse4", "scheme": "AABB", "updated_at": datetime(2024, 1, 1, 0, 0, 0)}]
 
+    def get_run_counts_by_status(self):
+        # Matches stub list_runs: 1 completed, 1 running
+        return {"total": 2, "by_status": {"running": 1, "completed": 1, "failed": 0}}
+
 
 def _create_app_with_stub(monkeypatch):
     app = FastAPI()
@@ -127,6 +131,7 @@ def _create_app_with_stub(monkeypatch):
     monkeypatch.setattr(pages, "get_run_lineage", stub.get_run_lineage)
     monkeypatch.setattr(pages, "get_run_seeds", stub.get_run_seeds)
     monkeypatch.setattr(pages, "get_score_cache_recent", stub.get_score_cache_recent)
+    monkeypatch.setattr(pages, "get_run_counts_by_status", stub.get_run_counts_by_status)
 
     return app, stub
 
@@ -297,4 +302,14 @@ def test_score_cache_page_returns_200(monkeypatch):
     resp = client.get("/score-cache")
     assert resp.status_code == 200
     assert "Score cache" in resp.text
+
+
+def test_sql_page_returns_200(monkeypatch):
+    """SQL page returns 200 and contains query form."""
+    app, _ = _create_app_with_stub(monkeypatch)
+    client = TestClient(app)
+    resp = client.get("/sql")
+    assert resp.status_code == 200
+    assert "SQL" in resp.text
+    assert "SELECT" in resp.text or "Run" in resp.text
 

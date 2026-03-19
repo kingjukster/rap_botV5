@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -78,6 +79,16 @@ def get_rewriter(config: Optional[Dict] = None) -> BarRewriter:
     global _REWRITER
     if _REWRITER is None:
         rewriter_cfg = RewriterConfig()
+        # Optional runtime overrides for quick model/backend switching.
+        env_model = os.environ.get("RAPBOT_REWRITER_MODEL")
+        env_backend = os.environ.get("RAPBOT_REWRITER_BACKEND")
+        env_api_base = os.environ.get("RAPBOT_REWRITER_API_BASE")
+        if env_model:
+            rewriter_cfg.model = env_model
+        if env_backend:
+            rewriter_cfg.backend = env_backend
+        if env_api_base:
+            rewriter_cfg.api_base = env_api_base
         if config and isinstance(config, dict) and "rewriter" in config:
             rc = config["rewriter"]
             for k, v in rc.items():

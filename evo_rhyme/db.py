@@ -8,6 +8,7 @@ and return None or -1 on failure.
 
 from __future__ import annotations
 
+import decimal
 import json
 import logging
 import os
@@ -29,6 +30,55 @@ logger = logging.getLogger(__name__)
 _DB_CONFIG = None
 _POOL_NAME = "rapbot_pool"
 _POOL_SIZE = 5
+
+
+def ensure_experiment_schema() -> None:
+    """
+    Ensure experiment tables/columns exist (idempotent).
+    Safe to call repeatedly; used by experiment runner paths.
+    """
+
+    def _run(conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS experiments (
+                    experiment_id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    description VARCHAR(1024) DEFAULT NULL,
+                    mode VARCHAR(64) DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS experiment_arms (
+                    arm_id INT AUTO_INCREMENT PRIMARY KEY,
+                    experiment_id INT NOT NULL,
+                    arm_name VARCHAR(255) NOT NULL,
+                    control_snapshot JSON DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id) ON DELETE CASCADE,
+                    INDEX idx_experiment_id (experiment_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            # runs.experiment_id / runs.arm_id (ignore duplicate-column errors)
+            for col in ("experiment_id", "arm_id"):
+                try:
+                    cur.execute(f"ALTER TABLE runs ADD COLUMN {col} INT NULL DEFAULT NULL")
+                except Exception as e:
+                    if "Duplicate column" in str(e):
+                        pass
+                    else:
+                        raise
+        finally:
+            cur.close()
+
+    _execute(_run, default=None, commit=True)
 
 
 def _get_config() -> Dict[str, Any]:
@@ -112,6 +162,58 @@ def _execute(
             return default
 
 
+def execute_readonly_sql(sql: str, max_rows: int = 1000) -> Dict[str, Any]:
+    """
+    Execute a read-only SQL query. Only SELECT is allowed.
+    Returns {columns, rows, row_count} or {error}.
+    """
+    import datetime as _dt
+
+    stripped = sql.strip().rstrip(";")
+    if ";" in stripped:
+        return {"error": "Multiple statements are not allowed."}
+    if not stripped.lower().startswith("select"):
+        return {"error": "Only SELECT queries are allowed."}
+
+    logger.info(
+        "SQL executed: %s",
+        (stripped[:200] + "...") if len(stripped) > 200 else stripped,
+    )
+
+    def _make_row_safe(val: Any) -> Any:
+        if val is None:
+            return None
+        if isinstance(val, (_dt.datetime, _dt.date)):
+            return val.isoformat()
+        if isinstance(val, (decimal.Decimal,)):
+            return float(val)
+        if isinstance(val, (bytes, bytearray)):
+            return val.decode("utf-8", errors="replace")
+        return val
+
+    def _run(conn: Any) -> Dict[str, Any]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            try:
+                cur.execute("SET SESSION max_execution_time = 5000")
+            except Exception:
+                pass
+            cur.execute(stripped)
+            columns = list(cur.column_names) if cur.column_names else []
+            rows_raw = cur.fetchmany(max_rows)
+            rows = []
+            for r in rows_raw:
+                rows.append({k: _make_row_safe(v) for k, v in r.items()})
+            return {"columns": columns, "rows": rows, "row_count": len(rows)}
+        finally:
+            cur.close()
+
+    result = _execute(_run, default=None)
+    if result is None:
+        return {"error": "Database operation failed. Check logs for details."}
+    return result
+
+
 def get_connection():
     """
     Return a MySQL connection or None if DB disabled or connection fails.
@@ -185,20 +287,41 @@ def score_cache_put(
     _execute(_run, default=None, commit=True)
 
 
-def insert_run(script_name: str, theme_keywords: str, config_json: Dict[str, Any]) -> int:
+def insert_run(
+    script_name: str,
+    theme_keywords: str,
+    config_json: Dict[str, Any],
+    *,
+    experiment_id: Optional[int] = None,
+    arm_id: Optional[int] = None,
+) -> int:
     """
     Insert a new run and return run_id, or -1 on failure.
     theme_keywords: comma-separated or JSON string.
-    config_json: dict (will be json.dumps'd).
+    config_json: dict (will be json.dumps'd). Include full control_snapshot for experiment analysis.
+    experiment_id, arm_id: optional linkage to experiment/arm when run by control experiment runner.
     """
 
     def _run(conn: Any) -> int:
         cur = conn.cursor()
         try:
-            cur.execute(
-                "INSERT INTO runs (script_name, theme_keywords, config_json, status) VALUES (%s, %s, %s, 'running')",
-                (script_name, theme_keywords, json.dumps(config_json)),
-            )
+            # Prefer extended schema (experiment_id, arm_id) when columns exist
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO runs (script_name, theme_keywords, config_json, status, experiment_id, arm_id)
+                    VALUES (%s, %s, %s, 'running', %s, %s)
+                    """,
+                    (script_name, theme_keywords, json.dumps(config_json), experiment_id, arm_id),
+                )
+            except Exception as e:
+                if "Unknown column" in str(e):
+                    cur.execute(
+                        "INSERT INTO runs (script_name, theme_keywords, config_json, status) VALUES (%s, %s, %s, 'running')",
+                        (script_name, theme_keywords, json.dumps(config_json)),
+                    )
+                else:
+                    raise
             run_id = cur.lastrowid
             return run_id if run_id else -1
         finally:
@@ -207,17 +330,241 @@ def insert_run(script_name: str, theme_keywords: str, config_json: Dict[str, Any
     return _execute(_run, default=-1, commit=True)
 
 
-def update_run_status(run_id: int, status: str) -> None:
-    """Update run status (e.g. 'running', 'completed', 'failed')."""
+def insert_experiment(name: str, description: Optional[str] = None, mode: Optional[str] = None) -> int:
+    """Insert an experiment and return experiment_id, or -1 on failure."""
+    ensure_experiment_schema()
+
+    def _run(conn: Any) -> int:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO experiments (name, description, mode) VALUES (%s, %s, %s)",
+                (name, description or None, mode or None),
+            )
+            eid = cur.lastrowid
+            return int(eid) if eid else -1
+        finally:
+            cur.close()
+
+    return _execute(_run, default=-1, commit=True)
+
+
+def insert_experiment_arm(
+    experiment_id: int,
+    arm_name: str,
+    control_snapshot: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Insert an experiment arm and return arm_id, or -1 on failure."""
+    ensure_experiment_schema()
+
+    def _run(conn: Any) -> int:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO experiment_arms (experiment_id, arm_name, control_snapshot) VALUES (%s, %s, %s)",
+                (experiment_id, arm_name, json.dumps(control_snapshot) if control_snapshot else None),
+            )
+            aid = cur.lastrowid
+            return int(aid) if aid else -1
+        finally:
+            cur.close()
+
+    return _execute(_run, default=-1, commit=True)
+
+
+def list_experiments(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """List experiments, most recent first."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT experiment_id, name, description, mode, created_at
+                FROM experiments
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def get_experiment(experiment_id: int) -> Optional[Dict[str, Any]]:
+    """Get a single experiment by id."""
+
+    def _run(conn: Any) -> Optional[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT experiment_id, name, description, mode, created_at FROM experiments WHERE experiment_id = %s",
+                (experiment_id,),
+            )
+            r = cur.fetchone()
+            return dict(r) if r else None
+        finally:
+            cur.close()
+
+    return _execute(_run, default=None)
+
+
+def list_experiment_arms(experiment_id: int) -> List[Dict[str, Any]]:
+    """List arms for an experiment."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT arm_id, experiment_id, arm_name, control_snapshot, created_at
+                FROM experiment_arms
+                WHERE experiment_id = %s
+                ORDER BY arm_id ASC
+                """,
+                (experiment_id,),
+            )
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                if d.get("control_snapshot") and isinstance(d["control_snapshot"], str):
+                    try:
+                        d["control_snapshot"] = json.loads(d["control_snapshot"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_runs_for_experiment(
+    experiment_id: int,
+    arm_id: Optional[int] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """List runs for an experiment, optionally filtered by arm_id. Requires runs.experiment_id column."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            try:
+                if arm_id is not None:
+                    cur.execute(
+                        """
+                        SELECT run_id, script_name, theme_keywords, config_json, status, experiment_id, arm_id, created_at, updated_at
+                        FROM runs
+                        WHERE experiment_id = %s AND arm_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (experiment_id, arm_id, limit, offset),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT run_id, script_name, theme_keywords, config_json, status, experiment_id, arm_id, created_at, updated_at
+                        FROM runs
+                        WHERE experiment_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (experiment_id, limit, offset),
+                    )
+            except Exception as e:
+                if "Unknown column" in str(e):
+                    # Fallback when experiment_id/arm_id columns don't exist
+                    return []
+                raise
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                if d.get("config_json"):
+                    try:
+                        d["config_json"] = json.loads(d["config_json"]) if isinstance(d["config_json"], str) else d["config_json"]
+                    except (json.JSONDecodeError, TypeError):
+                        d["config_json"] = {}
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def update_run_status(run_id: int, status: str, failure_reason: Optional[str] = None) -> None:
+    """Update run status (e.g. 'running', 'completed', 'failed'). Optionally store failure_reason."""
 
     def _run(conn: Any) -> None:
         cur = conn.cursor()
         try:
-            cur.execute("UPDATE runs SET status = %s WHERE run_id = %s", (status, run_id))
+            _ensure_failure_reason_column(conn)
+            if failure_reason is not None and status == "failed":
+                cur.execute(
+                    "UPDATE runs SET status = %s, failure_reason = %s WHERE run_id = %s",
+                    (status, failure_reason[:4096] if len(failure_reason) > 4096 else failure_reason, run_id),
+                )
+            else:
+                cur.execute("UPDATE runs SET status = %s WHERE run_id = %s", (status, run_id))
         finally:
             cur.close()
 
     _execute(_run, default=None, commit=True)
+
+
+def _ensure_failure_reason_column(conn: Any) -> None:
+    """Ensure runs.failure_reason column exists (idempotent)."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "ALTER TABLE runs ADD COLUMN failure_reason VARCHAR(4096) DEFAULT NULL"
+        )
+    except Exception as e:
+        if "Duplicate column" in str(e):
+            pass
+        else:
+            raise
+    finally:
+        cur.close()
+
+
+def mark_stale_runs_failed(minutes_idle: int = 30) -> int:
+    """
+    Mark runs as 'failed' if they have status='running' and no activity for at least minutes_idle.
+    Activity = run.created_at (if no generations) or max(generations.created_at).
+    Returns the number of runs updated.
+    """
+
+    def _run(conn: Any) -> int:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE runs r
+                LEFT JOIN (
+                    SELECT run_id, MAX(created_at) AS last_gen_at
+                    FROM generations
+                    GROUP BY run_id
+                ) g ON r.run_id = g.run_id
+                SET r.status = 'failed'
+                WHERE r.status = 'running'
+                AND COALESCE(g.last_gen_at, r.created_at) < DATE_SUB(NOW(), INTERVAL %s MINUTE)
+                """,
+                (minutes_idle,),
+            )
+            return cur.rowcount
+        finally:
+            cur.close()
+
+    return _execute(_run, default=0, commit=True) or 0
 
 
 def insert_generation(
@@ -417,15 +764,16 @@ def list_runs(
     offset: int = 0,
     status_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """List runs with metadata. Returns list of dicts with run_id, script_name, theme_keywords, config_json, status, created_at, updated_at."""
+    """List runs with metadata. Returns list of dicts with run_id, script_name, theme_keywords, config_json, status, created_at, updated_at, failure_reason."""
 
     def _run(conn: Any) -> List[Dict[str, Any]]:
+        _ensure_failure_reason_column(conn)
         cur = conn.cursor(dictionary=True)
         try:
             if status_filter:
                 cur.execute(
                     """
-                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at
+                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at, failure_reason
                     FROM runs
                     WHERE status = %s
                     ORDER BY created_at DESC
@@ -436,7 +784,7 @@ def list_runs(
             else:
                 cur.execute(
                     """
-                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at
+                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at, failure_reason
                     FROM runs
                     ORDER BY created_at DESC
                     LIMIT %s OFFSET %s
@@ -464,10 +812,11 @@ def get_run(run_id: int) -> Optional[Dict[str, Any]]:
     """Get a single run by run_id."""
 
     def _run(conn: Any) -> Optional[Dict[str, Any]]:
+        _ensure_failure_reason_column(conn)
         cur = conn.cursor(dictionary=True)
         try:
             cur.execute(
-                "SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at FROM runs WHERE run_id = %s",
+                "SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at, failure_reason FROM runs WHERE run_id = %s",
                 (run_id,),
             )
             r = cur.fetchone()
@@ -652,6 +1001,33 @@ def count_runs(status_filter: Optional[str] = None) -> int:
             cur.close()
 
     return _execute(_run, default=0)
+
+
+def count_runs_by_status() -> Dict[str, Any]:
+    """Return total count and counts per status (running, completed, failed) across all runs."""
+
+    def _run(conn: Any) -> Dict[str, Any]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT status, COUNT(*) AS cnt FROM runs GROUP BY status
+                """
+            )
+            rows = cur.fetchall()
+            by_status = {"running": 0, "completed": 0, "failed": 0}
+            total = 0
+            for r in rows:
+                s = (r.get("status") or "").lower()
+                cnt = int(r.get("cnt") or 0)
+                total += cnt
+                if s in by_status:
+                    by_status[s] = cnt
+            return {"total": total, "by_status": by_status}
+        finally:
+            cur.close()
+
+    return _execute(_run, default={"total": 0, "by_status": {"running": 0, "completed": 0, "failed": 0}})
 
 
 @dataclass(frozen=True)

@@ -291,19 +291,25 @@ def _select_elites_niching(
 
 @dataclass
 class EvolutionRunLogger:
-    """Write run artifacts to run_dir (e.g. data/evo_rhyme/runs/{timestamp}/)."""
+    """Write run artifacts to run_dir (e.g. data/evo_rhyme/runs/{timestamp}/).
+    When run_dir is None but run_id is set, only DB persistence is performed
+    (used by control experiments with --db but without --runs-dir).
+    """
 
-    run_dir: Path
+    run_dir: Optional[Path] = None
     score_history: List[Dict[str, Any]] = field(default_factory=list)
     top_candidates_by_gen: Dict[int, List[Dict[str, Any]]] = field(default_factory=dict)
     run_id: Optional[int] = None  # DB run ID for persistence when enabled
 
     def __post_init__(self) -> None:
-        self.run_dir = Path(self.run_dir)
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        if self.run_dir is not None:
+            self.run_dir = Path(self.run_dir)
+            self.run_dir.mkdir(parents=True, exist_ok=True)
 
     def write_config(self, config: EvolutionConfig, extra: Optional[Dict[str, Any]] = None) -> None:
-        """Write config.json to run dir."""
+        """Write config.json to run dir (no-op when run_dir is None)."""
+        if self.run_dir is None:
+            return
         data: Dict[str, Any] = {
             "population_size": config.population_size,
             "num_elites": config.num_elites,
@@ -375,7 +381,9 @@ class EvolutionRunLogger:
                 logger.warning("DB log_generation failed: %s", e)
 
     def flush(self) -> None:
-        """Write score_history.csv and top_candidates.json to run dir."""
+        """Write score_history.csv and top_candidates.json to run dir (no-op when run_dir is None)."""
+        if self.run_dir is None:
+            return
         # score_history.csv
         csv_path = self.run_dir / "score_history.csv"
         if self.score_history:
@@ -441,7 +449,7 @@ def evolve(
     theme_string = " ".join(prompt_keywords) if prompt_keywords else None
 
     run_logger: Optional[EvolutionRunLogger] = None
-    if cfg.output_dir:
+    if cfg.output_dir or (cfg.run_id is not None and cfg.run_id > 0):
         run_logger = EvolutionRunLogger(run_dir=cfg.output_dir, run_id=cfg.run_id)
         run_logger.write_config(
             cfg,
@@ -699,7 +707,7 @@ def evolve_multiobjective(
     theme_string = " ".join(prompt_keywords) if prompt_keywords else None
 
     run_logger: Optional[EvolutionRunLogger] = None
-    if cfg.output_dir:
+    if cfg.output_dir or (cfg.run_id is not None and cfg.run_id > 0):
         run_logger = EvolutionRunLogger(run_dir=cfg.output_dir, run_id=cfg.run_id)
         run_logger.write_config(
             cfg,

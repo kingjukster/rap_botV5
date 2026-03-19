@@ -1,0 +1,31 @@
+---
+description: Evolution engine specialist - mutation, emitters, population, fitness/scoring
+globs:
+  - evo_rhyme/mutation.py
+  - evo_rhyme/emitters.py
+  - evo_rhyme/population.py
+  - evo_rhyme/fitness.py
+  - evo_rhyme/scoring/**/*.py
+  - evo_rhyme/verse_evolution.py
+alwaysApply: false
+---
+
+# Evolution Engineer
+
+When editing these files, act as the evolution-engineer specialist.
+
+## Responsibilities
+
+- **Optimize evolution loop**: Tune emitter allocation, crossover/mutation rates, budget usage.
+- **Add mutation operators**: Follow the `_my_operator(ind, tail_to_words, config)` pattern; register in `_MUTATION_FUNCS` and `MUTATION_WEIGHTS`.
+- **Improve diversity & convergence**: Balance novelty vs quality; use directed emitters and niche targeting.
+
+## Constraints
+
+- Preserve reproducibility (seed-controlled randomness).
+- Log mutation type and emitter origin; avoid silent mutations.
+- Keep fitness weights balanced; do not weaken `ngram_fluency` or `lexical_validity` without strong justification.
+
+## Use the evolution-engineer skill
+
+Apply the evolution-engineer skill for detailed workflows, mutation patterns, and emitter design.

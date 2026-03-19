@@ -1,0 +1,20 @@
+runner: couplet
+experiment_name: sanity_static_then_learned
+description: sanity wiring check for static then learned policy mode
+mode: single_control
+n_seeds_per_arm: 2
+run_timeout_seconds: 7200
+fixed_controls:
+  theme: pressure,mask,survival
+  population: 40
+  generations: 8
+  elites: 5
+  immigrants: 6
+  init: mixed
+treatments:
+  - arm_name: static
+    controls:
+      policy_mode: static
+  - arm_name: learned
+    controls:
+      policy_mode: learned

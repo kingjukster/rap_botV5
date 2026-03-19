@@ -154,7 +154,57 @@ CREATE TABLE IF NOT EXISTS artifacts (
     INDEX idx_kind (kind)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """,
+    # experiments: experiment metadata for causal control runs
+    """
+CREATE TABLE IF NOT EXISTS experiments (
+    experiment_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description VARCHAR(1024) DEFAULT NULL,
+    mode VARCHAR(64) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""",
+    # experiment_arms: one row per arm (control configuration)
+    """
+CREATE TABLE IF NOT EXISTS experiment_arms (
+    arm_id INT AUTO_INCREMENT PRIMARY KEY,
+    experiment_id INT NOT NULL,
+    arm_name VARCHAR(255) NOT NULL,
+    control_snapshot JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id) ON DELETE CASCADE,
+    INDEX idx_experiment_id (experiment_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""",
 ]
+
+
+def _add_runs_experiment_columns(cur) -> None:
+    """Add experiment_id and arm_id to runs if not present (idempotent)."""
+    for col in ("experiment_id", "arm_id"):
+        try:
+            cur.execute(
+                f"ALTER TABLE runs ADD COLUMN {col} INT NULL DEFAULT NULL",
+            )
+        except mysql.connector.Error as e:
+            if "Duplicate column" in str(e):
+                pass
+            else:
+                raise
+
+
+def _add_runs_failure_reason(cur) -> None:
+    """Add failure_reason to runs if not present (idempotent)."""
+    try:
+        cur.execute(
+            "ALTER TABLE runs ADD COLUMN failure_reason VARCHAR(4096) DEFAULT NULL",
+        )
+    except mysql.connector.Error as e:
+        if "Duplicate column" in str(e):
+            pass
+        else:
+            raise
 
 
 def main() -> int:
@@ -188,6 +238,9 @@ def main() -> int:
             stmt = stmt.strip()
             if stmt:
                 cur.execute(stmt)
+
+        _add_runs_experiment_columns(cur)
+        _add_runs_failure_reason(cur)
 
         conn.commit()
         cur.close()

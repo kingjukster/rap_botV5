@@ -1,0 +1,10 @@
+---
+alwaysApply: true
+---
+
+Always:
+- Prefer modular, testable functions
+- Avoid large monolithic scripts
+- Follow separation of concerns (data, evolution, scoring, logging)
+- Add logging for all long-running processes
+- Avoid duplicate logic

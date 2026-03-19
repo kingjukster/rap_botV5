@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+
+- Any new feature must include at least one test
+- Prefer small unit tests over large integration tests

@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 ALLOWED_SCHEMES = ["AABB", "ABAB", "ABBA", "ABCB", "AABA", "AAAA"]
 
 
+def _constraint_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build constraint config with optional prompt_keywords for orphan check (Plan 2)."""
+    cc = {
+        "min_syllables": config.get("min_syllables", 6),
+        "max_syllables": config.get("max_syllables", 18),
+    }
+    theme_kw = config.get("theme_keywords", [])
+    if theme_kw:
+        cc["prompt_keywords"] = list(theme_kw)
+    return cc
+
+
 @dataclass
 class EmitResult:
     """Result of an emitter batch."""
@@ -205,10 +217,7 @@ class MutationEmitter(BaseEmitter):
             "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
             "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
         }
-        constraint_config = {
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-        }
+        constraint_config = _constraint_config(self.config)
         crossover_rate = self.config.get("crossover_rate", 0.5)
 
         candidates = []
@@ -327,10 +336,7 @@ class DirectedMutationEmitter(BaseEmitter):
             "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
             "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
         }
-        constraint_config = {
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-        }
+        constraint_config = _constraint_config(self.config)
         crossover_rate = self.config.get("crossover_rate", 0.5)
         weights = self._focused_weights(MUTATION_WEIGHTS)
 
@@ -488,10 +494,7 @@ class NicheTargetingEmitter(BaseEmitter):
             "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
             "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
         }
-        constraint_config = {
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-        }
+        constraint_config = _constraint_config(self.config)
 
         candidates = []
         targets_tried = 0
@@ -518,6 +521,9 @@ class NicheTargetingEmitter(BaseEmitter):
                     "min_syllables": hints["target_syllables"][0],
                     "max_syllables": hints["target_syllables"][1],
                 }
+                theme_kw = self.config.get("theme_keywords", [])
+                if theme_kw:
+                    constraint_config_local["prompt_keywords"] = list(theme_kw)
             else:
                 constraint_config_local = constraint_config
 
@@ -594,10 +600,7 @@ class RepairEmitter(BaseEmitter):
             "min_syllables": self.config.get("min_syllables", 6),
             "max_syllables": self.config.get("max_syllables", 18),
         }
-        constraint_config = {
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-        }
+        constraint_config = _constraint_config(self.config)
 
         candidates = []
         to_repair = self._broken_pool[:batch_size]

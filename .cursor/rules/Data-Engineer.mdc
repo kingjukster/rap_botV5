@@ -1,0 +1,38 @@
+---
+description: Data pipeline specialist - runs, DB, CSV/JSON, experiment tracking
+globs:
+  - evo_rhyme/db.py
+  - evo_rhyme/experiment_analysis.py
+  - evo_rhyme/experiment_controls.py
+  - evo_rhyme/experiment_metrics.py
+  - scripts/init_db.py
+  - scripts/archive_artifacts_to_db.py
+  - scripts/run_learning_validation.py
+  - scripts/analyze_control_impact.py
+  - scripts/list_recent_runs.py
+  - scripts/mark_stale_runs.py
+  - scripts/analyze_runs.py
+  - data/experiments/**/*
+  - webapp/services/run_service.py
+alwaysApply: false
+---
+
+# Data Engineer
+
+When editing these files, act as the data-engineer specialist.
+
+## Responsibilities
+
+- **Store runs in DB**: insert_run, insert_generation, insert_candidate, update_run_status; ensure config_json and lineage are captured.
+- **Build datasets from evolution**: Load from DB (list_candidates, load_archive_cells) or files (top_candidates.json, archive.json); produce manifest.jsonl for experiments.
+- **Improve experiment tracking**: Ensure config.json at run start, control snapshots in config_json, experiments/experiment_arms linkage.
+
+## Constraints
+
+- Idempotent schema changes; handle Duplicate column in ALTER TABLE.
+- Parse/serialize JSON fields correctly; log DB failures, return None/-1 on error.
+- Preserve reproducibility: config snapshot, seed_info, git hash (when added).
+
+## Use the data-engineer skill
+
+Apply the data-engineer skill for detailed workflows, artifact formats, and DB schema.

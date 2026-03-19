@@ -783,6 +783,10 @@ def _repeated_shell_penalty(
 # Verse fitness (4-line)
 # ---------------------------------------------------------------------------
 
+# Plan 2 (template contamination): coherence 0.18->0.22, template_penalty -0.15->-0.25
+# Plan 5 (2026-03-19): rebalance LM fluency vs coherence/novelty. Top verses had fluency 31–40%,
+# coherence 23%, novelty 3–9%. Increased coherence +0.04, novelty +0.05; decreased lm_fluency -0.04,
+# fluency -0.02, flow_continuity_score -0.03. See data/experiments/weight_rebalance_log.md.
 VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "rhyme_scheme_score": 0.15,
     "internal_rhyme": 0.07,
@@ -793,14 +797,14 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "rhyme_graph_cluster_coeff": 0.04,
     "rhyme_graph_chain_length": 0.04,
     "syllable_balance": 0.05,
-    "fluency": 0.08,
-    "lm_fluency": 0.12,
+    "fluency": 0.06,  # Plan 5: was 0.08
+    "lm_fluency": 0.08,  # Plan 5: was 0.12
     "semantic": 0.08,
     "lexical_validity": 0.06,
-    "coherence": 0.18,
+    "coherence": 0.26,  # Plan 5: was 0.22 (Plan 2: was 0.18)
     "punchline": 0.08,
     "identical_line_penalty": -0.40,
-    "template_penalty": -0.15,
+    "template_penalty": -0.25,  # stronger penalty for rigid templates
     "repetition_penalty": -0.12,
     "near_duplicate_penalty": -0.30,
     "filler_line_penalty": -0.30,
@@ -810,12 +814,12 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "cliche_penalty": -0.25,
     "structural_repetition_penalty": -0.25,
     "cross_verse_repetition_penalty": -0.20,
-    "novelty": 0.25,
+    "novelty": 0.30,  # Plan 5: was 0.25
     "flow_alignment": 0.10,
     # Beat-fit / performability (DP alignment against 16-slot bar grid).
     # Normalized to [0,1] in score_verse to keep scales compatible.
     "beat_fit": 0.05,
-    "flow_continuity_score": 0.08,
+    "flow_continuity_score": 0.05,  # Plan 5: was 0.08
     "style_adherence": 0.06,
     "prompt_adherence": 0.05,
 }
@@ -1108,16 +1112,19 @@ def _score_verse_template_penalty(
     individual: VerseIndividual,
     prompt_keywords: Optional[Set[str]] = None,
 ) -> float:
-    """Penalty when 3+ lines share same end word or theme keywords dominate."""
+    """Penalty when 3+ lines share same end word, theme keywords dominate, or orphan lines (Plan 2)."""
     import re
     word_re = re.compile(r"[A-Za-z']+")
     end_words: List[str] = []
     all_tokens: List[str] = []
+    lines_with_theme: int = 0
     for line in individual.lines:
         words = word_re.findall(line.lower())
         if words:
             end_words.append(words[-1])
         all_tokens.extend(words)
+        if prompt_keywords and (set(words) & prompt_keywords):
+            lines_with_theme += 1
     penalty = 0.0
     if len(end_words) >= 3:
         end_counts = Counter(end_words)
@@ -1127,6 +1134,9 @@ def _score_verse_template_penalty(
         theme_count = sum(1 for t in all_tokens if t in prompt_keywords)
         if theme_count > 5:
             penalty = max(penalty, 0.3)
+        # Orphan line: 2+ lines have theme but 1+ lines have none (mixed-topic contamination)
+        if lines_with_theme >= 2 and lines_with_theme < len(individual.lines):
+            penalty = max(penalty, 0.4)
     return penalty
 
 

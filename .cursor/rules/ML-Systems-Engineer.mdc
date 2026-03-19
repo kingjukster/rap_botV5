@@ -1,0 +1,35 @@
+---
+description: LM integration, policy learning, and scoring models specialist
+globs:
+  - evo_rhyme/lm_*.py
+  - evo_rhyme/control_model.py
+  - evo_rhyme/policy_runtime.py
+  - evo_rhyme/scoring/**/*.py
+  - evo_rhyme/fitness.py
+  - config/settings.py
+  - config/evolution.yaml
+  - scripts/update_learned_policy.py
+alwaysApply: false
+---
+
+# ML Systems Engineer
+
+When editing these files, act as the ml-systems-engineer specialist.
+
+## Responsibilities
+
+- **LM integration**: Replace or abstract OpenAI calls; add backends for local LLMs (Qwen, Ollama, vLLM).
+- **Optimize inference**: Caching, batching, token limits, model selection.
+- **Policy learning**: Learned policy format, control attribution, epsilon-greedy exploration.
+- **Scoring models**: Add or tune scorers; preserve fitness weight balance and anti-exploit guards.
+
+## Constraints
+
+- Preserve reproducibility (seed-controlled randomness in policy sampling).
+- LM calls must degrade gracefully (env guards, retries, empty fallbacks).
+- Do not weaken `ngram_fluency` or `lexical_validity` without strong justification.
+- Log model, backend, cache hits, and failures.
+
+## Use the ml-systems-engineer skill
+
+Apply the ml-systems-engineer skill for detailed workflows, LM backend patterns, and scoring design.

@@ -366,6 +366,17 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
     )
 
 
+# Experiment runner defaults (seed counts, aggregation mode); optional in config as "experiments"
+EXPERIMENT_SECTION_DEFAULTS: Dict[str, Any] = {
+    "n_seeds_per_arm": 3,
+    "aggregation_mode": "best",  # best | top_k_mean | mean
+    "top_k": 5,
+    "policy_mode": "static",  # static | learned | explore_mix
+    "epsilon": 0.10,
+    "learned_policy_path": "artifacts/learned_policy.json",
+}
+
+
 def get_evolution_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Canonical defaults for couplet evolution CLI."""
     return dict(load_settings(config_path=config_path).evolution)
@@ -374,6 +385,26 @@ def get_evolution_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
 def get_qd_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Canonical defaults for QD verse evolution CLI."""
     return dict(load_settings(config_path=config_path).qd)
+
+
+def get_experiment_defaults(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Canonical defaults for control experiment runner (n_seeds_per_arm, aggregation_mode, top_k)."""
+    base_dir = _repo_root()
+    cfg_data: Dict[str, Any] = {}
+    cfg_path = config_path or os.environ.get("RAPBOT_CONFIG")
+    if not cfg_path:
+        for p in (base_dir / "config" / "evolution.yaml", base_dir / "config" / "rapbot.yaml"):
+            if p.exists():
+                cfg_data = _load_config_file(p)
+                break
+    elif base_dir:
+        resolved = Path(cfg_path).expanduser()
+        if not resolved.is_absolute():
+            resolved = (base_dir / resolved).resolve()
+        if resolved.exists():
+            cfg_data = _load_config_file(resolved)
+    experiments = (cfg_data.get("experiments") or {}) if isinstance(cfg_data.get("experiments"), dict) else {}
+    return {**EXPERIMENT_SECTION_DEFAULTS, **experiments}
 
 
 def _repo_root() -> Path:

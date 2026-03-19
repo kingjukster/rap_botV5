@@ -10,8 +10,8 @@ Usage:
 
 Options:
     --theme         Comma-separated theme keywords (required)
-    --population    Population size (default: 120, max: 5000)
-    --generations   Number of generations (default: 30, max: 1000)
+    --population    Population size (default: from config, max: 5000)
+    --generations   Number of generations (default: from config qd.generations, 80 recommended; max: 1000)
     --scheme        Rhyme scheme: AABB, ABAB, ABBA, AAAA (default: AABB)
     --num-lines     Lines per verse: 4, 8, 16 (default: 4)
     --init          Population init: mixed, random, template, lm (default: lm)
@@ -139,6 +139,37 @@ def parse_args() -> argparse.Namespace:
         "--db",
         action="store_true",
         help="Enable MySQL persistence (RAPBOT_USE_DB=1)",
+    )
+    parser.add_argument(
+        "--experiment-id",
+        type=int,
+        default=None,
+        help="Link run to this experiment (for control experiment runner).",
+    )
+    parser.add_argument(
+        "--arm-id",
+        type=int,
+        default=None,
+        help="Link run to this experiment arm (for control experiment runner).",
+    )
+    parser.add_argument(
+        "--policy-mode",
+        type=str,
+        choices=["static", "learned", "explore_mix"],
+        default=None,
+        help="Control source mode: static defaults, learned policy, or epsilon-greedy explore_mix.",
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        help="Exploration probability for explore_mix mode.",
+    )
+    parser.add_argument(
+        "--learned-policy-path",
+        type=str,
+        default=None,
+        help="Path to learned policy JSON (default from config experiments.learned_policy_path).",
     )
     parser.add_argument(
         "--resume",
@@ -353,6 +384,58 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    from config.settings import get_experiment_defaults
+    from evo_rhyme.policy_runtime import (
+        apply_controls_to_args,
+        resolve_policy_controls,
+        maybe_epsilon_perturb,
+    )
+
+    exp_defaults = get_experiment_defaults(config_path=getattr(args, "config", None))
+    args.policy_mode = args.policy_mode or str(exp_defaults.get("policy_mode", "static"))
+    args.epsilon = float(args.epsilon if args.epsilon is not None else exp_defaults.get("epsilon", 0.10))
+    args.learned_policy_path = args.learned_policy_path or str(
+        exp_defaults.get("learned_policy_path", "artifacts/learned_policy.json")
+    )
+    args._policy_source = "defaults"
+    args._exploration_applied = False
+    args._policy_overrides = []
+    args._policy_version = None
+    args._policy_hash = None
+    args._sampled_policy_rank = None
+
+    protected = {"theme", "db", "experiment_id", "arm_id", "output", "runs_dir", "config", "seed", "verbose", "resume"}
+    if args.policy_mode in ("learned", "explore_mix"):
+        learned_controls, pmeta = resolve_policy_controls(args.learned_policy_path, ROOT)
+        src = pmeta.get("policy_source")
+        args._policy_version = pmeta.get("policy_version")
+        args._policy_hash = pmeta.get("policy_hash")
+        args._sampled_policy_rank = pmeta.get("sampled_policy_rank")
+        if learned_controls:
+            overrides = []
+            for key, value in learned_controls.items():
+                if key in protected or not hasattr(args, key):
+                    continue
+                try:
+                    if getattr(args, key) != value:
+                        overrides.append(key)
+                except Exception:
+                    pass
+            apply_controls_to_args(args, learned_controls, protected_keys=protected)
+            args._policy_source = src
+            args._policy_overrides = sorted(set(overrides))
+            if args.policy_mode == "explore_mix":
+                args._exploration_applied = maybe_epsilon_perturb(
+                    args,
+                    epsilon=args.epsilon,
+                    protected_keys=protected,
+                )
+    if args.population > 5000:
+        print(f"--population {args.population} exceeds max 5000", file=sys.stderr)
+        sys.exit(2)
+    if args.generations > 1000:
+        print(f"--generations {args.generations} exceeds max 1000", file=sys.stderr)
+        sys.exit(2)
 
     seed_info: Optional[Dict[str, Any]] = None
     if args.seed is not None:
@@ -370,6 +453,20 @@ def main() -> None:
     for noisy in ("httpx", "httpcore", "asyncio", "huggingface_hub", "transformers"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logger = logging.getLogger(__name__)
+    logger.info(
+        "Policy mode=%s source=%s version=%s hash=%s sampled_rank=%s epsilon=%.3f exploration_applied=%s",
+        args.policy_mode,
+        getattr(args, "_policy_source", "defaults"),
+        getattr(args, "_policy_version", None),
+        getattr(args, "_policy_hash", None),
+        getattr(args, "_sampled_policy_rank", None),
+        float(args.epsilon),
+        bool(getattr(args, "_exploration_applied", False)),
+    )
+    overrides = getattr(args, "_policy_overrides", []) or []
+    if overrides:
+        preview = ", ".join(overrides[:8]) + (" ..." if len(overrides) > 8 else "")
+        logger.info("Policy overrides (%d): %s", len(overrides), preview)
 
     try:
         from evo_rhyme.verse_evolution import evolve_verse_qd, QDEvolutionConfig
@@ -433,20 +530,17 @@ def main() -> None:
         os.environ["RAPBOT_USE_DB"] = "1"
         try:
             from evo_rhyme import db
+            from evo_rhyme.experiment_controls import build_control_snapshot_from_qd_args
+            from config.settings import get_qd_defaults
             if db.db_enabled():
+                defaults = get_qd_defaults(config_path=getattr(args, "config", None))
+                control_snapshot = build_control_snapshot_from_qd_args(args, defaults, seed_info=seed_info)
                 run_id = db.insert_run(
                     "run_verse_qd",
                     ",".join(theme_keywords) if theme_keywords else "",
-                    {
-                        "theme": args.theme,
-                        "population": args.population,
-                        "generations": args.generations,
-                        "scheme": args.scheme,
-                        "num_lines": args.num_lines,
-                        "init": args.init,
-                        "emitter_strategy": args.emitter_strategy,
-                        **({"seed_info": seed_info} if seed_info else {}),
-                    },
+                    control_snapshot,
+                    experiment_id=getattr(args, "experiment_id", None),
+                    arm_id=getattr(args, "arm_id", None),
                 )
                 if run_id > 0:
                     logger.info("DB run_id=%d", run_id)
@@ -676,7 +770,8 @@ def main() -> None:
         if run_id and run_id > 0:
             try:
                 from evo_rhyme import db
-                db.update_run_status(run_id, "failed")
+                reason = f"{type(e).__name__}: {str(e)}"[:4096]
+                db.update_run_status(run_id, "failed", failure_reason=reason)
             except Exception:
                 pass
         raise

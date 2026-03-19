@@ -31,7 +31,7 @@
     </div>
     <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
         <p class="text-slate-500 text-sm">Created</p>
-        <p class="text-slate-100">{{ run.created_at.strftime("%Y-%m-%d %H:%M") if run.created_at else '—' }}</p>
+        <p class="text-slate-100">{{ run.created_at or '—' }}</p>
     </div>
 </div>
 

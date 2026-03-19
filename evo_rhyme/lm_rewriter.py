@@ -106,6 +106,10 @@ class BarRewriter:
     # ------------------------------------------------------------------
 
     def _call_lm(self, prompt: str, cache_key: str) -> str:
+        # Validation/offline guard: disable LM calls entirely when requested.
+        disable_flag = (os.environ.get("RAPBOT_DISABLE_LM_REWRITER", "") or "").strip().lower()
+        if disable_flag in ("1", "true", "yes"):
+            return ""
         cached = self._cache.get(cache_key)
         if cached is not None:
             logger.debug("cache hit for key=%s", cache_key[:12])
@@ -114,6 +118,7 @@ class BarRewriter:
         self._ensure_client()
         last_err: Exception | None = None
 
+        fail_fast = (os.environ.get("RAPBOT_LM_FAIL_FAST", "") or "").strip().lower() in ("1", "true", "yes")
         for attempt in range(1, self._config.max_retries + 2):
             try:
                 resp = self._client.chat.completions.create(  # type: ignore[union-attr]
@@ -128,6 +133,9 @@ class BarRewriter:
                 return text
             except Exception as exc:
                 last_err = exc
+                if fail_fast:
+                    logger.error("LM fail-fast enabled; aborting LM call after first failure: %s", exc)
+                    return ""
                 wait = 2 ** attempt
                 logger.warning(
                     "LM call attempt %d/%d failed: %s – retrying in %ds",

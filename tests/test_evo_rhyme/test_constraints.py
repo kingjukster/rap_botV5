@@ -251,3 +251,17 @@ class TestPassesVerseConstraints:
         analyze_verse_individual(verse)
         config = {"require_theme_presence": True, "prompt_keywords": {"pressure", "mask"}}
         assert passes_verse_constraints(verse, config) is True
+
+    def test_passes_verse_constraints_reject_orphan_line(self):
+        """Plan 2: reject verses with orphan phrase + no theme keyword (template contamination)."""
+        verse = VerseIndividual(
+            lines=[
+                "My crown and empire glow with fire",
+                "Flow like a river rising higher",
+                "crown the empire with a po sharp as a peg",
+                "They played around, and she caught a shot in the leg",  # orphan, no crown/empire
+            ]
+        )
+        analyze_verse_individual(verse)
+        config = {"prompt_keywords": {"crown", "empire", "flow"}}
+        assert passes_verse_constraints(verse, config) is False

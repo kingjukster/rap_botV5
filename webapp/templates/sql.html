@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}SQL — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-6" x-data="sqlPage()">
+    <a href="/" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">← Back to Dashboard</a>
+    <h1 class="text-2xl font-bold text-slate-100">SQL Query</h1>
+    <p class="text-slate-400 mt-1">Run read-only <code class="text-amber-400/80">SELECT</code> queries against the rap bot database. Multiple statements and write operations are not allowed.</p>
+
+    <form @submit.prevent="runQuery" class="mt-4">
+        <textarea
+            x-model="sql"
+            placeholder="SELECT * FROM runs LIMIT 10"
+            class="w-full h-32 px-4 py-3 rounded-lg border border-slate-600 bg-slate-800 text-slate-100 font-mono text-sm focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
+        ></textarea>
+        <div class="mt-2 flex items-center gap-4">
+            <button
+                type="submit"
+                :disabled="loading"
+                class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                <span x-show="!loading">Run</span>
+                <span x-show="loading">Running…</span>
+            </button>
+            <span class="text-slate-500 text-sm" x-show="result">Rows: <span x-text="result?.row_count ?? 0"></span></span>
+        </div>
+    </form>
+
+    <div x-show="error" class="mt-4 p-4 rounded-lg border border-red-500/50 bg-red-500/10 text-red-400" x-cloak>
+        <span x-text="error"></span>
+    </div>
+
+    <div x-show="result && !error && result.columns?.length" class="mt-4 overflow-x-auto rounded-lg border border-slate-600" x-cloak>
+        <table class="w-full text-sm">
+            <thead class="bg-slate-800 text-slate-400 text-left">
+                <tr>
+                    <template x-for="col in result.columns" :key="col">
+                        <th class="px-4 py-2 font-medium" x-text="col"></th>
+                    </template>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-700">
+                <template x-for="(row, i) in result.rows" :key="i">
+                    <tr class="hover:bg-slate-800/40">
+                        <template x-for="col in result.columns" :key="col">
+                            <td class="px-4 py-2 text-slate-300 font-mono text-xs" x-text="row[col] ?? ''"></td>
+                        </template>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <div x-show="result && !error && result.columns?.length === 0 && result.row_count === 0" class="mt-4 p-4 rounded-lg border border-slate-600 bg-slate-800/50 text-slate-500" x-cloak>
+        No rows returned.
+    </div>
+</div>
+
+<script>
+function sqlPage() {
+    return {
+        sql: 'SELECT * FROM runs LIMIT 10',
+        loading: false,
+        result: null,
+        error: null,
+
+        async runQuery() {
+            this.loading = true;
+            this.error = null;
+            this.result = null;
+            try {
+                const res = await fetch('/api/sql', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sql: this.sql, max_rows: 1000 })
+                });
+                let data;
+                try {
+                    data = await res.json();
+                } catch (_) {
+                    this.error = `Request failed: ${res.status} ${res.statusText}`;
+                    return;
+                }
+                if (data.error) {
+                    this.error = data.error;
+                } else {
+                    this.result = data;
+                }
+            } catch (e) {
+                this.error = e.message || 'Request failed';
+            } finally {
+                this.loading = false;
+            }
+        }
+    };
+}
+</script>
+<style>
+[x-cloak] { display: none !important; }
+</style>
+{% endblock %}

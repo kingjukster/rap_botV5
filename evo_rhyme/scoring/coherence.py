@@ -72,6 +72,21 @@ def _information_gain(embeddings: np.ndarray) -> float:
     return max(0.0, min(1.0, scaled))
 
 
+def _min_line_centroid_similarity(embeddings: np.ndarray) -> float:
+    """Penalize verses with outlier lines (template contamination).
+
+    When one line is semantically unrelated to the rest (e.g. "shot in the leg"
+    in an empire/crown verse), its cosine similarity to the verse centroid is low.
+    Returns the minimum of each line's similarity to the centroid, scaled to [0,1].
+    """
+    if embeddings.ndim != 2 or embeddings.shape[0] < 2:
+        return 0.0
+    centroid = embeddings.mean(axis=0)
+    sims = [_cosine_similarity(embeddings[i], centroid) for i in range(embeddings.shape[0])]
+    raw = float(np.min(sims))
+    return max(0.0, min(1.0, raw))
+
+
 def _structural_coherence(embeddings: np.ndarray) -> float:
     """Score setup/payoff structure between first and second half of verse.
 
@@ -120,10 +135,11 @@ def score_coherence_with_embeddings(embeddings: np.ndarray) -> float:
     """
     Score cross-bar coherence from pre-computed embeddings.
 
-    Blends three components:
-      - consecutive similarity (0.5 weight)
-      - information gain (0.3 weight)
-      - structural coherence (0.2 weight)
+    Blends four components (Plan 2: reduce template contamination):
+      - consecutive similarity (0.35 weight)
+      - information gain (0.25 weight)
+      - structural coherence (0.15 weight)
+      - min_line_centroid_similarity (0.25 weight) - penalizes orphan lines
 
     Args:
         embeddings: (N, D) array where each row is a line embedding.
@@ -137,7 +153,8 @@ def score_coherence_with_embeddings(embeddings: np.ndarray) -> float:
     consecutive = _consecutive_similarity(embeddings)
     info_gain = _information_gain(embeddings)
     structural = _structural_coherence(embeddings)
-    blended = 0.5 * consecutive + 0.3 * info_gain + 0.2 * structural
+    min_centroid = _min_line_centroid_similarity(embeddings)
+    blended = 0.35 * consecutive + 0.25 * info_gain + 0.15 * structural + 0.25 * min_centroid
     return max(0.0, min(1.0, blended))
 
 

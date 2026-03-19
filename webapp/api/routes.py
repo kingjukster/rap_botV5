@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from webapp.services.run_service import (
     list_runs as svc_list_runs,
+    mark_stale_runs_failed,
     get_run,
     get_run_generations,
     get_run_candidates,
@@ -18,9 +20,37 @@ from webapp.services.run_service import (
     get_candidate_lineage,
     get_run_seeds,
     get_score_cache_recent,
+    list_experiments,
+    get_experiment,
+    list_experiment_arms,
+    list_experiment_runs,
+    get_control_impact_report,
+    execute_sql,
 )
 
 router = APIRouter()
+
+
+@router.post("/sql")
+def api_execute_sql(
+    sql: str = Body(..., embed=True),
+    max_rows: int = Body(1000, embed=True, ge=1, le=5000),
+):
+    """Execute a read-only SQL query. Returns columns, rows, and row_count or error."""
+    result = execute_sql(sql=sql, max_rows=max_rows)
+    if "error" in result:
+        status = 503 if "Database is not available" in result["error"] else 400
+        return JSONResponse(status_code=status, content=result)
+    return result
+
+
+@router.post("/runs/mark-stale")
+def api_mark_stale_runs(
+    minutes: int = Query(30, ge=5, le=1440, description="Mark runs stale if no activity for this many minutes"),
+):
+    """Mark runs as failed if they have been 'running' with no activity for the given minutes."""
+    n = mark_stale_runs_failed(minutes_idle=minutes)
+    return {"marked": n, "message": f"Marked {n} stale run(s) as failed"}
 
 
 @router.get("/runs", response_model=Dict[str, Any])
@@ -119,6 +149,57 @@ def api_get_score_cache_recent(
 ):
     """List recent score_cache keys."""
     return get_score_cache_recent(limit=limit, offset=offset)
+
+
+@router.get("/experiments", response_model=List[Dict[str, Any]])
+def api_list_experiments(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List control experiments."""
+    return list_experiments(limit=limit, offset=offset)
+
+
+@router.get("/experiments/{experiment_id}")
+def api_get_experiment(experiment_id: int):
+    """Get experiment detail."""
+    exp = get_experiment(experiment_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return exp
+
+
+@router.get("/experiments/{experiment_id}/arms", response_model=List[Dict[str, Any]])
+def api_list_experiment_arms(experiment_id: int):
+    """List arms for an experiment."""
+    return list_experiment_arms(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/runs", response_model=List[Dict[str, Any]])
+def api_list_experiment_runs(
+    experiment_id: int,
+    arm_id: Optional[int] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List runs for an experiment, optionally filtered by arm."""
+    return list_experiment_runs(experiment_id, arm_id=arm_id, limit=limit, offset=offset)
+
+
+@router.get("/experiments/{experiment_id}/impact")
+def api_get_experiment_impact(
+    experiment_id: int,
+    arm_id: Optional[int] = Query(None),
+    aggregation: str = Query("best", description="best | top_k_mean | mean"),
+    top_k: int = Query(5, ge=1, le=20),
+):
+    """Get control impact report for an experiment (mean diffs, CI, correlations)."""
+    report = get_control_impact_report(
+        experiment_id, arm_id=arm_id, aggregation_mode=aggregation, top_k=top_k
+    )
+    if report is None:
+        raise HTTPException(status_code=503, detail="Report not available")
+    return report
 
 
 @router.get("/runs/{run_id}/progress")

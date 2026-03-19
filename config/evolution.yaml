@@ -8,15 +8,17 @@ paths:
   elite_corpus: data/elite_kaggle_corpus_clean.txt
 
 # Evolution: canonical keys (population, elites, immigrants, init) used by run_couplet_evolution
+# generations: 80 (Plan 4) — best run qd_20260318_105357 used 80; marginal gain 60→80 ≈ +0.014 fitness.
 evolution:
-  population: 100
-  generations: 30
+  population: 60  # Max 60 for couplet; 100 correlates with ~89% failure (run analysis)
+  generations: 80
   elites: 5
   tournament_k: 3
   immigrants: 10
   init: mixed  # mixed | random | template
 
-# Fitness weights (evo_rhyme.fitness.DEFAULT_WEIGHTS)
+# Fitness weights (evo_rhyme.fitness.DEFAULT_WEIGHTS) — couplet evolution.
+# Verse evolution uses VERSE_DEFAULT_WEIGHTS in evo_rhyme/fitness.py (Plan 5 rebalance 2026-03-19).
 # Positive weights sum to ~1.0; penalties are negative.
 fitness_weights:
   end_rhyme: 0.18
@@ -57,6 +59,16 @@ mutation_weights:
 
 output:
   runs_dir: data/evo_rhyme/runs
+
+# QD verse evolution (scripts/run_verse_qd.py). Plan 4: 80 gens from data/experiments/generations_tuning.md
+qd:
+  generations: 80
+
+# Optional: experiment runner and learned policy (scripts/run_control_experiment, update_learned_policy)
+experiments:
+  policy_mode: static   # static | learned | explore_mix
+  epsilon: 0.10
+  learned_policy_path: artifacts/learned_policy.json
 
 # LM-backed bar proposer (evo_rhyme.lm_proposer.ProposerConfig)
 proposer:
