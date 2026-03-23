@@ -58,6 +58,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, StarletteHTTPException):
         raise exc
     return templates.TemplateResponse(
+        request,
         "error.html",
         {"request": request, "message": "An unexpected error occurred. Please try again or return to the dashboard."},
         status_code=500,

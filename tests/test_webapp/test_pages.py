@@ -313,3 +313,13 @@ def test_sql_page_returns_200(monkeypatch):
     assert "SQL" in resp.text
     assert "SELECT" in resp.text or "Run" in resp.text
 
+
+def test_analysis_page_returns_200(monkeypatch):
+    """Analysis page returns 200 and contains expected content."""
+    app, _ = _create_app_with_stub(monkeypatch)
+    client = TestClient(app)
+    resp = client.get("/analysis")
+    assert resp.status_code == 200
+    assert "Evolution Analysis" in resp.text
+    assert "api/analysis" in resp.text or "loadAnalysis" in resp.text or "Loading" in resp.text
+

@@ -3,8 +3,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Node.js for localtunnel (npx)
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+# Node.js for localtunnel (npx fallback) + ngrok for stable public URL
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs npm curl \
+    && curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+       | tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
+    && echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+       | tee /etc/apt/sources.list.d/ngrok.list \
+    && apt-get update && apt-get install -y --no-install-recommends ngrok \
     && rm -rf /var/lib/apt/lists/*
 
 # Web app dependencies only (fastapi, uvicorn, jinja2, mysql, dotenv, docker for spawning evolution)

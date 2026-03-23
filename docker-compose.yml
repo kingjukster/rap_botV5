@@ -30,6 +30,7 @@ services:
       - "8001:8000"
     env_file: .env
     environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
       RAPBOT_USE_DB: "1"
       RAPBOT_DB_HOST: mysql
       RAPBOT_DB_PORT: "3306"

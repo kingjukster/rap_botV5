@@ -214,6 +214,7 @@ class MutationEmitter(BaseEmitter):
             "theme_keywords": self.config.get("theme_keywords", []),
             "min_syllables": self.config.get("min_syllables", 6),
             "max_syllables": self.config.get("max_syllables", 18),
+            "use_structural_mutations": self.config.get("use_structural_mutations", False),
             "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
             "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
         }
@@ -333,6 +334,7 @@ class DirectedMutationEmitter(BaseEmitter):
             "theme_keywords": self.config.get("theme_keywords", []),
             "min_syllables": self.config.get("min_syllables", 6),
             "max_syllables": self.config.get("max_syllables", 18),
+            "use_structural_mutations": self.config.get("use_structural_mutations", False),
             "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
             "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
         }
@@ -491,6 +493,7 @@ class NicheTargetingEmitter(BaseEmitter):
             "theme_keywords": list(self.config.get("theme_keywords", [])),
             "min_syllables": self.config.get("min_syllables", 6),
             "max_syllables": self.config.get("max_syllables", 18),
+            "use_structural_mutations": self.config.get("use_structural_mutations", False),
             "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
             "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
         }
@@ -599,6 +602,7 @@ class RepairEmitter(BaseEmitter):
             "theme_keywords": self.config.get("theme_keywords", []),
             "min_syllables": self.config.get("min_syllables", 6),
             "max_syllables": self.config.get("max_syllables", 18),
+            "use_structural_mutations": self.config.get("use_structural_mutations", False),
         }
         constraint_config = _constraint_config(self.config)
 

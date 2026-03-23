@@ -12,6 +12,7 @@ from webapp.services.evolution_service import (
     list_song_artists,
     list_songs_for_artist,
 )
+from webapp.services.analysis_service import get_analysis_data
 from webapp.services.run_service import (
     list_runs as svc_list_runs,
     mark_stale_runs_failed,
@@ -34,6 +35,12 @@ from webapp.services.run_service import (
 )
 
 router = APIRouter()
+
+
+@router.get("/analysis")
+def api_analysis():
+    """Evolution analysis: run stats, fitness trend, config dominance, stagnation."""
+    return get_analysis_data()
 
 
 @router.post("/sql")

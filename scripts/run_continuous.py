@@ -9,6 +9,14 @@ Usage:
     python scripts/run_continuous.py --config config/continuous_runs.yaml --start-at 3  # skip first 3 configs
     python scripts/run_continuous.py --use-docker
     python scripts/run_continuous.py --pause 30
+    python scripts/run_continuous.py --parallel 2  # 2 runs in flight for throughput
+
+Docker-only (no host Python/DB access):
+    docker compose --profile evolution run --rm evolution python scripts/run_continuous.py --no-docker --config config/continuous_runs.yaml
+    docker compose --profile evolution run --rm evolution python scripts/run_continuous.py --no-docker --bootstrap-policy  # use --no-docker so evolution runs inline
+
+Bootstrap learned policy (one-time, populates top_configs from DB):
+    docker compose --profile evolution run --rm evolution python scripts/update_learned_policy.py --force --limit 300
 
 Config file (YAML) format:
     runs:
@@ -34,7 +42,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -255,18 +263,35 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Runs after which epsilon decay stops (default: 50)",
     )
+    parser.add_argument(
+        "--bootstrap-policy",
+        action="store_true",
+        help="Run update_learned_policy.py once before the main loop (populates top_configs from DB)",
+    )
+    parser.add_argument(
+        "--bootstrap-if-empty",
+        action="store_true",
+        help="Auto-run policy update before first run when policy has no top_configs (requires update-policy-every > 0)",
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Max evolution runs in flight (default: 1). Increase for throughput.",
+    )
     return parser.parse_args()
 
 
-def run_evolution(
+def _build_evolution_cmd(
     cfg: Dict[str, Any],
     use_docker: bool,
     *,
     policy_mode: str = "static",
     learned_policy_path: Optional[Path] = None,
     epsilon: Optional[float] = None,
-) -> int:
-    """Run evolution with given config. Returns exit code."""
+) -> Tuple[List[str], Dict[str, str]]:
+    """Build (cmd, env) for run_verse_qd.py. Shared by run_evolution and run_evolution_async."""
     cmd = (
         [
             "docker",
@@ -309,7 +334,24 @@ def run_evolution(
     env["RAPBOT_USE_DB"] = "1"
     if cfg.get("lm_budget", 0) == 0 and cfg.get("line_lm_budget", 0) == 0:
         env["RAPBOT_DISABLE_LM_REWRITER"] = "1"
+    return cmd, env
 
+
+def run_evolution(
+    cfg: Dict[str, Any],
+    use_docker: bool,
+    *,
+    policy_mode: str = "static",
+    learned_policy_path: Optional[Path] = None,
+    epsilon: Optional[float] = None,
+) -> int:
+    """Run evolution with given config. Returns exit code."""
+    cmd, env = _build_evolution_cmd(
+        cfg, use_docker,
+        policy_mode=policy_mode,
+        learned_policy_path=learned_policy_path,
+        epsilon=epsilon,
+    )
     logger.info(
         "Config arm=%s theme=%s pop=%d gens=%d lm_budget=%d scheme=%s init=%s",
         cfg.get("arm", "?"),
@@ -322,6 +364,92 @@ def run_evolution(
     )
     proc = subprocess.run(cmd, cwd=str(ROOT), env=env)
     return proc.returncode
+
+
+def run_evolution_async(
+    cfg: Dict[str, Any],
+    use_docker: bool,
+    *,
+    policy_mode: str = "static",
+    learned_policy_path: Optional[Path] = None,
+    epsilon: Optional[float] = None,
+) -> subprocess.Popen:
+    """Start evolution asynchronously. Returns Popen (caller must reap)."""
+    cmd, env = _build_evolution_cmd(
+        cfg, use_docker,
+        policy_mode=policy_mode,
+        learned_policy_path=learned_policy_path,
+        epsilon=epsilon,
+    )
+    logger.info(
+        "Config arm=%s theme=%s pop=%d gens=%d lm_budget=%d scheme=%s init=%s",
+        cfg.get("arm", "?"),
+        cfg["theme"],
+        cfg["population"],
+        cfg["generations"],
+        cfg.get("lm_budget", 0),
+        cfg["scheme"],
+        cfg["init"],
+    )
+    return subprocess.Popen(
+        cmd,
+        cwd=str(ROOT),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _run_update_learned_policy(
+    use_docker: bool,
+    failure_penalty: float,
+    *,
+    limit: int = 300,
+    force: bool = False,
+) -> int:
+    """
+    Run update_learned_policy.py. Uses Docker when use_docker so DB is reachable.
+    Returns exit code.
+    """
+    if use_docker:
+        cmd = [
+            "docker", "compose", "--profile", "evolution", "run", "--rm", "evolution",
+            "python", "scripts/update_learned_policy.py",
+            "--failure-penalty", str(failure_penalty),
+            "--limit", str(limit),
+        ]
+        if force:
+            cmd.append("--force")
+        proc = subprocess.run(cmd, cwd=str(ROOT), env={**os.environ, "RAPBOT_USE_DB": "1"})
+        return proc.returncode
+    else:
+        cmd = [
+            sys.executable,
+            str(ROOT / "scripts" / "update_learned_policy.py"),
+            "--failure-penalty", str(failure_penalty),
+            "--limit", str(limit),
+        ]
+        if force:
+            cmd.append("--force")
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            env={**os.environ, "RAPBOT_USE_DB": "1"},
+        )
+        return proc.returncode
+
+
+def _policy_has_top_configs(learned_policy_path: Path) -> bool:
+    """Return True if learned_policy.json has non-empty top_configs."""
+    if not learned_policy_path.exists():
+        return False
+    try:
+        data = json.loads(learned_policy_path.read_text(encoding="utf-8"))
+        top = data.get("top_configs")
+        return isinstance(top, list) and len(top) > 0
+    except Exception:
+        return False
 
 
 def main() -> int:
@@ -378,63 +506,125 @@ def main() -> int:
         use_docker = shutil.which("docker") is not None and os.path.exists("/var/run/docker.sock")
     logger.info("Using %s", "Docker" if use_docker else "direct Python")
 
+    # Bootstrap policy: run update_learned_policy once before main loop
+    if args.bootstrap_policy:
+        logger.info("Bootstrapping learned policy from DB (--bootstrap-policy)")
+        rc = _run_update_learned_policy(
+            use_docker, policy_failure_penalty, limit=300, force=True
+        )
+        if rc != 0:
+            logger.warning("Policy bootstrap exited with code %d", rc)
+
+    # Auto-bootstrap when policy is empty and we expect to use it
+    if (
+        args.bootstrap_if_empty
+        and update_policy_every > 0
+        and policy_mode in ("learned", "explore_mix")
+        and not _policy_has_top_configs(learned_policy_path)
+    ):
+        logger.info(
+            "Policy has no top_configs; auto-bootstrapping (--bootstrap-if-empty)"
+        )
+        rc = _run_update_learned_policy(
+            use_docker, policy_failure_penalty, limit=300, force=True
+        )
+        if rc != 0:
+            logger.warning("Policy auto-bootstrap exited with code %d", rc)
+
+    parallel = max(1, getattr(args, "parallel", 1))
     run_count = 0
     completed_count = 0
     idx = start
     epsilon_base = 0.10  # default for explore_mix
-    try:
-        while True:
-            cfg = configs[idx]
-            # Elite replay: with probability elite_replay_fraction, sample from top_configs
-            if elite_replay_fraction > 0 and random.random() < elite_replay_fraction:
-                elite_cfg = _sample_elite_config(
-                    learned_policy_path,
-                    default_lm_budget=default_lm,
-                    default_line_lm_budget=default_line_lm,
-                )
-                if elite_cfg is not None:
-                    cfg = elite_cfg
-            run_count += 1
-            seed_info = f" seed={cfg.get('seed')}" if cfg.get("seed") is not None else ""
-            config_src = cfg.get("config_source", "yaml")
-            logger.info(
-                "Run #%d (config %d/%d, arm=%s%s, source=%s)",
-                run_count, idx + 1, len(configs), cfg.get("arm", "?"), seed_info, config_src,
-            )
-            # Epsilon decay for explore_mix
-            epsilon = None
-            if policy_mode == "explore_mix" and epsilon_decay_factor < 1.0:
-                decayed = epsilon_base * (epsilon_decay_factor ** min(completed_count, epsilon_decay_cap))
-                epsilon = max(0.05, decayed)
-            rc = run_evolution(
-                cfg, use_docker,
-                policy_mode=policy_mode,
-                learned_policy_path=learned_policy_path,
-                epsilon=epsilon,
-            )
-            if rc == 0:
+
+    if parallel > 1:
+        logger.info("Parallel mode: up to %d runs in flight", parallel)
+
+    # active: proc -> (run_num, cfg) for in-flight runs
+    active: Dict[subprocess.Popen, Tuple[int, Dict[str, Any]]] = {}
+
+    def _reap_finished() -> None:
+        nonlocal completed_count
+        done = [p for p in active if p.poll() is not None]
+        for proc in done:
+            run_num, cfg = active.pop(proc)
+            if proc.returncode == 0:
                 completed_count += 1
-                logger.info("Run #%d completed (arm=%s)", run_count, cfg.get("arm", "?"))
+                logger.info("Run #%d completed (arm=%s)", run_num, cfg.get("arm", "?"))
                 if update_policy_every > 0 and completed_count % update_policy_every == 0:
                     logger.info("Updating learned policy after %d completed runs", completed_count)
-                    subprocess.run(
-                        [
-                            sys.executable,
-                            str(ROOT / "scripts" / "update_learned_policy.py"),
-                            "--failure-penalty", str(policy_failure_penalty),
-                        ],
-                        cwd=str(ROOT),
-                        env={**os.environ, "RAPBOT_USE_DB": "1"},
+                    _run_update_learned_policy(
+                        use_docker,
+                        policy_failure_penalty,
+                        limit=300,
+                        force=False,
                     )
             else:
-                logger.warning("Run #%d exited with code %d (arm=%s)", run_count, rc, cfg.get("arm", "?"))
+                logger.warning(
+                    "Run #%d exited with code %d (arm=%s)",
+                    run_num, proc.returncode, cfg.get("arm", "?"),
+                )
 
-            idx = (idx + 1) % len(configs)
-            if args.pause > 0:
-                logger.info("Pausing %d seconds", args.pause)
-                time.sleep(args.pause)
+    def _terminate_all() -> None:
+        for proc in list(active):
+            if proc.poll() is None:
+                logger.info("Terminating run (pid=%d)", proc.pid)
+                proc.terminate()
+        time.sleep(3)
+        for proc in list(active):
+            if proc.poll() is None:
+                proc.kill()
+
+    try:
+        while True:
+            _reap_finished()
+
+            # Start new runs until we have parallel in flight
+            while len(active) < parallel:
+                cfg = configs[idx]
+                if elite_replay_fraction > 0 and random.random() < elite_replay_fraction:
+                    elite_cfg = _sample_elite_config(
+                        learned_policy_path,
+                        default_lm_budget=default_lm,
+                        default_line_lm_budget=default_line_lm,
+                    )
+                    if elite_cfg is not None:
+                        cfg = elite_cfg
+
+                run_count += 1
+                seed_info = f" seed={cfg.get('seed')}" if cfg.get("seed") is not None else ""
+                config_src = cfg.get("config_source", "yaml")
+                slot_info = f" slot={len(active)+1}/{parallel}" if parallel > 1 else ""
+                logger.info(
+                    "Run #%d (config %d/%d, arm=%s%s, source=%s%s)",
+                    run_count, idx + 1, len(configs), cfg.get("arm", "?"), seed_info, config_src, slot_info,
+                )
+
+                epsilon = None
+                if policy_mode == "explore_mix" and epsilon_decay_factor < 1.0:
+                    decayed = epsilon_base * (epsilon_decay_factor ** min(completed_count, epsilon_decay_cap))
+                    epsilon = max(0.05, decayed)
+
+                proc = run_evolution_async(
+                    cfg, use_docker,
+                    policy_mode=policy_mode,
+                    learned_policy_path=learned_policy_path,
+                    epsilon=epsilon,
+                )
+                active[proc] = (run_count, cfg)
+                idx = (idx + 1) % len(configs)
+
+                if args.pause > 0:
+                    logger.info("Pausing %d seconds", args.pause)
+                    time.sleep(args.pause)
+
+            # Wait for at least one to finish (responsive sleep)
+            if active:
+                time.sleep(1)
+
     except KeyboardInterrupt:
-        logger.info("Stopped after %d run(s)", run_count)
+        logger.info("Stopped after %d run(s), %d completed. Terminating in-flight runs...", run_count, completed_count)
+        _terminate_all()
         return 0
     return 0
 

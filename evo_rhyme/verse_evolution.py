@@ -149,6 +149,9 @@ class QDEvolutionConfig:
     controllability_probe_every: int = 5
     controllability_probe_batch_size: int = 8
 
+    # Hierarchical evolution: structural mutations at 4-bar level
+    use_structural_mutations: bool = False
+
 
 def verse_crossover(
     parent1: VerseIndividual,
@@ -317,10 +320,26 @@ def verse_mutate(
     constraint_config: Optional[Any] = None,
     lm_budget: Optional[Dict[str, int]] = None,
 ) -> VerseIndividual:
-    """Mutate verse: 80% single couplet, 15% both couplets, 5% verse LM rewrite."""
+    """Mutate verse: 80% single couplet, 15% both couplets, 5% verse LM rewrite.
+    When use_structural_mutations=True in config: 15% swap_couplets, 10% rewrite_transition."""
     from evo_rhyme.constraints import passes_constraints
+    from evo_rhyme.structural_mutations import swap_couplets, rewrite_transition_line
+
+    cfg = config if isinstance(config, dict) else {}
+    use_structural = cfg.get("use_structural_mutations", False)
 
     r = random.random()
+
+    # Structural mutations at 4-bar level (when enabled)
+    if use_structural and len(individual.lines) == 4:
+        if r < 0.15:
+            return swap_couplets(individual)
+        if r < 0.25 and lm_budget and lm_budget.get("remaining", 0) > 0:
+            result = rewrite_transition_line(individual, boundary_idx=1, lm_budget=lm_budget)
+            if result is not None:
+                return result
+        if r < 0.25:
+            r = random.random()  # fall through to couplet mutation
 
     # 5% chance: whole-verse LM rewrite
     if r < 0.05 and lm_budget and lm_budget.get("remaining", 0) > 0:
@@ -873,6 +892,7 @@ def evolve_verse_qd(
         "theme_keywords": list(theme_keywords),
         "min_syllables": config.min_syllables,
         "max_syllables": config.max_syllables,
+        "use_structural_mutations": getattr(config, "use_structural_mutations", False),
     }
     if config.corpus_vocab:
         mutation_config["corpus_vocab"] = config.corpus_vocab
@@ -1392,6 +1412,7 @@ def evolve_verse_qd_emitters(
         "corpus_path": None,
         "min_syllables": config.min_syllables,
         "max_syllables": config.max_syllables,
+        "use_structural_mutations": getattr(config, "use_structural_mutations", False),
         "embedding_neighbor_k": 12,
         "embedding_min_cosine": 0.58,
         "schemes": config.allowed_schemes if hasattr(config, 'allowed_schemes') else ["AABB", "ABAB", "ABBA", "ABCB"],

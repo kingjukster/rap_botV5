@@ -70,6 +70,13 @@ try:
 except ImportError:
     pass
 
+# Hierarchical evolution
+try:
+    from evo_rhyme.couplet_archive import CoupletArchive, ScoredCouplet
+    from evo_rhyme.block_builder import build_4bar_from_couplets, build_4bar_batch
+except ImportError:
+    pass
+
 # MAP-Elites archive
 try:
     from evo_rhyme.archive import (

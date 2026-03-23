@@ -86,6 +86,35 @@ def test_load_configs_with_seeds():
     assert all(c["population"] == 80 for c in theme_configs)
 
 
+def test_parallel_arg_default():
+    """--parallel defaults to 1."""
+    from scripts.run_continuous import parse_args
+
+    # Must patch sys.argv since parse_args reads it
+    import sys
+    orig = sys.argv
+    sys.argv = ["run_continuous.py"]
+    try:
+        args = parse_args()
+        assert getattr(args, "parallel", 1) == 1
+    finally:
+        sys.argv = orig
+
+
+def test_parallel_arg_parsed():
+    """--parallel N is parsed correctly."""
+    from scripts.run_continuous import parse_args
+
+    import sys
+    orig = sys.argv
+    sys.argv = ["run_continuous.py", "--parallel", "3"]
+    try:
+        args = parse_args()
+        assert args.parallel == 3
+    finally:
+        sys.argv = orig
+
+
 def test_load_configs_no_seeds():
     """Configs without seeds are not expanded."""
     import yaml

@@ -113,6 +113,7 @@ def dashboard(request: Request, status: str | None = None, stale_marked: int | N
         r["created_at"] = _format_created_at(r.get("created_at"))
     summary_stats = get_run_counts_by_status()
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
             "request": request,
@@ -145,6 +146,7 @@ def run_detail(request: Request, run_id: int):
     top_candidates = _sanitize_dicts_for_json(get_run_top_candidates(run_id, limit=12))
     has_archive = len(get_run_archive(run_id)) > 0
     return templates.TemplateResponse(
+        request,
         "run_detail.html",
         {
             "request": request,
@@ -160,7 +162,7 @@ def run_detail(request: Request, run_id: int):
 @router.get("/about", response_class=HTMLResponse)
 def about(request: Request):
     """About / Help page."""
-    return templates.TemplateResponse("about.html", {"request": request})
+    return templates.TemplateResponse(request, "about.html", {"request": request})
 
 
 @router.get("/runs/{run_id}/generations", response_class=HTMLResponse)
@@ -173,6 +175,7 @@ def run_generations(request: Request, run_id: int):
     run = _sanitize_run_for_template(run)
     generations = _sanitize_dicts_for_json(get_run_generations(run_id))
     return templates.TemplateResponse(
+        request,
         "run_generations.html",
         {"request": request, "run": run, "generations": generations},
     )
@@ -188,6 +191,7 @@ def archive_view(request: Request, run_id: int):
     run = _sanitize_run_for_template(run)
     cells = _sanitize_dicts_for_json(get_run_archive(run_id))
     return templates.TemplateResponse(
+        request,
         "archive.html",
         {"request": request, "run": run, "cells": cells},
     )
@@ -210,6 +214,7 @@ def run_lineage(request: Request, run_id: int, gen: str | None = None):
             pass
     edges = _sanitize_dicts_for_json(get_run_lineage(run_id, gen=gen_int, limit=2000, offset=0))
     return templates.TemplateResponse(
+        request,
         "lineage.html",
         {"request": request, "run": run, "edges": edges, "gen_filter": gen_int},
     )
@@ -232,6 +237,7 @@ def candidate_detail(request: Request, run_id: int, candidate_id: int):
 
     lineage = _sanitize_dicts_for_json([get_candidate_lineage(candidate_id)])[0]
     return templates.TemplateResponse(
+        request,
         "candidate_detail.html",
         {"request": request, "run": run, "candidate": _sanitize_dicts_for_json([c])[0], "lineage": lineage},
     )
@@ -248,6 +254,7 @@ def run_seeds(request: Request, run_id: int):
     run = _sanitize_run_for_template(run)
     seeds = _sanitize_dicts_for_json(get_run_seeds(run_id, limit=200, offset=0))
     return templates.TemplateResponse(
+        request,
         "seeds.html",
         {"request": request, "run": run, "seeds": seeds},
     )
@@ -256,13 +263,19 @@ def run_seeds(request: Request, run_id: int):
 @router.get("/evolve", response_class=HTMLResponse)
 def evolve_page(request: Request):
     """Evolve: start a verse evolution job from the web."""
-    return templates.TemplateResponse("evolve.html", {"request": request})
+    return templates.TemplateResponse(request, "evolve.html", {"request": request})
 
 
 @router.get("/sql", response_class=HTMLResponse)
 def sql_page(request: Request):
     """SQL query page."""
-    return templates.TemplateResponse("sql.html", {"request": request})
+    return templates.TemplateResponse(request, "sql.html", {"request": request})
+
+
+@router.get("/analysis", response_class=HTMLResponse)
+def analysis_page(request: Request):
+    """Evolution analysis dashboard."""
+    return templates.TemplateResponse(request, "analysis.html", {"request": request})
 
 
 @router.get("/score-cache", response_class=HTMLResponse)
@@ -270,6 +283,7 @@ def score_cache_recent(request: Request):
     """Score cache view (recent keys)."""
     rows = _sanitize_dicts_for_json(get_score_cache_recent(limit=200, offset=0))
     return templates.TemplateResponse(
+        request,
         "score_cache.html",
         {"request": request, "rows": rows},
     )

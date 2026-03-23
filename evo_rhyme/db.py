@@ -1323,6 +1323,28 @@ def list_candidate_children(candidate_id: int, *, limit: int = 200) -> List[Dict
     return _execute(_run, default=[])
 
 
+def insert_seed_bank(
+    seed_key: str,
+    seed_data: Dict[str, Any],
+    run_id: Optional[int] = None,
+) -> int:
+    """Insert a seed bank entry. Returns row id or -1 on failure."""
+    def _run(conn: Any) -> int:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO seed_bank (run_id, seed_key, seed_data)
+                VALUES (%s, %s, %s)
+                """,
+                (run_id, seed_key, json.dumps(seed_data) if isinstance(seed_data, dict) else seed_data),
+            )
+            return cur.lastrowid or -1
+        finally:
+            cur.close()
+    return _execute(_run, default=-1)
+
+
 def list_seed_bank(run_id: Optional[int] = None, *, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
     """List seed bank entries, optionally filtered to a run_id (or NULL when run_id is None)."""
 

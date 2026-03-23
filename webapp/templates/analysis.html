@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}Evolution Analysis — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold text-slate-100">Evolution Analysis</h1>
+    <p class="text-slate-400 mt-1">Research-grade observability: system health, fitness trends, config dominance, stagnation.</p>
+</div>
+
+<div id="loading" class="rounded-lg border border-slate-600 bg-slate-800/50 p-8 text-center text-slate-400">
+    <p>Loading analysis data…</p>
+</div>
+
+<div id="empty" class="hidden rounded-lg border border-slate-600 bg-slate-800/50 p-8 text-center text-slate-400">
+    <p>No data available. Enable <code class="text-amber-400/80">RAPBOT_USE_DB=1</code> and run evolution with <code class="text-amber-400/80">--db</code> to log runs.</p>
+</div>
+
+<div id="content" class="hidden">
+    <div class="grid gap-4 grid-cols-2 sm:grid-cols-4 mb-6">
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <p class="text-slate-500 text-sm">Total runs</p>
+            <p id="stat-total" class="text-xl font-semibold text-slate-100">0</p>
+        </div>
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <p class="text-slate-500 text-sm">Running</p>
+            <p id="stat-running" class="text-xl font-semibold text-amber-400">0</p>
+        </div>
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <p class="text-slate-500 text-sm">Completed</p>
+            <p id="stat-completed" class="text-xl font-semibold text-emerald-400">0</p>
+        </div>
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <p class="text-slate-500 text-sm">Failed</p>
+            <p id="stat-failed" class="text-xl font-semibold text-red-400">0</p>
+        </div>
+    </div>
+
+    <div class="grid gap-6 sm:grid-cols-2 mb-6">
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <h3 class="text-lg font-semibold text-slate-100 mb-2">Best Fitness</h3>
+            <p id="best-fitness" class="text-2xl font-bold text-amber-400">—</p>
+        </div>
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <h3 class="text-lg font-semibold text-slate-100 mb-2">Stagnation</h3>
+            <p id="stagnation" class="text-2xl font-bold text-slate-300">—</p>
+            <p class="text-slate-500 text-sm mt-1">runs since last improvement</p>
+        </div>
+    </div>
+
+    <section class="mb-6">
+        <h3 class="text-lg font-semibold text-slate-100 mb-3">Top Configs (by arm)</h3>
+        <div class="overflow-x-auto rounded-lg border border-slate-600">
+            <table class="w-full text-sm">
+                <thead class="bg-slate-800 text-slate-400 text-left">
+                    <tr>
+                        <th class="px-4 py-3 font-medium">Arm</th>
+                        <th class="px-4 py-3 font-medium">Count</th>
+                        <th class="px-4 py-3 font-medium">Avg Fitness</th>
+                    </tr>
+                </thead>
+                <tbody id="config-tbody" class="divide-y divide-slate-700"></tbody>
+            </table>
+        </div>
+        <p id="config-empty" class="hidden mt-2 text-slate-500 text-sm">No runs with arm in config_json.</p>
+    </section>
+
+    <section>
+        <h3 class="text-lg font-semibold text-slate-100 mb-3">Fitness Trend (last 100 runs)</h3>
+        <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+            <div style="height: 280px;">
+                <canvas id="fitness-chart"></canvas>
+            </div>
+        </div>
+        <p id="chart-empty" class="hidden mt-2 text-slate-500 text-sm">No fitness data to display.</p>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(async function() {
+    const loading = document.getElementById('loading');
+    const empty = document.getElementById('empty');
+    const content = document.getElementById('content');
+
+    let data;
+    try {
+        const res = await fetch('/api/analysis');
+        data = await res.json();
+    } catch (e) {
+        loading.classList.add('hidden');
+        empty.classList.remove('hidden');
+        empty.querySelector('p').textContent = 'Failed to load analysis data.';
+        return;
+    }
+
+    loading.classList.add('hidden');
+
+    const runs = data.runs || {};
+    const total = runs.total || 0;
+
+    if (total === 0) {
+        empty.classList.remove('hidden');
+        return;
+    }
+
+    content.classList.remove('hidden');
+
+    document.getElementById('stat-total').textContent = total;
+    document.getElementById('stat-running').textContent = runs.running || 0;
+    document.getElementById('stat-completed').textContent = runs.completed || 0;
+    document.getElementById('stat-failed').textContent = runs.failed || 0;
+
+    const bestFitness = data.best_fitness;
+    document.getElementById('best-fitness').textContent =
+        bestFitness != null ? bestFitness.toFixed(4) : '—';
+
+    const stagnation = data.stagnation_runs ?? 0;
+    document.getElementById('stagnation').textContent = stagnation;
+
+    const configStats = data.config_stats || [];
+    const tbody = document.getElementById('config-tbody');
+    const configEmpty = document.getElementById('config-empty');
+    if (configStats.length === 0) {
+        configEmpty.classList.remove('hidden');
+    } else {
+        configStats.forEach(function(row) {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-slate-800/50';
+            const avg = row.avg_fitness;
+            tr.innerHTML = '<td class="px-4 py-3 text-slate-300">' + (row.arm || '—') + '</td>' +
+                '<td class="px-4 py-3 text-slate-400">' + (row.count || 0) + '</td>' +
+                '<td class="px-4 py-3 text-slate-400">' + (avg != null ? avg.toFixed(3) : '—') + '</td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    const fitnessTrend = data.fitness_trend || [];
+    const chartEmpty = document.getElementById('chart-empty');
+    const ctx = document.getElementById('fitness-chart');
+
+    if (fitnessTrend.length === 0) {
+        chartEmpty.classList.remove('hidden');
+    } else {
+        const reversed = fitnessTrend.slice().reverse();
+        const labels = reversed.map(function(r) { return r.run_id; });
+        const values = reversed.map(function(r) { return r.best_fitness; });
+
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Best Fitness',
+                    data: values,
+                    borderColor: 'rgb(251, 191, 36)',
+                    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+                    fill: true,
+                    tension: 0.2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true, max: 1 }
+                }
+            }
+        });
+    }
+})();
+</script>
+{% endblock %}

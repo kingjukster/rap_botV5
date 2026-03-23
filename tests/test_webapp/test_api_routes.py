@@ -252,6 +252,46 @@ def test_api_evolution_start_returns_503_when_db_unavailable(monkeypatch):
     assert "database" in resp.json()["detail"].lower() or "evolution" in resp.json()["detail"].lower()
 
 
+def test_api_analysis_returns_structured_data(monkeypatch):
+    """Analysis API returns runs, fitness_trend, config_stats, best_fitness, stagnation_runs."""
+    import webapp.api.routes as routes_mod
+
+    fixture = {
+        "runs": {"total": 42, "completed": 30, "failed": 5, "running": 7},
+        "fitness_trend": [
+            {"run_id": 1, "created_at": "2024-01-01T00:00:00", "best_fitness": 0.85},
+            {"run_id": 2, "created_at": "2024-01-02T00:00:00", "best_fitness": 0.91},
+        ],
+        "config_stats": [
+            {"arm": "scheme_ABAB", "count": 15, "avg_fitness": 0.88},
+            {"arm": "scheme_AABB", "count": 10, "avg_fitness": 0.82},
+        ],
+        "best_fitness": 0.95,
+        "stagnation_runs": 3,
+    }
+
+    monkeypatch.setattr(routes_mod, "get_analysis_data", lambda: fixture)
+    app = FastAPI()
+    app.include_router(api_router, prefix="/api")
+    client = TestClient(app)
+
+    resp = client.get("/api/analysis")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["runs"]["total"] == 42
+    assert data["runs"]["completed"] == 30
+    assert data["runs"]["running"] == 7
+    assert data["runs"]["failed"] == 5
+    assert len(data["fitness_trend"]) == 2
+    assert data["fitness_trend"][0]["run_id"] == 1
+    assert data["fitness_trend"][0]["best_fitness"] == 0.85
+    assert len(data["config_stats"]) == 2
+    assert data["config_stats"][0]["arm"] == "scheme_ABAB"
+    assert data["config_stats"][0]["count"] == 15
+    assert data["best_fitness"] == 0.95
+    assert data["stagnation_runs"] == 3
+
+
 def test_api_evolution_artist_and_song_catalog(monkeypatch):
     import webapp.api.routes as routes_mod
 
