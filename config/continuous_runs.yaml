@@ -1,0 +1,147 @@
+# Run configs for scripts/run_continuous.py
+# All runs use --db --runs-dir for comparison
+#
+# lm_budget: 0 and line_lm_budget: 0 = no OpenAI calls (avoids 429 quota errors)
+# Use init: mixed|random|template (NOT lm) for no-API init
+#
+# Improvements:
+# - Added seeds for replicates (stochastic stability)
+# - Standardized structure
+# - Grouped experiments clearly
+#
+# Compare by arm in SQL:
+# SELECT r.run_id, r.theme_keywords, r.status,
+#        r.config_json->>'$.arm' AS arm,
+#        r.config_json->>'$.seed' AS seed,
+#        g.best_fitness, g.gen
+# FROM runs r
+# LEFT JOIN (
+#     SELECT run_id, MAX(gen) AS gen, MAX(best_fitness) AS best_fitness
+#     FROM generations GROUP BY run_id
+# ) g ON r.run_id = g.run_id
+# WHERE r.config_json->>'$.arm' IS NOT NULL
+# ORDER BY arm, seed;
+
+seeds: [1, 2, 3]
+# Policy: learned = use top configs from DB; explore_mix = epsilon-greedy
+policy_mode: learned
+# Elite replay: probability of sampling from top_configs instead of YAML round-robin
+elite_replay_fraction: 0.3
+# Epsilon decay for explore_mix: reduces randomness over time
+epsilon_decay_factor: 0.98
+epsilon_decay_cap: 50
+# Default LM budgets (0 = no OpenAI calls during evolution)
+lm_budget: 0
+line_lm_budget: 0
+
+runs:
+
+  ########################################
+  # 1. THEME SWEEP
+  ########################################
+
+  - arm: theme_pressure
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: theme_crown
+    theme: crown,empire,power
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: theme_flow
+    theme: flow,show,dream
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: theme_street
+    theme: street,king,war
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+
+  ########################################
+  # 2. INIT MODE SWEEP
+  ########################################
+
+  - arm: init_random
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: random
+
+  - arm: init_template
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: template
+
+  - arm: init_mixed
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+
+  ########################################
+  # 3. POPULATION SWEEP
+  ########################################
+
+  - arm: pop40
+    theme: pressure,mask,survival
+    population: 40
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: pop60_base
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: pop80
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+
+  ########################################
+  # 4. SCHEME SWEEP
+  ########################################
+
+  - arm: scheme_AABB_base
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: scheme_ABAB
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: ABAB
+    init: mixed
+
+  - arm: scheme_ABBA
+    theme: pressure,mask,survival
+    population: 80
+    generations: 20
+    scheme: ABBA
+    init: mixed

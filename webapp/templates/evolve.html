@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+
+{% block title %}Rap Bot — Evolve{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold text-slate-100">Evolve</h1>
+    <p class="text-slate-400 mt-1">Start a quality-diversity verse evolution from the web. The job runs in the background — you'll be redirected to monitor progress.</p>
+</div>
+
+<div class="rounded-lg border border-slate-600 bg-slate-800/50 p-6 max-w-xl" x-data="evolveForm()" x-init="init()">
+    <form @submit.prevent="submit" class="space-y-4">
+        <div>
+            <label for="theme" class="block text-sm font-medium text-slate-300 mb-1">Theme keywords</label>
+            <input
+                type="text"
+                id="theme"
+                name="theme"
+                x-model="theme"
+                placeholder="pressure, mask, survival"
+                class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100 placeholder-slate-500 focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
+                required
+            />
+            <p class="mt-1 text-xs text-slate-500">Comma-separated keywords to guide the evolution</p>
+        </div>
+
+        <div class="rounded border border-slate-700 bg-slate-900/30 p-4 space-y-3">
+            <h2 class="text-sm font-semibold text-slate-200">Optional: seed from real songs</h2>
+            <p class="text-xs text-slate-500">Pick artists and songs to use as generation-0 starting material. Add multiple songs for a diverse seed.</p>
+            <div class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-4 items-end">
+                <div>
+                    <label for="seed_artist" class="block text-sm font-medium text-slate-300 mb-1">Artist</label>
+                    <select
+                        id="seed_artist"
+                        name="seed_artist"
+                        x-model="seed_artist"
+                        @change="onArtistChange"
+                        :disabled="artistsLoading"
+                        class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100 disabled:opacity-60"
+                    >
+                        <option value="" x-text="artistsLoading ? 'Loading artists...' : 'No artist selected'"></option>
+                        <template x-for="artist in artists" :key="artist">
+                            <option :value="artist" x-text="artist"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label for="seed_song_id" class="block text-sm font-medium text-slate-300 mb-1">Song</label>
+                    <select
+                        id="seed_song_id"
+                        name="seed_song_id"
+                        x-model="seed_song_id"
+                        class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100 disabled:opacity-60"
+                        :disabled="!seed_artist || songsLoading || songs.length === 0"
+                    >
+                        <option value="" x-text="songsLoading ? 'Loading songs...' : 'No song selected'"></option>
+                        <template x-for="song in songs" :key="song.song_id">
+                            <option :value="song.song_id" x-text="song.title"></option>
+                        </template>
+                    </select>
+                </div>
+                <button
+                    type="button"
+                    @click="addSelectedSong"
+                    :disabled="!seed_song_id"
+                    class="px-4 py-2 rounded bg-slate-600 hover:bg-slate-500 text-slate-100 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    Add
+                </button>
+            </div>
+            <div x-show="selectedSongs.length > 0" class="mt-2">
+                <span class="text-xs text-slate-400 block mb-2">Selected (<span x-text="selectedSongs.length"></span>):</span>
+                <ul class="space-y-1 max-h-32 overflow-y-auto rounded bg-slate-800/50 p-2">
+                    <template x-for="(item, i) in selectedSongs" :key="i">
+                        <li class="flex items-center justify-between gap-2 text-sm py-1 px-2 rounded hover:bg-slate-700/50 group">
+                            <span class="text-slate-300 truncate" x-text="item.artist + ' — ' + item.title"></span>
+                            <button type="button" @click="removeSong(i)" class="text-red-400 hover:text-red-300 shrink-0" title="Remove">×</button>
+                        </li>
+                    </template>
+                </ul>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+            <div>
+                <label for="population" class="block text-sm font-medium text-slate-300 mb-1">Population</label>
+                <input
+                    type="number"
+                    id="population"
+                    name="population"
+                    x-model.number="population"
+                    min="10"
+                    max="200"
+                    class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100"
+                />
+            </div>
+            <div>
+                <label for="generations" class="block text-sm font-medium text-slate-300 mb-1">Generations</label>
+                <input
+                    type="number"
+                    id="generations"
+                    name="generations"
+                    x-model.number="generations"
+                    min="3"
+                    max="100"
+                    class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100"
+                />
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+            <div>
+                <label for="scheme" class="block text-sm font-medium text-slate-300 mb-1">Rhyme scheme</label>
+                <select
+                    id="scheme"
+                    name="scheme"
+                    x-model="scheme"
+                    class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100"
+                >
+                    <option value="AABB">AABB</option>
+                    <option value="ABAB">ABAB</option>
+                    <option value="ABBA">ABBA</option>
+                    <option value="ABCB">ABCB</option>
+                    <option value="AABA">AABA</option>
+                    <option value="AAAA">AAAA</option>
+                </select>
+            </div>
+            <div>
+                <label for="init_mode" class="block text-sm font-medium text-slate-300 mb-1">Init mode</label>
+                <select
+                    id="init_mode"
+                    name="init_mode"
+                    x-model="init_mode"
+                    class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100"
+                >
+                    <option value="mixed">mixed</option>
+                    <option value="random">random</option>
+                    <option value="template">template</option>
+                    <option value="lm">lm</option>
+                </select>
+            </div>
+        </div>
+
+        <div x-show="error" x-text="error" class="text-red-400 text-sm"></div>
+        <div x-show="submitting" class="text-amber-400 text-sm">Starting evolution…</div>
+
+        <button
+            type="submit"
+            :disabled="submitting"
+            class="px-4 py-2 rounded bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+            Start evolution
+        </button>
+    </form>
+</div>
+
+<p class="mt-6 text-slate-500 text-sm">Requires <code class="text-amber-400/80">RAPBOT_USE_DB=1</code> and MySQL. Evolution runs in a background subprocess; check the Dashboard for run status.</p>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('evolveForm', () => ({
+        theme: 'pressure, mask, survival',
+        population: 60,
+        generations: 20,
+        scheme: 'AABB',
+        init_mode: 'mixed',
+        artists: [],
+        songs: [],
+        artistsLoading: true,
+        songsLoading: false,
+        seed_artist: '',
+        seed_song_id: '',
+        selectedSongs: [],
+        submitting: false,
+        error: '',
+        async init() {
+            this.artistsLoading = true;
+            try {
+                const res = await fetch('/api/evolution/artists');
+                if (!res.ok) return;
+                this.artists = await res.json();
+            } catch (_) {}
+            finally { this.artistsLoading = false; }
+        },
+        async onArtistChange() {
+            this.seed_song_id = '';
+            this.songs = [];
+            if (!this.seed_artist) return;
+            this.songsLoading = true;
+            try {
+                const q = encodeURIComponent(this.seed_artist);
+                const res = await fetch(`/api/evolution/songs?artist=${q}`);
+                if (!res.ok) return;
+                this.songs = await res.json();
+            } catch (_) {}
+            finally { this.songsLoading = false; }
+        },
+        addSelectedSong() {
+            if (!this.seed_song_id || !this.seed_artist) return;
+            const song = this.songs.find(s => s.song_id === this.seed_song_id);
+            if (!song) return;
+            const entry = { song_id: song.song_id, artist: this.seed_artist, title: song.title };
+            if (this.selectedSongs.some(s => s.song_id === entry.song_id)) return;
+            this.selectedSongs.push(entry);
+        },
+        removeSong(i) {
+            this.selectedSongs.splice(i, 1);
+        },
+        async submit() {
+            this.error = '';
+            this.submitting = true;
+            try {
+                const res = await fetch('/api/evolution/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        theme: this.theme,
+                        population: this.population,
+                        generations: this.generations,
+                        scheme: this.scheme,
+                        init_mode: this.init_mode,
+                        seed_songs: this.selectedSongs.length > 0 ? this.selectedSongs : null,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    this.error = data.detail || 'Failed to start evolution';
+                    return;
+                }
+                window.location.href = `/runs/${data.run_id}`;
+            } catch (e) {
+                this.error = e.message || 'Network error';
+            } finally {
+                this.submitting = false;
+            }
+        },
+    }));
+});
+</script>
+{% endblock %}

@@ -166,7 +166,7 @@ def analyze_control_impact(
     by_policy: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
         cfg = r.get("controls") or {}
-        pv = cfg.get("policy_version")
+        pv = cfg.get("policy_version") or (cfg.get("control_snapshot") or {}).get("policy_version")
         if pv is None:
             continue
         by_policy.setdefault(str(pv), []).append(r)

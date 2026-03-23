@@ -23,6 +23,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import random
@@ -125,6 +126,36 @@ def parse_args() -> argparse.Namespace:
         help="Override corpus path for seed generation",
     )
     parser.add_argument(
+        "--seed-song-id",
+        type=str,
+        default=None,
+        help="Song identifier from song-lines CSV to seed initial population (legacy, single song).",
+    )
+    parser.add_argument(
+        "--seed-song-ids",
+        type=str,
+        default=None,
+        help="Comma-separated song IDs to seed initial population (multiple songs).",
+    )
+    parser.add_argument(
+        "--seed-artist",
+        type=str,
+        default=None,
+        help="Optional artist label for --seed-song-id (for logging/metadata).",
+    )
+    parser.add_argument(
+        "--seed-song-title",
+        type=str,
+        default=None,
+        help="Optional song title label for --seed-song-id (for logging/metadata).",
+    )
+    parser.add_argument(
+        "--seed-song-csv",
+        type=str,
+        default="data/elite_songs_lines_clean.csv",
+        help="CSV containing song lines (artist,title,song_id,line_index,line_text).",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="results_qd.json",
@@ -139,6 +170,20 @@ def parse_args() -> argparse.Namespace:
         "--db",
         action="store_true",
         help="Enable MySQL persistence (RAPBOT_USE_DB=1)",
+    )
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        metavar="RUN_ID",
+        default=None,
+        help="Use existing run_id (web-started); skip insert_run (requires --db)",
+    )
+    parser.add_argument(
+        "--arm",
+        type=str,
+        default=None,
+        metavar="ID",
+        help="Arm/preset id for comparison (stored in config_json, e.g. from run_continuous)",
     )
     parser.add_argument(
         "--experiment-id",
@@ -382,6 +427,75 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def _load_song_lines(song_id: str, csv_path: Path, use_db: bool = False) -> list[str]:
+    """Load ordered lyric lines for a song. Prefers DB when use_db and db enabled; else CSV."""
+    if use_db:
+        try:
+            from evo_rhyme import db
+
+            if db.db_enabled():
+                lines = db.get_song_lines(song_id)
+                if lines:
+                    return lines
+        except ImportError:
+            pass
+    return _load_song_lines_from_csv(song_id, csv_path)
+
+
+def _load_song_lines_from_csv(song_id: str, csv_path: Path) -> list[str]:
+    """Load and order all non-empty lines for one song_id from CSV."""
+    if not csv_path.exists():
+        return []
+    rows: list[tuple[int, str]] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            sid = str(row.get("song_id") or "").strip()
+            if sid != str(song_id):
+                continue
+            line_text = str(row.get("line_text") or "").strip()
+            if not line_text:
+                continue
+            try:
+                line_idx = int(str(row.get("line_index") or "").strip())
+            except (TypeError, ValueError):
+                line_idx = len(rows)
+            rows.append((line_idx, line_text))
+    rows.sort(key=lambda x: x[0])
+    return [line for _, line in rows]
+
+
+def _build_seed_population_from_song_lines(
+    song_lines: list[str],
+    population_size: int,
+    scheme: str,
+) -> list[Any]:
+    """Deterministically build 4-line seed verses from one song's bars."""
+    from evo_rhyme.individual import create_verse_individual
+
+    cleaned = [line.strip() for line in song_lines if isinstance(line, str) and line.strip()]
+    if len(cleaned) < 4 or population_size <= 0:
+        return []
+
+    windows: list[list[str]] = []
+    for i in range(0, len(cleaned) - 3):
+        windows.append(cleaned[i : i + 4])
+
+    if not windows:
+        return []
+
+    verses = [create_verse_individual(lines=w, scheme=scheme) for w in windows]
+    if len(verses) >= population_size:
+        return verses[:population_size]
+
+    out = list(verses)
+    cursor = 0
+    while len(out) < population_size:
+        out.append(verses[cursor % len(verses)])
+        cursor += 1
+    return out
+
+
 def main() -> None:
     args = parse_args()
     from config.settings import get_experiment_defaults
@@ -528,24 +642,28 @@ def main() -> None:
     if args.db:
         import os
         os.environ["RAPBOT_USE_DB"] = "1"
-        try:
-            from evo_rhyme import db
-            from evo_rhyme.experiment_controls import build_control_snapshot_from_qd_args
-            from config.settings import get_qd_defaults
-            if db.db_enabled():
-                defaults = get_qd_defaults(config_path=getattr(args, "config", None))
-                control_snapshot = build_control_snapshot_from_qd_args(args, defaults, seed_info=seed_info)
-                run_id = db.insert_run(
-                    "run_verse_qd",
-                    ",".join(theme_keywords) if theme_keywords else "",
-                    control_snapshot,
-                    experiment_id=getattr(args, "experiment_id", None),
-                    arm_id=getattr(args, "arm_id", None),
-                )
-                if run_id > 0:
-                    logger.info("DB run_id=%d", run_id)
-        except Exception as e:
-            logger.warning("DB insert_run failed: %s", e)
+        if getattr(args, "run_id", None) is not None and args.run_id > 0:
+            run_id = args.run_id
+            logger.info("Using existing DB run_id=%d (web-started)", run_id)
+        else:
+            try:
+                from evo_rhyme import db
+                from evo_rhyme.experiment_controls import build_control_snapshot_from_qd_args
+                from config.settings import get_qd_defaults
+                if db.db_enabled():
+                    defaults = get_qd_defaults(config_path=getattr(args, "config", None))
+                    control_snapshot = build_control_snapshot_from_qd_args(args, defaults, seed_info=seed_info)
+                    run_id = db.insert_run(
+                        "run_verse_qd",
+                        ",".join(theme_keywords) if theme_keywords else "",
+                        control_snapshot,
+                        experiment_id=getattr(args, "experiment_id", None),
+                        arm_id=getattr(args, "arm_id", None),
+                    )
+                    if run_id > 0:
+                        logger.info("DB run_id=%d", run_id)
+            except Exception as e:
+                logger.warning("DB insert_run failed: %s", e)
 
     # ---- QD config ----------------------------------------------------
     qd_config = QDEvolutionConfig(
@@ -649,7 +767,44 @@ def main() -> None:
         setattr(qd_config, "seed_info", seed_info)
 
     # ---- Initial population -------------------------------------------
-    if args.init == "lm":
+    population = []
+    seed_song_ids: list[str] = []
+    if getattr(args, "seed_song_ids", None):
+        seed_song_ids = [s.strip() for s in args.seed_song_ids.split(",") if s.strip()]
+    elif args.seed_song_id:
+        seed_song_ids = [args.seed_song_id]
+    if seed_song_ids:
+        seed_song_csv = Path(args.seed_song_csv)
+        if not seed_song_csv.is_absolute():
+            seed_song_csv = ROOT / seed_song_csv
+        all_lines: list[str] = []
+        for sid in seed_song_ids:
+            lines = _load_song_lines(
+                sid,
+                seed_song_csv,
+                use_db=getattr(args, "db", False),
+            )
+            all_lines.extend(lines)
+        population = _build_seed_population_from_song_lines(
+            song_lines=all_lines,
+            population_size=args.population,
+            scheme=args.scheme,
+        )
+        if population:
+            logger.info(
+                "Seeded initial population from %d song(s) (%d lines -> %d verses)",
+                len(seed_song_ids),
+                len(all_lines),
+                len(population),
+            )
+        else:
+            logger.warning(
+                "Could not seed from song_ids=%s; falling back to init=%s",
+                seed_song_ids,
+                args.init,
+            )
+
+    if not population and args.init == "lm":
         try:
             from evo_rhyme.population import LMVerseSeedGenerator
         except ImportError as exc:
@@ -675,7 +830,7 @@ def main() -> None:
         )
         population = gen.generate(args.population)
         logger.info("LM proposer generated %d seed verses", len(population))
-    else:
+    elif not population:
         from evo_rhyme.population import (
             VerseSeedGenerator,
             create_initial_verse_population,

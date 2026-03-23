@@ -24,7 +24,7 @@ from evo_rhyme.phonetics import (
     syllable_count_line,
 )
 
-load_dotenv(override=True)
+load_dotenv(override=False)  # Don't override Docker env (e.g. RAPBOT_DB_HOST=mysql)
 logger = logging.getLogger(__name__)
 
 ROLE_DESCRIPTIONS: Dict[str, str] = {

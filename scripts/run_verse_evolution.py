@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evo_rhyme.constraints import passes_verse_constraints
+from evo_rhyme.constraints import get_verse_constraint_failure, passes_verse_constraints
 from evo_rhyme.individual import analyze_verse_individual
 from evo_rhyme.population import (
     VerseSeedGenerator,
@@ -43,6 +43,11 @@ from evo_rhyme.verse_evolution import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run 4-line verse evolution")
+    parser.add_argument(
+        "--debug-constraints",
+        action="store_true",
+        help="Log why verses fail constraints (for diagnosing population shrinkage)",
+    )
     parser.add_argument(
         "--theme",
         type=str,
@@ -185,11 +190,16 @@ def main() -> None:
     )
     logger.info(f"Initial population: {len(raw_population)} verses (before constraint filter)")
 
+    failure_counts: dict[str, int] = {} if args.debug_constraints else {}
     population = []
     for ind in raw_population:
         analyze_verse_individual(ind)
         if passes_verse_constraints(ind, config.constraint_config):
             population.append(ind)
+        elif args.debug_constraints:
+            reason = get_verse_constraint_failure(ind, config.constraint_config)
+            key = reason.split("(")[0].strip() if reason else "unknown"
+            failure_counts[key] = failure_counts.get(key, 0) + 1
 
     max_oversample = 5
     for _ in range(max_oversample):
@@ -207,9 +217,17 @@ def main() -> None:
             analyze_verse_individual(ind)
             if passes_verse_constraints(ind, config.constraint_config):
                 population.append(ind)
+            elif args.debug_constraints:
+                reason = get_verse_constraint_failure(ind, config.constraint_config)
+                key = reason.split("(")[0].strip() if reason else "unknown"
+                failure_counts[key] = failure_counts.get(key, 0) + 1
 
     population = population[:args.population]
     logger.info(f"Filtered to {len(population)} verses passing constraints")
+    if args.debug_constraints and failure_counts:
+        logger.info("Constraint failure breakdown:")
+        for reason, cnt in sorted(failure_counts.items(), key=lambda x: -x[1])[:10]:
+            logger.info(f"  {reason}: {cnt}")
 
     verse_gen = VerseSeedGenerator(corpus_path=corpus_path, init_mode=args.init)
 

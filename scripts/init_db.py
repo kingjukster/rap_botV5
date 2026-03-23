@@ -177,6 +177,29 @@ CREATE TABLE IF NOT EXISTS experiment_arms (
     INDEX idx_experiment_id (experiment_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """,
+    # songs: artist/song catalog for seed population
+    """
+CREATE TABLE IF NOT EXISTS songs (
+    song_id VARCHAR(255) PRIMARY KEY,
+    artist VARCHAR(512) NOT NULL,
+    title VARCHAR(512) NOT NULL,
+    song_score DOUBLE DEFAULT NULL,
+    num_bars INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_artist (artist)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""",
+    # song_lines: lyric lines per song for seed generation
+    """
+CREATE TABLE IF NOT EXISTS song_lines (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    song_id VARCHAR(255) NOT NULL,
+    line_index INT NOT NULL,
+    line_text TEXT NOT NULL,
+    INDEX idx_song_id (song_id),
+    FOREIGN KEY (song_id) REFERENCES songs(song_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""",
 ]
 
 

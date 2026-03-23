@@ -90,9 +90,9 @@ pip install fastapi "uvicorn[standard]" jinja2
 uvicorn webapp.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open http://localhost:8000.
+Open http://localhost:8000. After `init_db.py`, run `python scripts/import_song_catalog.py` to populate the song catalog for the /evolve page (artist/song selectors and song-seeded evolution). Use `--replace` to reload from CSV after corpus rebuilds.
 
-**Docker:** `docker compose up` starts MySQL and the web dashboard. The dashboard and MySQL run in containers; evolution scripts (`run_verse_qd.py`, `run_verse_evolution.py`, etc.) are usually run on the **host** with the same DB env (`RAPBOT_USE_DB=1`, `RAPBOT_DB_HOST=localhost`, etc.) so runs appear in the dashboard. Use the host’s Python environment (e.g. `pip install -e ".[full]"`) for evolution; the web container is kept lightweight and does not run evolution.
+**Docker:** `docker compose up` starts MySQL and the web dashboard. Evolution can run in Docker: `docker compose --profile evolution run --rm evolution python scripts/run_verse_evolution.py --theme "pressure,mask" --population 30 --generations 5`. See [Remote Workflow](docs/REMOTE_WORKFLOW.md) for SSH-based dev. The dashboard and MySQL run in containers; evolution scripts (`run_verse_qd.py`, `run_verse_evolution.py`, etc.) are usually run on the **host** with the same DB env (`RAPBOT_USE_DB=1`, `RAPBOT_DB_HOST=localhost`, etc.) so runs appear in the dashboard. Use the host’s Python environment (e.g. `pip install -e ".[full]"`) for evolution; the web container is kept lightweight and does not run evolution.
 
 ---
 
@@ -298,6 +298,7 @@ Use `.env` and `python-dotenv` in your own wrapper if you want to load these fro
 
 ### Training / data
 
+- **`scripts/import_song_catalog.py`** — Import artist/song catalog from `data/elite_songs_lines_clean.csv` into DB. Use `--replace` to truncate and reload. Required for song-seeded evolution on /evolve.
 - **`scripts/training/build_rhyme_embedding_artifact.py`** — Build rhyme embedding artifact.
 - **`scripts/training/build_elite_kaggle_corpus_multi_stage.py`** — Build elite corpus.
 - **`scripts/training/clean_elite_corpus.py`** — Clean elite corpus.

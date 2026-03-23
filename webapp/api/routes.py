@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from webapp.services.evolution_service import (
+    start_evolution,
+    list_song_artists,
+    list_songs_for_artist,
+)
 from webapp.services.run_service import (
     list_runs as svc_list_runs,
     mark_stale_runs_failed,
@@ -200,6 +205,47 @@ def api_get_experiment_impact(
     if report is None:
         raise HTTPException(status_code=503, detail="Report not available")
     return report
+
+
+@router.post("/evolution/start")
+def api_evolution_start(
+    theme: str = Body(..., embed=True),
+    population: int = Body(60, embed=True, ge=10, le=200),
+    generations: int = Body(20, embed=True, ge=3, le=100),
+    scheme: str = Body("AABB", embed=True),
+    init_mode: str = Body("mixed", embed=True),
+    seed_songs: Optional[List[Dict[str, str]]] = Body(None, embed=True),
+):
+    """Start a QD evolution job. Returns run_id for redirect to /runs/{run_id}.
+    seed_songs: optional list of {song_id, artist, title} to seed initial population."""
+    run_id = start_evolution(
+        theme=theme,
+        population=population,
+        generations=generations,
+        scheme=scheme,
+        init_mode=init_mode,
+        seed_songs=seed_songs,
+    )
+    if run_id is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Evolution requires database (RAPBOT_USE_DB=1). Could not start job.",
+        )
+    return {"run_id": run_id, "message": f"Evolution started. Redirect to /runs/{run_id} to monitor."}
+
+
+@router.get("/evolution/artists", response_model=List[str])
+def api_evolution_artists():
+    """List artists available for song-seeded evolution."""
+    return list_song_artists()
+
+
+@router.get("/evolution/songs", response_model=List[Dict[str, str]])
+def api_evolution_songs(
+    artist: str = Query(..., min_length=1, description="Artist name"),
+):
+    """List songs for one artist available for song-seeded evolution."""
+    return list_songs_for_artist(artist=artist)
 
 
 @router.get("/runs/{run_id}/progress")

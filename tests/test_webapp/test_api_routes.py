@@ -199,3 +199,77 @@ def test_api_get_run_progress_returns_404_when_run_missing(monkeypatch):
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Run not found"
 
+
+def test_api_evolution_start_returns_run_id_on_success(monkeypatch):
+    import webapp.api.routes as routes_mod
+
+    captured: Dict[str, Any] = {}
+
+    def _fake_start(**kw):
+        captured.update(kw)
+        return 42
+
+    monkeypatch.setattr(routes_mod, "start_evolution", _fake_start)
+    app = FastAPI()
+    app.include_router(api_router, prefix="/api")
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/evolution/start",
+        json={
+            "theme": "pressure, mask",
+            "population": 60,
+            "generations": 20,
+            "seed_songs": [
+                {"song_id": "song-123", "artist": "Nas", "title": "N.Y. State of Mind"},
+                {"song_id": "song-456", "artist": "Nas", "title": "Life's a Bitch"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["run_id"] == 42
+    assert "runs/42" in data["message"]
+    assert captured["seed_songs"] == [
+        {"song_id": "song-123", "artist": "Nas", "title": "N.Y. State of Mind"},
+        {"song_id": "song-456", "artist": "Nas", "title": "Life's a Bitch"},
+    ]
+
+
+def test_api_evolution_start_returns_503_when_db_unavailable(monkeypatch):
+    import webapp.api.routes as routes_mod
+
+    monkeypatch.setattr(routes_mod, "start_evolution", lambda **kw: None)
+    app = FastAPI()
+    app.include_router(api_router, prefix="/api")
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/evolution/start",
+        json={"theme": "pressure"},
+    )
+    assert resp.status_code == 503
+    assert "database" in resp.json()["detail"].lower() or "evolution" in resp.json()["detail"].lower()
+
+
+def test_api_evolution_artist_and_song_catalog(monkeypatch):
+    import webapp.api.routes as routes_mod
+
+    monkeypatch.setattr(routes_mod, "list_song_artists", lambda: ["Nas", "Kendrick Lamar"])
+    monkeypatch.setattr(
+        routes_mod,
+        "list_songs_for_artist",
+        lambda artist: [{"song_id": "1", "title": "N.Y. State of Mind"}] if artist == "Nas" else [],
+    )
+    app = FastAPI()
+    app.include_router(api_router, prefix="/api")
+    client = TestClient(app)
+
+    artists_resp = client.get("/api/evolution/artists")
+    assert artists_resp.status_code == 200
+    assert artists_resp.json() == ["Nas", "Kendrick Lamar"]
+
+    songs_resp = client.get("/api/evolution/songs?artist=Nas")
+    assert songs_resp.status_code == 200
+    assert songs_resp.json() == [{"song_id": "1", "title": "N.Y. State of Mind"}]
+

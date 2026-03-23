@@ -8,6 +8,7 @@ and flatten_controls for stable JSON-safe representation.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -232,6 +233,9 @@ def build_control_snapshot_from_qd_args(
         snapshot["policy_hash"] = getattr(args, "_policy_hash", None)
     if hasattr(args, "_sampled_policy_rank"):
         snapshot["sampled_policy_rank"] = getattr(args, "_sampled_policy_rank", None)
+    arm = getattr(args, "arm", None) or os.environ.get("RAPBOT_CONTINUOUS_ARM", "")
+    if arm:
+        snapshot["arm"] = str(arm)
     return snapshot
 
 

@@ -574,3 +574,59 @@ def passes_verse_constraints(
             return False
 
     return True
+
+
+def get_verse_constraint_failure(
+    individual: VerseIndividual,
+    config: Optional[Any] = None,
+) -> Optional[str]:
+    """Return the first constraint failure reason, or None if all pass."""
+    cfg = _resolve_config(config)
+    if not individual.features or len(individual.features.syllable_counts) != 4:
+        from evo_rhyme.individual import analyze_verse_individual
+
+        analyze_verse_individual(individual)
+
+    f = individual.features
+    if not f or len(f.syllable_counts) != 4:
+        return "missing features or wrong line count"
+
+    err = _check_verse_syllable_bounds(f, cfg)
+    if err:
+        return err
+    err = _check_verse_min_words(f, cfg)
+    if err:
+        return err
+    err = _check_verse_valid_pronunciation(individual, cfg)
+    if err:
+        return err
+    err = _check_verse_weak_end_words(individual, cfg)
+    if err:
+        return err
+    err = _check_verse_identical_lines(individual)
+    if err:
+        return err
+    err = _check_verse_stressed_end_tail(individual, cfg)
+    if err:
+        return err
+    err = _check_verse_near_duplicate_lines(individual)
+    if err:
+        return err
+    err = _check_verse_content_repetition(individual, cfg)
+    if err:
+        return err
+    err = _check_verse_garbled_lines(individual)
+    if err:
+        return err
+    err = _check_verse_orphan_lines(individual, cfg)
+    if err:
+        return err
+
+    if cfg.require_theme_presence and cfg.prompt_keywords:
+        all_words: set = set()
+        for line in individual.lines:
+            all_words.update(re.findall(r"[A-Za-z']+", line.lower()))
+        if not (all_words & cfg.prompt_keywords):
+            return "no theme keyword in verse"
+
+    return None

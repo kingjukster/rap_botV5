@@ -253,6 +253,12 @@ def run_seeds(request: Request, run_id: int):
     )
 
 
+@router.get("/evolve", response_class=HTMLResponse)
+def evolve_page(request: Request):
+    """Evolve: start a verse evolution job from the web."""
+    return templates.TemplateResponse("evolve.html", {"request": request})
+
+
 @router.get("/sql", response_class=HTMLResponse)
 def sql_page(request: Request):
     """SQL query page."""

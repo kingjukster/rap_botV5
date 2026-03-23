@@ -520,6 +520,22 @@ def update_run_status(run_id: int, status: str, failure_reason: Optional[str] = 
     _execute(_run, default=None, commit=True)
 
 
+def update_run_config(run_id: int, config_json: Dict[str, Any]) -> None:
+    """Update config_json for a run."""
+
+    def _run(conn: Any) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE runs SET config_json = %s WHERE run_id = %s",
+                (json.dumps(config_json), run_id),
+            )
+        finally:
+            cur.close()
+
+    _execute(_run, default=None, commit=True)
+
+
 def _ensure_failure_reason_column(conn: Any) -> None:
     """Ensure runs.failure_reason column exists (idempotent)."""
     cur = conn.cursor()
@@ -1368,6 +1384,56 @@ def list_score_cache_recent(*, limit: int = 200, offset: int = 0) -> List[Dict[s
                 (limit, offset),
             )
             return [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_song_artists() -> List[str]:
+    """List distinct artist names from songs table. Returns [] if DB disabled or empty."""
+
+    def _run(conn: Any) -> List[str]:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT DISTINCT artist FROM songs ORDER BY artist",
+            )
+            return [row[0] for row in cur.fetchall() if row and row[0]]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_songs_for_artist(artist: str) -> List[Dict[str, Any]]:
+    """List songs for one artist. Returns [{\"song_id\": \"...\", \"title\": \"...\"}, ...]."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT song_id, title FROM songs WHERE artist = %s ORDER BY title",
+                (artist,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def get_song_lines(song_id: str) -> List[str]:
+    """Load ordered lyric lines for a song. Returns [] if song not found or DB disabled."""
+
+    def _run(conn: Any) -> List[str]:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT line_text FROM song_lines WHERE song_id = %s ORDER BY line_index",
+                (song_id,),
+            )
+            return [row[0] for row in cur.fetchall() if row and row[0]]
         finally:
             cur.close()
 

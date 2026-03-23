@@ -763,6 +763,7 @@ class VerseQDRunLogger:
         mean_fitness: float,
         occupied_niches: int,
         runtime: Optional[Dict[str, Any]] = None,
+        archive: Optional[MAPElitesArchive] = None,
     ) -> None:
         row = {
             "generation": gen,
@@ -783,6 +784,15 @@ class VerseQDRunLogger:
                         archive_coverage, None,
                         {"occupied_niches": occupied_niches, "runtime": runtime},
                     )
+                    # Insert top candidates each gen so runs page shows progress even if run crashes later
+                    if archive is not None:
+                        scheme = "AABB"
+                        for ind in archive.top_k(5):
+                            ct = f"verse{len(ind.lines)}"
+                            _db.insert_candidate(
+                                self.run_id, gen, ct, scheme,
+                                ind.lines, ind.fitness or 0.0, ind.scores,
+                            )
             except Exception as e:
                 logger.warning("DB log_generation failed: %s", e)
 
@@ -1227,6 +1237,7 @@ def evolve_verse_qd(
         if run_logger:
             run_logger.log_generation(
                 gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+                archive=archive,
             )
 
         if on_generation:
@@ -1459,7 +1470,9 @@ def evolve_verse_qd_emitters(
 
         if run_logger:
             run_logger.log_generation(
-                gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(), runtime=runtime,
+                gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+                runtime=runtime,
+                archive=archive,
             )
 
         if on_generation:
