@@ -28,6 +28,10 @@ MOUNTS=(-v "$MOUNT_SRC:/app:rw")
 [[ -d "$HOME/.ssh" ]] && MOUNTS+=(-v "$HOME/.ssh:/root/.ssh:ro")
 
 # Run git lfs install (local repo only) + push
-# If you see "Not in a Git repository", Docker may not see your path. Try:
-#   cd /path/to/rap_botV5 && REPO_PATH=$(pwd) ./scripts/git_push_docker.sh origin simple_bot
-docker run --rm "${MOUNTS[@]}" -w /app "$IMAGE" sh -c 'git lfs install --local && exec git push "$@"' _ "$@"
+# safe.directory avoids "dubious ownership" when repo is mounted from host
+# GIT_SSH_COMMAND: accept GitHub host key on first connect (known_hosts may be missing in container)
+docker run --rm "${MOUNTS[@]}" -w /app -e GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new" \
+  "$IMAGE" sh -c '
+  git -c safe.directory=/app lfs install --local
+  exec git -c safe.directory=/app push "$@"
+' _ "$@"
