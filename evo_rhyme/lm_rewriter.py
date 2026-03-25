@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ class RewriterConfig:
     max_tokens: int = 60
     candidates_per_rewrite: int = 5
     timeout: float = 20.0
-    max_retries: int = 2
+    max_retries: int = 4
     cache_maxsize: int = 2048
 
 
@@ -65,6 +66,29 @@ class _LRUCache:
             if len(self._store) >= self._maxsize:
                 self._store.popitem(last=False)
         self._store[key] = value
+
+
+class _TokenBucketRateLimiter:
+    """Thread-safe token-bucket rate limiter (requests per minute)."""
+
+    def __init__(self, rpm: int = 25):
+        self._rpm = max(1, rpm)
+        self._interval = 60.0 / self._rpm
+        self._lock = threading.Lock()
+        self._last_call = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_call
+            if elapsed < self._interval:
+                time.sleep(self._interval - elapsed)
+            self._last_call = time.monotonic()
+
+
+_global_rate_limiter = _TokenBucketRateLimiter(
+    rpm=int(os.environ.get("RAPBOT_LM_RPM", "25"))
+)
 
 
 def _cache_key(line: str, method: str, constraints: Tuple) -> str:
@@ -96,9 +120,16 @@ class BarRewriter:
         from openai import OpenAI
 
         api_key = self._config.api_key or os.environ.get("OPENAI_API_KEY")
+        base_url = self._config.api_base
+        if base_url and "runpod" in base_url.lower():
+            api_key = os.environ.get("RUNPOD_API_KEY") or api_key
+        elif base_url and "groq" in base_url.lower():
+            api_key = os.environ.get("GROQ_API_KEY") or api_key
+        elif not api_key:
+            api_key = os.environ.get("RUNPOD_API_KEY") or os.environ.get("GROQ_API_KEY")
         kwargs: Dict = {"api_key": api_key}
-        if self._config.api_base:
-            kwargs["base_url"] = self._config.api_base
+        if base_url:
+            kwargs["base_url"] = base_url
         self._client = OpenAI(**kwargs)
 
     # ------------------------------------------------------------------
@@ -119,7 +150,9 @@ class BarRewriter:
         last_err: Exception | None = None
 
         fail_fast = (os.environ.get("RAPBOT_LM_FAIL_FAST", "") or "").strip().lower() in ("1", "true", "yes")
-        for attempt in range(1, self._config.max_retries + 2):
+        max_attempts = self._config.max_retries + 2
+        for attempt in range(1, max_attempts + 1):
+            _global_rate_limiter.wait()
             try:
                 resp = self._client.chat.completions.create(  # type: ignore[union-attr]
                     model=self._config.model,
@@ -136,11 +169,13 @@ class BarRewriter:
                 if fail_fast:
                     logger.error("LM fail-fast enabled; aborting LM call after first failure: %s", exc)
                     return ""
-                wait = 2 ** attempt
+                is_rate_limit = "429" in str(exc) or "rate" in str(exc).lower()
+                wait = min(60, (2 ** attempt) * (4 if is_rate_limit else 1))
                 logger.warning(
-                    "LM call attempt %d/%d failed: %s – retrying in %ds",
+                    "LM call attempt %d/%d failed%s: %s – retrying in %ds",
                     attempt,
-                    self._config.max_retries + 1,
+                    max_attempts,
+                    " (rate-limited)" if is_rate_limit else "",
                     exc,
                     wait,
                 )

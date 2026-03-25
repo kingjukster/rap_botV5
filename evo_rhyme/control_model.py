@@ -107,6 +107,7 @@ def train_predictive_model(
     importance = dict(zip(feature_names, model.feature_importances_.tolist()))
     scores = cross_val_score(model, X, y, cv=min(5, len(y) - 1), scoring="r2")
     return {
+        "model": model,
         "target": target,
         "feature_names": feature_names,
         "feature_importance": importance,
@@ -114,3 +115,85 @@ def train_predictive_model(
         "cv_r2_std": float(scores.std()),
         "n_samples": len(y),
     }
+
+
+def propose_config_from_model(
+    rows: List[Dict[str, Any]],
+    n_proposals: int = 20,
+    top_k: int = 3,
+    noise_scale: float = 0.15,
+) -> List[Dict[str, Any]]:
+    """Train RF on historical runs and propose new configs by perturbing the best.
+
+    Args:
+        rows: List of {controls: dict, fitness: float} from completed runs.
+        n_proposals: Number of random perturbations to generate.
+        top_k: Return the top-k proposals ranked by predicted fitness.
+        noise_scale: Relative perturbation magnitude for numeric controls.
+
+    Returns:
+        List of {controls: dict, predicted_fitness: float}, best first.
+    """
+    result = train_predictive_model(rows, target="fitness")
+    model = result.get("model")
+    if model is None or result.get("error"):
+        logger.warning("Control model training failed: %s", result.get("error"))
+        return []
+
+    feature_names = result["feature_names"]
+    cv_r2 = result.get("cv_r2_mean", 0.0)
+    if cv_r2 < 0.05:
+        logger.info("Control model R^2=%.3f too low, skipping proposals", cv_r2)
+        return []
+
+    try:
+        import numpy as np
+    except ImportError:
+        return []
+
+    X_list, _ = build_control_matrix(rows, control_keys=None)
+    X = np.array([[d.get(f, 0.0) for f in feature_names] for d in X_list])
+    y = np.array([r.get("fitness", 0.0) for r in rows])
+    best_idx = int(np.argmax(y))
+    best_x = X[best_idx]
+
+    proposals = []
+    rng = np.random.RandomState(42)
+    for _ in range(n_proposals):
+        candidate = best_x.copy()
+        for j in range(len(candidate)):
+            if abs(candidate[j]) < 1e-9:
+                candidate[j] += rng.normal(0, 0.1)
+            else:
+                candidate[j] *= 1.0 + rng.normal(0, noise_scale)
+        pred = float(model.predict(candidate.reshape(1, -1))[0])
+        proposals.append((candidate, pred))
+
+    proposals.sort(key=lambda x: x[1], reverse=True)
+
+    best_controls = rows[best_idx].get("controls", {})
+    numeric_keys = [
+        k for k in best_controls
+        if isinstance(best_controls.get(k), (int, float, bool))
+    ]
+
+    out = []
+    for candidate_vec, pred in proposals[:top_k]:
+        ctrl = dict(best_controls)
+        for i, fname in enumerate(feature_names):
+            if fname in ctrl and isinstance(ctrl[fname], (int, float)):
+                if isinstance(ctrl[fname], int):
+                    ctrl[fname] = max(1, int(round(candidate_vec[i])))
+                else:
+                    ctrl[fname] = round(float(candidate_vec[i]), 4)
+        out.append({
+            "controls": ctrl,
+            "predicted_fitness": pred,
+            "cv_r2": cv_r2,
+        })
+
+    logger.info(
+        "Control model proposed %d configs (R^2=%.3f, best predicted=%.4f)",
+        len(out), cv_r2, out[0]["predicted_fitness"] if out else 0.0,
+    )
+    return out

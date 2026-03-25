@@ -172,22 +172,50 @@ def load_templates() -> List[TemplateEntry]:
     return entries
 
 
+def _load_verb_conjugations() -> tuple:
+    """Load irregular verb conjugations from verbs.csv (present,past,participle)."""
+    csv_path = VOCAB_DIR / "verbs.csv"
+    extra_verbs: list = []
+    extra_past: list = []
+    if csv_path.exists():
+        for line in csv_path.read_text(encoding="utf-8").splitlines():
+            parts = line.strip().split(",")
+            if len(parts) >= 2:
+                extra_verbs.append(parts[0].strip().lower())
+                extra_past.append(parts[1].strip().lower())
+    return extra_verbs, extra_past
+
+
 def load_vocab() -> Dict[str, List[str]]:
     """
     Load vocab from data/evo_rhyme/vocab/. Creates minimal files if missing.
     Returns dict with keys: nouns, verbs, adjectives, verbs_past, verbs_ing, states.
+    Also supplements from verbs.csv for irregular conjugation coverage.
     """
     _ensure_vocab_files()
     verbs = _load_lines(VOCAB_DIR / "verbs.txt") or _MINIMAL_VERBS
+    verbs_past = _load_lines(VOCAB_DIR / "verbs_past.txt") or _MINIMAL_VERBS_PAST
+
+    csv_verbs, csv_past = _load_verb_conjugations()
+    verb_set = set(v.lower() for v in verbs)
+    past_set = set(v.lower() for v in verbs_past)
+    for v in csv_verbs:
+        if v not in verb_set:
+            verbs.append(v)
+            verb_set.add(v)
+    for v in csv_past:
+        if v not in past_set:
+            verbs_past.append(v)
+            past_set.add(v)
+
     verbs_ing = _load_lines(VOCAB_DIR / "verbs_ing.txt")
     if not verbs_ing:
-        # Derive -ing from verbs if verbs_ing.txt missing
         verbs_ing = [_verb_to_ing(v) for v in verbs]
     vocab: Dict[str, List[str]] = {
         "nouns": _load_lines(VOCAB_DIR / "nouns.txt") or _MINIMAL_NOUNS,
         "verbs": verbs,
         "adjectives": _load_lines(VOCAB_DIR / "adjectives.txt") or _MINIMAL_ADJECTIVES,
-        "verbs_past": _load_lines(VOCAB_DIR / "verbs_past.txt") or _MINIMAL_VERBS_PAST,
+        "verbs_past": verbs_past,
         "verbs_ing": verbs_ing,
         "states": _load_lines(VOCAB_DIR / "states.txt") or _MINIMAL_STATES,
     }
@@ -371,6 +399,15 @@ def _select_template(
     return random.choice(templates)
 
 
+def _shuffled_template_cycle(
+    templates: List[TemplateEntry],
+) -> List[TemplateEntry]:
+    """Return a shuffled copy of templates for round-robin iteration."""
+    shuffled = list(templates)
+    random.shuffle(shuffled)
+    return shuffled
+
+
 def generate_seed_couplets(
     theme_keywords: Optional[List[str]] = None,
     count: int = 10,
@@ -430,10 +467,13 @@ def generate_seed_couplets(
         if target_groups:
             viable_groups = target_groups
 
+    shuffled = _shuffled_template_cycle(templates)
+    n_templates = len(shuffled)
+
     results: List[CoupletIndividual] = []
-    for _ in range(count):
-        t1_entry = _select_template(templates, min_syllables, max_syllables)
-        t2_entry = _select_template(templates, min_syllables, max_syllables)
+    for idx in range(count):
+        t1_entry = shuffled[(idx * 2) % n_templates]
+        t2_entry = shuffled[(idx * 2 + 1) % n_templates]
         t1 = t1_entry.text
         t2 = t2_entry.text
         ph1 = _parse_template(t1)
@@ -500,10 +540,13 @@ def generate_random_couplets(
     if not templates:
         return []
 
+    shuffled = _shuffled_template_cycle(templates)
+    n_templates = len(shuffled)
+
     results: List[CoupletIndividual] = []
-    for _ in range(count):
-        t1_entry = random.choice(templates)
-        t2_entry = random.choice(templates)
+    for idx in range(count):
+        t1_entry = shuffled[(idx * 2) % n_templates]
+        t2_entry = shuffled[(idx * 2 + 1) % n_templates]
         line1 = _fill_template(t1_entry.text, vocab, theme_set, end_word=None,
                                group_to_words=group_to_words)
         line2 = _fill_template(t2_entry.text, vocab, theme_set, end_word=None,

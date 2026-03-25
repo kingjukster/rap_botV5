@@ -36,6 +36,8 @@
         </div>
     </div>
 
+    <div id="insights-container" class="hidden grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mb-6"></div>
+
     <div class="grid gap-6 sm:grid-cols-2 mb-6">
         <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
             <h3 class="text-lg font-semibold text-slate-100 mb-2">Best Fitness</h3>
@@ -63,6 +65,23 @@
             </table>
         </div>
         <p id="config-empty" class="hidden mt-2 text-slate-500 text-sm">No runs with arm in config_json.</p>
+    </section>
+
+    <section class="mb-6" id="operator-mix-section">
+        <h3 class="text-lg font-semibold text-slate-100 mb-3">Operator mix (DB events)</h3>
+        <p class="text-slate-500 text-sm mb-2">Counts from <code class="text-amber-400/80">operator_events</code> when evolution mirrors operators into MySQL (see <code class="text-amber-400/80">evo_rhyme.db.insert_operator_event</code>).</p>
+        <div class="overflow-x-auto rounded-lg border border-slate-600">
+            <table class="w-full text-sm">
+                <thead class="bg-slate-800 text-slate-400 text-left">
+                    <tr>
+                        <th class="px-4 py-3 font-medium">Operator</th>
+                        <th class="px-4 py-3 font-medium">Count</th>
+                    </tr>
+                </thead>
+                <tbody id="operator-mix-tbody" class="divide-y divide-slate-700"></tbody>
+            </table>
+        </div>
+        <p id="operator-mix-empty" class="hidden mt-2 text-slate-500 text-sm">No operator events in the database yet.</p>
     </section>
 
     <section>
@@ -134,6 +153,42 @@
                 '<td class="px-4 py-3 text-slate-400">' + (row.count || 0) + '</td>' +
                 '<td class="px-4 py-3 text-slate-400">' + (avg != null ? avg.toFixed(3) : '—') + '</td>';
             tbody.appendChild(tr);
+        });
+    }
+
+    const insightsData = data.insights || [];
+    const insightsEl = document.getElementById('insights-container');
+    if (insightsData.length && insightsEl) {
+        insightsEl.classList.remove('hidden');
+        const levelClasses = {
+            warning: 'border-amber-500/40 bg-amber-500/10 text-amber-400',
+            error: 'border-red-500/40 bg-red-500/10 text-red-400',
+            success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400',
+            info: 'border-sky-500/40 bg-sky-500/10 text-sky-400',
+        };
+        insightsData.forEach(function(ins) {
+            const div = document.createElement('div');
+            div.className = 'rounded-lg border p-3 ' + (levelClasses[ins.level] || levelClasses.info);
+            div.innerHTML = '<p class="font-medium text-sm">' + String(ins.title || '') + '</p>' +
+                '<p class="text-slate-400 text-xs mt-1">' + String(ins.detail || '') + '</p>';
+            insightsEl.appendChild(div);
+        });
+    }
+
+    const opMix = data.operator_mix || [];
+    const opTbody = document.getElementById('operator-mix-tbody');
+    const opEmpty = document.getElementById('operator-mix-empty');
+    const opSection = document.getElementById('operator-mix-section');
+    if (opMix.length === 0) {
+        opEmpty.classList.remove('hidden');
+        opSection.querySelector('table').classList.add('hidden');
+    } else {
+        opMix.forEach(function(row) {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-slate-800/50';
+            tr.innerHTML = '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + String(row.operator || '—') + '</td>' +
+                '<td class="px-4 py-3 text-slate-400">' + (row.count || 0) + '</td>';
+            opTbody.appendChild(tr);
         });
     }
 

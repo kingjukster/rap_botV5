@@ -56,12 +56,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Built-in defaults if no config file (lm_budget=0 = no OpenAI calls)
+# seed_from_archive=10: seed each run with top-10 verses from prior completed runs
 DEFAULT_CONFIGS: List[Dict[str, Any]] = [
-    {"arm": "pressure", "theme": "pressure,mask,survival", "population": 60, "generations": 20, "scheme": "AABB", "init": "mixed", "lm_budget": 0, "line_lm_budget": 0},
-    {"arm": "crown", "theme": "crown,empire,power", "population": 60, "generations": 20, "scheme": "AABB", "init": "mixed", "lm_budget": 0, "line_lm_budget": 0},
-    {"arm": "flow", "theme": "flow,show,dream", "population": 60, "generations": 20, "scheme": "AABB", "init": "mixed", "lm_budget": 0, "line_lm_budget": 0},
-    {"arm": "random", "theme": "pressure,mask,survival", "population": 60, "generations": 20, "scheme": "AABB", "init": "random", "lm_budget": 0, "line_lm_budget": 0},
-    {"arm": "template", "theme": "pressure,mask,survival", "population": 60, "generations": 20, "scheme": "AABB", "init": "template", "lm_budget": 0, "line_lm_budget": 0},
+    {"arm": "pressure", "theme": "pressure,mask,survival", "population": 60, "generations": 20, "scheme": "AABB", "init": "mixed", "lm_budget": 0, "line_lm_budget": 0, "seed_from_archive": 10},
+    {"arm": "crown", "theme": "crown,empire,power", "population": 60, "generations": 20, "scheme": "AABB", "init": "mixed", "lm_budget": 0, "line_lm_budget": 0, "seed_from_archive": 10},
+    {"arm": "flow", "theme": "flow,show,dream", "population": 60, "generations": 20, "scheme": "AABB", "init": "mixed", "lm_budget": 0, "line_lm_budget": 0, "seed_from_archive": 10},
+    {"arm": "random", "theme": "pressure,mask,survival", "population": 60, "generations": 20, "scheme": "AABB", "init": "random", "lm_budget": 0, "line_lm_budget": 0, "seed_from_archive": 10},
+    {"arm": "template", "theme": "pressure,mask,survival", "population": 60, "generations": 20, "scheme": "AABB", "init": "template", "lm_budget": 0, "line_lm_budget": 0, "seed_from_archive": 10},
 ]
 
 
@@ -80,6 +81,9 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     runs = data.get("runs", [])
     default_lm = int(data.get("lm_budget", 0))
     default_line_lm = int(data.get("line_lm_budget", 0))
+    default_seed_from_archive = int(data.get("seed_from_archive", 0))
+    default_archive_mode = data.get("archive_mode", "compact_style")
+    default_immigrants = int(data.get("immigrants", 20))
     seeds = data.get("seeds")
     if seeds is None:
         seeds = []
@@ -97,6 +101,9 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
             "init": r.get("init", "mixed"),
             "lm_budget": int(r.get("lm_budget", default_lm)),
             "line_lm_budget": int(r.get("line_lm_budget", default_line_lm)),
+            "seed_from_archive": int(r.get("seed_from_archive", default_seed_from_archive)),
+            "archive_mode": r.get("archive_mode", default_archive_mode),
+            "immigrants": int(r.get("immigrants", default_immigrants)),
         }
         if seeds:
             for seed in seeds:
@@ -108,6 +115,7 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     elite_replay_fraction = float(data.get("elite_replay_fraction", 0.3))
     epsilon_decay_factor = float(data.get("epsilon_decay_factor", 0.98))
     epsilon_decay_cap = int(data.get("epsilon_decay_cap", 50))
+    default_generations = max(int(r.get("generations", 20)) for r in runs) if runs else 40
     metadata = {
         "seeds": seeds,
         "policy_mode": policy_mode,
@@ -116,6 +124,9 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         "epsilon_decay_cap": epsilon_decay_cap,
         "default_lm_budget": default_lm,
         "default_line_lm_budget": default_line_lm,
+        "default_generations": default_generations,
+        "default_archive_mode": default_archive_mode,
+        "default_immigrants": default_immigrants,
     }
     return out, metadata
 
@@ -124,10 +135,14 @@ def _sample_elite_config(
     learned_policy_path: Path,
     default_lm_budget: int = 0,
     default_line_lm_budget: int = 0,
+    default_generations: int = 40,
+    default_archive_mode: str = "compact_style",
+    default_immigrants: int = 20,
 ) -> Optional[Dict[str, Any]]:
     """
     Sample a config from learned policy top_configs (score-weighted).
     Returns config dict compatible with run_evolution(), or None if no viable configs.
+    YAML-level defaults are enforced as floors over stale policy values.
     """
     if not learned_policy_path.exists():
         return None
@@ -161,7 +176,6 @@ def _sample_elite_config(
     ctrls = chosen.get("controls") or {}
     if not isinstance(ctrls, dict):
         return None
-    # Map controls to run_evolution cfg format
     theme = ctrls.get("theme") or "pressure,mask,survival"
     if isinstance(theme, list):
         theme = ",".join(str(t) for t in theme)
@@ -169,14 +183,17 @@ def _sample_elite_config(
         "arm": ctrls.get("arm") or f"elite_replay_{chosen.get('source_run_id', 'unknown')[:12]}",
         "theme": str(theme),
         "population": int(ctrls.get("population", 80)),
-        "generations": int(ctrls.get("generations", 20)),
+        "generations": max(int(ctrls.get("generations", 20)), default_generations),
         "scheme": str(ctrls.get("scheme", "AABB")),
         "init": str(ctrls.get("init", "mixed")),
-        "lm_budget": int(ctrls.get("lm_budget", default_lm_budget)),
-        "line_lm_budget": int(ctrls.get("line_lm_budget", default_line_lm_budget)),
+        "lm_budget": max(int(ctrls.get("lm_budget", 0)), default_lm_budget),
+        "line_lm_budget": max(int(ctrls.get("line_lm_budget", 0)), default_line_lm_budget),
+        "archive_mode": default_archive_mode,
+        "immigrants": default_immigrants,
     }
     if ctrls.get("seed") is not None:
         cfg["seed"] = int(ctrls["seed"])
+    cfg["seed_from_archive"] = 3
     cfg["config_source"] = "elite_replay"
     return cfg
 
@@ -318,7 +335,12 @@ def _build_evolution_cmd(
         "--prompt-llm-fraction", "0",
         "--db",
         "--runs-dir",
+        "--archive-mode", cfg.get("archive_mode", "compact_style"),
+        "--immigrants", str(cfg.get("immigrants", 20)),
     ])
+    seed_from_archive = cfg.get("seed_from_archive", 0)
+    if seed_from_archive and int(seed_from_archive) > 0:
+        cmd.extend(["--seed-from-archive", str(int(seed_from_archive))])
     if cfg.get("arm"):
         cmd.extend(["--arm", str(cfg["arm"])])
     if cfg.get("seed") is not None:
@@ -440,6 +462,83 @@ def _run_update_learned_policy(
         return proc.returncode
 
 
+def _propose_model_config(
+    default_lm_budget: int = 0,
+    default_line_lm_budget: int = 0,
+    default_generations: int = 40,
+    default_archive_mode: str = "compact_style",
+    default_immigrants: int = 20,
+) -> Optional[Dict[str, Any]]:
+    """Use the control model to propose a config by training on recent DB runs.
+
+    Returns a run config dict or None if the model can't propose (too few runs, low R^2).
+    YAML-level defaults are enforced as floors over model-proposed values.
+    """
+    try:
+        import os
+        os.environ.setdefault("RAPBOT_USE_DB", "1")
+        from evo_rhyme import db
+        from evo_rhyme.control_model import propose_config_from_model
+
+        if not db.db_enabled():
+            return None
+
+        runs = db.list_runs(limit=300, status_filter="completed")
+        if len(runs) < 20:
+            logger.debug("Too few completed runs (%d) for control model", len(runs))
+            return None
+
+        rows = []
+        for r in runs:
+            cfg = r.get("config_json") or {}
+            if not isinstance(cfg, dict):
+                continue
+            fitness = None
+            derived = r.get("derived")
+            if isinstance(derived, dict):
+                fitness = derived.get("final_best_fitness")
+            if fitness is None:
+                continue
+            rows.append({"controls": cfg, "fitness": float(fitness)})
+
+        if len(rows) < 20:
+            return None
+
+        proposals = propose_config_from_model(rows, n_proposals=30, top_k=1)
+        if not proposals:
+            return None
+
+        chosen = proposals[0]
+        ctrls = chosen.get("controls", {})
+        theme = ctrls.get("theme") or ctrls.get("theme_keywords") or "pressure,mask,survival"
+        if isinstance(theme, list):
+            theme = ",".join(str(t) for t in theme)
+
+        cfg = {
+            "arm": f"model_proposed_{chosen.get('predicted_fitness', 0):.2f}",
+            "theme": str(theme),
+            "population": int(ctrls.get("population", ctrls.get("population_size", 80))),
+            "generations": max(int(ctrls.get("generations", ctrls.get("num_generations", 20))), default_generations),
+            "scheme": str(ctrls.get("scheme", ctrls.get("rhyme_scheme", "AABB"))),
+            "init": str(ctrls.get("init", "mixed")),
+            "lm_budget": max(int(ctrls.get("lm_budget", ctrls.get("lm_mutation_budget_per_gen", 0))), default_lm_budget),
+            "line_lm_budget": max(int(ctrls.get("line_lm_budget", ctrls.get("line_lm_mutation_budget", 0))), default_line_lm_budget),
+            "config_source": "model_proposed",
+            "seed_from_archive": 3,
+            "archive_mode": default_archive_mode,
+            "immigrants": default_immigrants,
+        }
+        logger.info(
+            "Control model proposed config: predicted_fitness=%.4f R^2=%.3f",
+            chosen.get("predicted_fitness", 0),
+            chosen.get("cv_r2", 0),
+        )
+        return cfg
+    except Exception as e:
+        logger.debug("Control model proposal failed: %s", e)
+        return None
+
+
 def _policy_has_top_configs(learned_policy_path: Path) -> bool:
     """Return True if learned_policy.json has non-empty top_configs."""
     if not learned_policy_path.exists():
@@ -490,6 +589,9 @@ def main() -> int:
     epsilon_decay_cap = getattr(args, "epsilon_decay_cap", None) or metadata.get("epsilon_decay_cap", 50)
     default_lm = metadata.get("default_lm_budget", 0)
     default_line_lm = metadata.get("default_line_lm_budget", 0)
+    default_gens = metadata.get("default_generations", 40)
+    default_archive_mode = metadata.get("default_archive_mode", "compact_style")
+    default_immigrants = metadata.get("default_immigrants", 20)
     policy_failure_penalty = getattr(args, "policy_failure_penalty", 0.8)
 
     logger.info(
@@ -582,11 +684,24 @@ def main() -> int:
             # Start new runs until we have parallel in flight
             while len(active) < parallel:
                 cfg = configs[idx]
-                if elite_replay_fraction > 0 and random.random() < elite_replay_fraction:
+                if completed_count > 0 and completed_count % 5 == 0 and run_count > 0:
+                    model_cfg = _propose_model_config(
+                        default_lm_budget=default_lm,
+                        default_line_lm_budget=default_line_lm,
+                        default_generations=default_gens,
+                        default_archive_mode=default_archive_mode,
+                        default_immigrants=default_immigrants,
+                    )
+                    if model_cfg is not None:
+                        cfg = model_cfg
+                elif elite_replay_fraction > 0 and random.random() < elite_replay_fraction:
                     elite_cfg = _sample_elite_config(
                         learned_policy_path,
                         default_lm_budget=default_lm,
                         default_line_lm_budget=default_line_lm,
+                        default_generations=default_gens,
+                        default_archive_mode=default_archive_mode,
+                        default_immigrants=default_immigrants,
                     )
                     if elite_cfg is not None:
                         cfg = elite_cfg

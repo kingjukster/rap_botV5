@@ -1,0 +1,44 @@
+# RunPod worker: exclude large/unnecessary files but keep data needed for evolution
+
+# Old run data (workers write new runs to DB)
+data/evo_rhyme/runs/
+
+# Git and IDE
+.git/
+.gitignore
+.cursor/
+.vscode/
+.pytest_cache/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+qwen_env/
+.qwen_env/
+
+# Env files (env vars passed via RunPod config)
+.env
+.env.*
+
+# Not needed for evolution
+notebooks/
+docs/
+codex/
+tests/
+*.ipynb
+reports/
+node_modules/
+
+# Large model files (not used by evolution workers)
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.model
+checkpoints/
+rhyme_siamese/
+models/

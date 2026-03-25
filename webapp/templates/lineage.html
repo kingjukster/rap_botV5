@@ -18,11 +18,20 @@
         <button class="px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700/50 text-sm">Apply</button>
         <a href="/runs/{{ run.run_id }}/lineage" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 text-sm">Clear</a>
         <span class="text-slate-500 text-sm ml-auto">{{ edges|length }} edge(s)</span>
+        {% if archive_cell_count %}
+        <span class="text-slate-500 text-sm">· {{ archive_cell_count }} archive cell(s)</span>
+        {% endif %}
     </form>
 </div>
 
+{% if lineage_note %}
+<div class="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-slate-300">
+    {{ lineage_note }}
+</div>
+{% endif %}
+
 {% if not edges %}
-<p class="text-slate-500">No lineage edges logged for this run.</p>
+<p class="text-slate-500">No lineage edges in the database for this run.</p>
 {% else %}
 <div class="overflow-x-auto rounded-lg border border-slate-600">
     <table class="w-full text-sm">

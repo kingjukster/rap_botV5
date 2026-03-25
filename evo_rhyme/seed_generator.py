@@ -126,6 +126,11 @@ class SeedGenerator:
         self._lines = _load_corpus_lines(path)
         return self._lines
 
+    @staticmethod
+    def _line_fingerprint(line: str) -> str:
+        """Lowercase first 3 words -- fast similarity proxy."""
+        return " ".join(line.lower().split()[:3])
+
     def generate_seed_couplets(
         self,
         theme_keywords: Optional[List[str]] = None,
@@ -134,12 +139,9 @@ class SeedGenerator:
         """
         Generate initial population of couplets from corpus.
 
-        Args:
-            theme_keywords: Optional keywords to prefer (lines containing these ranked higher).
-            size: Number of couplets to generate.
-
-        Returns:
-            List of CoupletIndividual with line1, line2 set.
+        Lines are sampled independently (not consecutively) to maximize
+        diversity.  Theme-matching lines are preferred but paired randomly.
+        A fingerprint dedup prevents near-duplicate couplets.
         """
         import random
 
@@ -148,43 +150,32 @@ class SeedGenerator:
             return []
 
         keywords = set(w.lower() for w in (theme_keywords or [])) if theme_keywords else set()
+
+        if keywords:
+            themed = [l for l in lines if any(kw in l.lower() for kw in keywords)]
+            other = [l for l in lines if l not in set(themed)]
+            random.shuffle(themed)
+            random.shuffle(other)
+            pool = themed + other
+        else:
+            pool = list(lines)
+            random.shuffle(pool)
+
         couplets: List[CoupletIndividual] = []
-        seen: Set[tuple] = set()
+        seen_fps: Set[tuple] = set()
+        max_attempts = size * 5
 
-        # Build consecutive pairs from corpus
-        pairs: List[tuple] = []
-        for i in range(len(lines) - 1):
-            l1, l2 = lines[i].strip(), lines[i + 1].strip()
-            if not l1 or not l2:
-                continue
-            key = (l1, l2)
-            if key in seen:
-                continue
-            seen.add(key)
-            score = 0
-            if keywords:
-                text = f"{l1} {l2}".lower()
-                score = sum(1 for kw in keywords if kw in text)
-            pairs.append((l1, l2, score))
-
-        # Prefer theme-matching pairs, then random
-        if keywords and pairs:
-            pairs.sort(key=lambda x: -x[2])
-        random.shuffle(pairs)
-
-        for l1, l2, _ in pairs[: size * 2]:  # oversample in case of duplicates
+        for _ in range(max_attempts):
             if len(couplets) >= size:
                 break
+            i, j = random.sample(range(len(pool)), 2)
+            l1, l2 = pool[i].strip(), pool[j].strip()
+            if not l1 or not l2:
+                continue
+            fp = (self._line_fingerprint(l1), self._line_fingerprint(l2))
+            if fp in seen_fps:
+                continue
+            seen_fps.add(fp)
             couplets.append(CoupletIndividual(line1=l1, line2=l2))
-
-        # If not enough from pairs, add random line combinations
-        while len(couplets) < size and len(lines) >= 2:
-            i, j = random.sample(range(len(lines)), 2)
-            if i > j:
-                i, j = j, i
-            l1, l2 = lines[i].strip(), lines[j].strip()
-            if l1 and l2 and (l1, l2) not in seen:
-                seen.add((l1, l2))
-                couplets.append(CoupletIndividual(line1=l1, line2=l2))
 
         return couplets[:size]

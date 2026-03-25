@@ -478,6 +478,14 @@ def evolve(
     prev_acceptance_rate: Optional[float] = None
 
     for gen in range(generations):
+        try:
+            from evo_rhyme.operator_telemetry import get_operator_tracer
+            _t = get_operator_tracer()
+            if _t is not None:
+                _t.gen = gen
+        except Exception:
+            pass
+
         # Analyze all
         for ind in population:
             analyze_individual(ind)

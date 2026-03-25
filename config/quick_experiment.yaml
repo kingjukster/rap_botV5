@@ -1,0 +1,44 @@
+# Quick experiment: 4 maximally-different arms, no replicates
+# Estimated ~40-50 min with --parallel 2
+#
+# Goal: produce meaningfully diverse outputs by varying theme + scheme + init
+# seed_from_archive=0 so runs evolve independently (no cross-contamination)
+
+seeds: [42]
+policy_mode: static
+elite_replay_fraction: 0.0
+lm_budget: 0
+line_lm_budget: 0
+seed_from_archive: 0
+archive_mode: ultra_compact
+immigrants: 25
+
+runs:
+
+  - arm: pressure_aabb_mixed
+    theme: pressure,mask,survival
+    population: 60
+    generations: 20
+    scheme: AABB
+    init: mixed
+
+  - arm: crown_abab_template
+    theme: crown,empire,power
+    population: 60
+    generations: 20
+    scheme: ABAB
+    init: template
+
+  - arm: flow_abba_random
+    theme: flow,show,dream
+    population: 60
+    generations: 20
+    scheme: ABBA
+    init: random
+
+  - arm: street_aabb_random
+    theme: street,king,war
+    population: 60
+    generations: 20
+    scheme: AABB
+    init: random

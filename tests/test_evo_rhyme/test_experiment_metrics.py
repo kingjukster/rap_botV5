@@ -73,3 +73,26 @@ def test_aggregate_outcome_top_k_mean():
     ]
     out = aggregate_outcome(candidates, mode="top_k_mean", top_k=2)
     assert out["fitness"] == pytest.approx(0.7)  # (0.8 + 0.6) / 2
+
+
+def test_propose_config_from_model_basic():
+    from evo_rhyme.control_model import propose_config_from_model
+
+    rows = [
+        {"controls": {"population": 60 + i, "generations": 20, "lm_budget": i}, "fitness": 0.3 + i * 0.02}
+        for i in range(30)
+    ]
+    proposals = propose_config_from_model(rows, n_proposals=10, top_k=2)
+    assert len(proposals) <= 2
+    if proposals:
+        assert "controls" in proposals[0]
+        assert "predicted_fitness" in proposals[0]
+        assert proposals[0]["predicted_fitness"] >= proposals[-1]["predicted_fitness"]
+
+
+def test_propose_config_from_model_too_few_samples():
+    from evo_rhyme.control_model import propose_config_from_model
+
+    rows = [{"controls": {"population": 60}, "fitness": 0.5}]
+    proposals = propose_config_from_model(rows)
+    assert proposals == []

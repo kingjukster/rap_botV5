@@ -4,11 +4,128 @@
 
 {% block content %}
 <div class="mb-6" x-data="sqlPage()">
-    <a href="/" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">← Back to Dashboard</a>
+    <a href="/" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">&larr; Back to Dashboard</a>
     <h1 class="text-2xl font-bold text-slate-100">SQL Query</h1>
     <p class="text-slate-400 mt-1">Run read-only <code class="text-amber-400/80">SELECT</code> queries against the rap bot database. Multiple statements and write operations are not allowed.</p>
 
-    <form @submit.prevent="runQuery" class="mt-4">
+    <div class="mt-4 flex border-b border-slate-700">
+        <button @click="mode = 'builder'" :class="mode === 'builder' ? 'border-amber-400 text-amber-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="px-4 py-2 text-sm font-medium border-b-2 -mb-px">Builder</button>
+        <button @click="mode = 'raw'" :class="mode === 'raw' ? 'border-amber-400 text-amber-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="px-4 py-2 text-sm font-medium border-b-2 -mb-px">Raw SQL</button>
+    </div>
+
+    <div x-show="mode === 'builder'" class="mt-4 rounded-lg border border-slate-600 bg-slate-800/50 p-4 space-y-4" x-cloak>
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Table</label>
+                <select x-model="builder.table" @change="builder.columns = []; builder.filters = []; builder.groupBy = ''; builder.orderBy = '';"
+                    class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-3 py-1.5 text-sm">
+                    <template x-for="t in Object.keys(SCHEMA)" :key="t">
+                        <option :value="t" x-text="t"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="sm:col-span-2 lg:col-span-3">
+                <label class="block text-slate-400 text-xs mb-1">Columns <span class="text-slate-500">(none = all)</span></label>
+                <div class="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                    <template x-for="col in (SCHEMA[builder.table] || [])" :key="col">
+                        <label class="inline-flex items-center gap-1 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" :value="col" x-model="builder.columns" class="rounded border-slate-600 bg-slate-700 text-amber-500 focus:ring-amber-500/50">
+                            <span x-text="col"></span>
+                        </label>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="flex items-center justify-between mb-2">
+                <label class="text-slate-400 text-xs">Filters</label>
+                <button type="button" @click="builder.filters.push({col: (SCHEMA[builder.table]||[])[0] || '', op: '=', val: ''})"
+                    class="text-xs text-amber-400 hover:text-amber-300">+ Add filter</button>
+            </div>
+            <template x-for="(f, i) in builder.filters" :key="i">
+                <div class="flex gap-2 mb-2 items-center">
+                    <select x-model="f.col" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-xs">
+                        <template x-for="col in (SCHEMA[builder.table] || [])" :key="col">
+                            <option :value="col" x-text="col"></option>
+                        </template>
+                    </select>
+                    <select x-model="f.op" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-xs w-24">
+                        <option value="=">=</option>
+                        <option value="!=">!=</option>
+                        <option value=">">&gt;</option>
+                        <option value="<">&lt;</option>
+                        <option value=">=">>=</option>
+                        <option value="<="><=</option>
+                        <option value="LIKE">LIKE</option>
+                        <option value="IS NOT NULL">IS NOT NULL</option>
+                        <option value="IS NULL">IS NULL</option>
+                    </select>
+                    <input x-show="!['IS NOT NULL','IS NULL'].includes(f.op)" x-model="f.val" placeholder="value"
+                        class="flex-1 rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-xs font-mono">
+                    <button type="button" @click="builder.filters.splice(i, 1)" class="text-red-400 hover:text-red-300 text-xs px-1">&times;</button>
+                </div>
+            </template>
+        </div>
+
+        <div class="grid gap-4 sm:grid-cols-3">
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Aggregate</label>
+                <select x-model="builder.aggregate" class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-xs">
+                    <option value="">None</option>
+                    <option value="COUNT">COUNT</option>
+                    <option value="AVG">AVG</option>
+                    <option value="MAX">MAX</option>
+                    <option value="MIN">MIN</option>
+                    <option value="SUM">SUM</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Group By</label>
+                <select x-model="builder.groupBy" class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-xs">
+                    <option value="">None</option>
+                    <template x-for="col in (SCHEMA[builder.table] || [])" :key="col">
+                        <option :value="col" x-text="col"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Order By</label>
+                <div class="flex gap-1">
+                    <select x-model="builder.orderBy" class="flex-1 rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-xs">
+                        <option value="">None</option>
+                        <template x-for="col in (SCHEMA[builder.table] || [])" :key="col">
+                            <option :value="col" x-text="col"></option>
+                        </template>
+                    </select>
+                    <select x-model="builder.orderDir" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-xs w-20">
+                        <option value="ASC">ASC</option>
+                        <option value="DESC">DESC</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-4">
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Limit</label>
+                <input type="number" x-model.number="builder.limit" min="1" max="5000"
+                    class="w-24 rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-xs">
+            </div>
+            <div class="pt-4">
+                <button type="button" @click="generateAndRun()" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium text-sm">
+                    Run Query
+                </button>
+            </div>
+        </div>
+
+        <div x-show="generatedSql" class="rounded border border-slate-700 bg-slate-900/50 p-3" x-cloak>
+            <p class="text-slate-500 text-xs mb-1">Generated SQL:</p>
+            <pre class="text-slate-300 font-mono text-xs whitespace-pre-wrap" x-text="generatedSql"></pre>
+        </div>
+    </div>
+
+    <form @submit.prevent="runQuery" class="mt-4" x-show="mode === 'raw'">
         <textarea
             x-model="sql"
             placeholder="SELECT * FROM runs LIMIT 10"
@@ -21,7 +138,7 @@
                 class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
                 <span x-show="!loading">Run</span>
-                <span x-show="loading">Running…</span>
+                <span x-show="loading">Running&hellip;</span>
             </button>
             <span class="text-slate-500 text-sm" x-show="result">Rows: <span x-text="result?.row_count ?? 0"></span></span>
         </div>
@@ -32,6 +149,10 @@
     </div>
 
     <div x-show="result && !error && result.columns?.length" class="mt-4 overflow-x-auto rounded-lg border border-slate-600" x-cloak>
+        <div class="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700">
+            <span class="text-slate-400 text-sm">Rows: <span x-text="result?.row_count ?? 0"></span></span>
+            <button @click="exportCsv()" class="text-xs text-amber-400 hover:text-amber-300">Export CSV</button>
+        </div>
         <table class="w-full text-sm">
             <thead class="bg-slate-800 text-slate-400 text-left">
                 <tr>
@@ -58,12 +179,82 @@
 </div>
 
 <script>
+const SCHEMA = {
+    runs: ['run_id','script_name','theme_keywords','status','config_json','created_at','updated_at','experiment_id','arm_id','failure_reason'],
+    generations: ['id','run_id','gen','best_fitness','avg_fitness','diversity','acceptance_rate','extra_json','created_at'],
+    candidates: ['candidate_id','run_id','gen','candidate_type','scheme','lines_json','fitness','scores_json','created_at'],
+    lineage: ['child_id','parent_id','operation','gen','created_at'],
+    score_cache: ['text_hash','candidate_type','scheme','scores_json','created_at','updated_at'],
+    archive_cells: ['id','run_id','cell_key','candidate_id','created_at'],
+    run_derived: ['run_id','final_best_fitness','final_avg_fitness','max_diversity_or_coverage','total_generations','total_candidates','last_occupied_niches','archive_cell_count'],
+    operator_events: ['id','run_id','gen','candidate_id','operator','parents_json','meta_json','created_at'],
+    seed_bank: ['id','run_id','seed_key','seed_data','created_at'],
+    experiments: ['experiment_id','name','description','mode','created_at'],
+    experiment_arms: ['arm_id','experiment_id','arm_name','control_snapshot','created_at'],
+    songs: ['song_id','artist','title','song_score','num_bars','created_at'],
+    song_lines: ['id','song_id','line_index','line_text'],
+};
+
 function sqlPage() {
     return {
+        mode: 'builder',
         sql: 'SELECT * FROM runs LIMIT 10',
         loading: false,
         result: null,
         error: null,
+        generatedSql: '',
+        builder: {
+            table: 'runs',
+            columns: [],
+            filters: [],
+            aggregate: '',
+            groupBy: '',
+            orderBy: '',
+            orderDir: 'DESC',
+            limit: 100,
+        },
+        SCHEMA,
+
+        buildSql() {
+            const b = this.builder;
+            const cols = b.columns.length ? b.columns.join(', ') : '*';
+            let select = cols;
+
+            if (b.aggregate && b.groupBy) {
+                const aggCol = b.columns.length === 1 ? b.columns[0] : '*';
+                select = b.groupBy + ', ' + b.aggregate + '(' + aggCol + ') AS ' + b.aggregate.toLowerCase() + '_val';
+            } else if (b.aggregate && !b.groupBy) {
+                const aggCol = b.columns.length === 1 ? b.columns[0] : '*';
+                select = b.aggregate + '(' + aggCol + ') AS ' + b.aggregate.toLowerCase() + '_val';
+            }
+
+            let sql = 'SELECT ' + select + '\nFROM ' + b.table;
+
+            const wheres = [];
+            for (const f of b.filters) {
+                if (!f.col) continue;
+                if (f.op === 'IS NOT NULL' || f.op === 'IS NULL') {
+                    wheres.push(f.col + ' ' + f.op);
+                } else if (f.op === 'LIKE') {
+                    wheres.push(f.col + " LIKE '%" + f.val.replace(/'/g, "''") + "%'");
+                } else {
+                    const num = Number(f.val);
+                    const val = (!isNaN(num) && f.val.trim() !== '') ? f.val : "'" + f.val.replace(/'/g, "''") + "'";
+                    wheres.push(f.col + ' ' + f.op + ' ' + val);
+                }
+            }
+            if (wheres.length) sql += '\nWHERE ' + wheres.join('\n  AND ');
+            if (b.groupBy) sql += '\nGROUP BY ' + b.groupBy;
+            if (b.orderBy) sql += '\nORDER BY ' + b.orderBy + ' ' + b.orderDir;
+            sql += '\nLIMIT ' + (b.limit || 100);
+            return sql;
+        },
+
+        generateAndRun() {
+            this.generatedSql = this.buildSql();
+            this.sql = this.generatedSql;
+            this.runQuery();
+        },
 
         async runQuery() {
             this.loading = true;
@@ -92,6 +283,21 @@ function sqlPage() {
             } finally {
                 this.loading = false;
             }
+        },
+
+        exportCsv() {
+            if (!this.result || !this.result.columns) return;
+            const cols = this.result.columns;
+            const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+            let csv = cols.map(escape).join(',') + '\n';
+            for (const row of this.result.rows) {
+                csv += cols.map(c => escape(row[c])).join(',') + '\n';
+            }
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'query_result.csv';
+            a.click();
         }
     };
 }

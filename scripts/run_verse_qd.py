@@ -420,6 +420,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to JSON file with evolved scoring weights (expects 'weights' key). Used for weight-tuned runs.",
     )
+    parser.add_argument(
+        "--seed-from-archive",
+        type=int,
+        metavar="N",
+        default=0,
+        help="Seed initial population with top N candidates from DB across prior completed runs (requires --db)",
+    )
+    parser.add_argument(
+        "--seed-min-fitness",
+        type=float,
+        default=0.3,
+        help="Minimum fitness for cross-run seed candidates (default: 0.3)",
+    )
 
     args = parser.parse_args()
 
@@ -536,7 +549,12 @@ def main() -> None:
     args._policy_hash = None
     args._sampled_policy_rank = None
 
-    protected = {"theme", "db", "experiment_id", "arm_id", "output", "runs_dir", "config", "seed", "verbose", "resume"}
+    protected = {
+        "theme", "db", "experiment_id", "arm_id", "output", "runs_dir",
+        "config", "seed", "verbose", "resume",
+        "generations", "population", "lm_budget", "line_lm_budget",
+        "archive_mode", "immigrants", "scheme",
+    }
     if args.policy_mode in ("learned", "explore_mix"):
         learned_controls, pmeta = resolve_policy_controls(args.learned_policy_path, ROOT)
         src = pmeta.get("policy_source")
@@ -786,8 +804,48 @@ def main() -> None:
         # Used by VerseQDRunLogger.write_config for run-dir config.json.
         setattr(qd_config, "seed_info", seed_info)
 
+    # ---- Cross-run archive seeding ------------------------------------
+    archive_seed_population: list[Any] = []
+    if getattr(args, "seed_from_archive", 0) > 0:
+        if not args.db:
+            logger.warning("--seed-from-archive requires --db; enabling DB")
+            import os as _os
+            _os.environ["RAPBOT_USE_DB"] = "1"
+        try:
+            from evo_rhyme import db
+            from evo_rhyme.individual import VerseIndividual
+
+            top_cross = db.load_top_candidates_cross_run(
+                limit=args.seed_from_archive,
+                min_fitness=args.seed_min_fitness,
+                candidate_type="verse4",
+            )
+            for row in top_cross:
+                lines = row.get("lines", [])
+                if isinstance(lines, list) and len(lines) == 4:
+                    ind = VerseIndividual(
+                        lines=list(lines),
+                        features=None,
+                        scores=row.get("scores"),
+                        fitness=row.get("fitness"),
+                        metadata={
+                            "origin": "cross_run_seed",
+                            "source_run_id": row.get("run_id"),
+                            "source_candidate_id": row.get("candidate_id"),
+                        },
+                    )
+                    archive_seed_population.append(ind)
+            if archive_seed_population:
+                logger.info(
+                    "Cross-run archive seeding: loaded %d candidates (min_fitness=%.2f)",
+                    len(archive_seed_population),
+                    args.seed_min_fitness,
+                )
+        except Exception as e:
+            logger.warning("Cross-run archive seeding failed: %s", e)
+
     # ---- Initial population -------------------------------------------
-    population = []
+    population = list(archive_seed_population)
     seed_song_ids: list[str] = []
     if getattr(args, "seed_song_ids", None):
         seed_song_ids = [s.strip() for s in args.seed_song_ids.split(",") if s.strip()]

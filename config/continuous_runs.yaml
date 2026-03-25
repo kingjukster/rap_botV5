@@ -1,8 +1,8 @@
 # Run configs for scripts/run_continuous.py
 # All runs use --db --runs-dir for comparison
 #
-# lm_budget: 0 and line_lm_budget: 0 = no OpenAI calls (avoids 429 quota errors)
-# Use init: mixed|random|template (NOT lm) for no-API init
+# LM backend: Groq free tier (set GROQ_API_KEY + RAPBOT_REWRITER_API_BASE in .env)
+# Budget kept conservative to stay within free-tier rate limits (~14,400 RPD)
 #
 # Improvements:
 # - Added seeds for replicates (stochastic stability)
@@ -30,9 +30,15 @@ elite_replay_fraction: 0.3
 # Epsilon decay for explore_mix: reduces randomness over time
 epsilon_decay_factor: 0.98
 epsilon_decay_cap: 50
-# Default LM budgets (0 = no OpenAI calls during evolution)
+# LM budgets: 0 = no external API calls (pure local evolution, fastest)
 lm_budget: 0
 line_lm_budget: 0
+# Cross-run seeding: inject top N verses from prior completed runs (low to reduce convergence)
+seed_from_archive: 3
+# Use ultra-compact archive (729 niches) for realistic coverage targets
+archive_mode: ultra_compact
+# Immigrants per generation (fresh genetic material to counter convergence)
+immigrants: 25
 
 runs:
 
@@ -108,7 +114,7 @@ runs:
 
   - arm: pop60_base
     theme: pressure,mask,survival
-    population: 80
+    population: 60
     generations: 20
     scheme: AABB
     init: mixed

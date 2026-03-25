@@ -4,19 +4,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Rap Bot{% endblock %}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/tailwind.css">
     <link rel="stylesheet" href="/static/app.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <style>
+        #nav-progress{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,#f59e0b,#fbbf24);z-index:9999;transition:width .15s ease;pointer-events:none;opacity:0}
+        #nav-progress.active{opacity:1;animation:nprog 12s cubic-bezier(.1,.05,.12,1) forwards}
+        @keyframes nprog{0%{width:0}30%{width:55%}60%{width:78%}80%{width:88%}100%{width:96%}}
+        #nav-progress.done{width:100%!important;animation:none;transition:width .15s ease,opacity .3s .1s ease;opacity:0}
+    </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+    <div id="nav-progress"></div>
     <nav class="border-b border-slate-700 bg-slate-800/80 backdrop-blur">
         <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
             <a href="/" class="text-xl font-bold tracking-tight text-amber-400 hover:text-amber-300">Rap Bot</a>
             <div class="flex gap-4 text-sm text-slate-400">
                 <a href="/" class="hover:text-white">Dashboard</a>
                 <a href="/evolve" class="hover:text-white">Evolve</a>
-                <a href="/score-cache" class="hover:text-white">Score cache</a>
+                <a href="/compare" class="hover:text-white">Compare</a>
+                <a href="/experiments" class="hover:text-white">Experiments</a>
                 <a href="/analysis" class="hover:text-white">Analysis</a>
+                <a href="/score-cache" class="hover:text-white">Score cache</a>
                 <a href="/sql" class="hover:text-white">SQL</a>
                 <a href="/about" class="hover:text-white">About</a>
             </div>
@@ -32,5 +41,25 @@
     </footer>
 
     {% block scripts %}{% endblock %}
+    <script>
+    (function(){
+        var bar=document.getElementById('nav-progress');
+        document.addEventListener('click',function(e){
+            var a=e.target.closest('a[href]');
+            if(!a||a.target==='_blank'||a.href.startsWith('javascript:'))return;
+            var u=new URL(a.href,location.href);
+            if(u.origin!==location.origin)return;
+            bar.classList.remove('done');
+            void bar.offsetWidth;
+            bar.classList.add('active');
+        });
+        window.addEventListener('pageshow',function(){bar.classList.remove('active');bar.classList.add('done')});
+        document.querySelectorAll('form').forEach(function(f){
+            f.addEventListener('submit',function(){
+                bar.classList.remove('done');void bar.offsetWidth;bar.classList.add('active');
+            });
+        });
+    })();
+    </script>
 </body>
 </html>

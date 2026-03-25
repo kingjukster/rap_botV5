@@ -58,6 +58,46 @@ def list_runs(
     return {"runs": runs, "total": total}
 
 
+def bulk_generation_stats(run_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Single query to get last-gen best_fitness and generation count for a batch of runs."""
+    if not run_ids or not _db_ready():
+        return {}
+    fn = getattr(db, "_execute", None)
+    if fn is None:
+        return {}
+
+    def _run(conn):
+        cur = conn.cursor(dictionary=True)
+        try:
+            placeholders = ",".join(["%s"] * len(run_ids))
+            cur.execute(
+                f"""
+                SELECT g.run_id,
+                       COUNT(*) AS num_generations,
+                       (SELECT g2.best_fitness
+                        FROM generations g2
+                        WHERE g2.run_id = g.run_id
+                        ORDER BY g2.gen DESC LIMIT 1) AS last_best_fitness
+                FROM generations g
+                WHERE g.run_id IN ({placeholders})
+                GROUP BY g.run_id
+                """,
+                tuple(run_ids),
+            )
+            out = {}
+            for row in cur.fetchall():
+                rid = row["run_id"]
+                out[rid] = {
+                    "num_generations": int(row["num_generations"] or 0),
+                    "last_best_fitness": float(row["last_best_fitness"]) if row.get("last_best_fitness") is not None else None,
+                }
+            return out
+        finally:
+            cur.close()
+
+    return fn(_run, default={})
+
+
 def get_run_counts_by_status() -> Dict[str, Any]:
     """Return total run count and counts per status (running, completed, failed) across all runs."""
     if not _db_ready():
@@ -205,8 +245,12 @@ def check_db_connection() -> bool:
     return db._execute(_ping, default=False) is True
 
 
-def get_run_summary(run_id: int) -> Optional[Dict[str, Any]]:
-    """Get run with last-gen best fitness and candidate count."""
+def get_run_summary(run_id: int, *, include_generations: bool = False) -> Optional[Dict[str, Any]]:
+    """Get run with last-gen best fitness and candidate count.
+
+    When *include_generations* is True the full generation list is attached under
+    ``run["_generations"]`` so callers can reuse it instead of fetching again.
+    """
     run = get_run(run_id)
     if not run:
         return None
@@ -220,7 +264,60 @@ def get_run_summary(run_id: int) -> Optional[Dict[str, Any]]:
         run["last_best_fitness"] = None
         run["last_avg_fitness"] = None
         run["num_generations"] = 0
+    if _db_ready():
+        fn = getattr(db, "get_run_derived", None)
+        if fn:
+            derived = fn(int(run_id))
+            if derived:
+                run["derived"] = derived
+    if include_generations:
+        run["_generations"] = gens
     return run
+
+
+def count_archive_cells_for_run(run_id: int) -> int:
+    """Return MAP-Elites cell count for a run (0 if DB off)."""
+    if not _db_ready():
+        return 0
+    fn = getattr(db, "count_archive_cells", None)
+    return int(fn(run_id)) if fn else 0
+
+
+def lineage_empty_explanation(
+    *,
+    edge_count: int,
+    archive_cell_count: int,
+    script_name: str = "",
+) -> str | None:
+    """
+    Human-readable note when the lineage graph has no edges.
+    Verse QD does not persist lineage; couplet evolution does.
+    """
+    if edge_count > 0:
+        return None
+    script_lower = (script_name or "").lower()
+    if archive_cell_count > 0 or "verse" in script_lower or "qd" in script_lower:
+        return (
+            "This run looks like MAP-Elites / verse QD. Parent–child edges are not written to the "
+            "database for verse runs yet, so the lineage graph stays empty. Couplet evolution logs "
+            "crossover and mutation parents here."
+        )
+    return (
+        "No lineage edges were logged for this run. They are recorded when running couplet evolution "
+        "with database logging enabled."
+    )
+
+
+def list_operator_events_for_run(
+    run_id: int,
+    *,
+    limit: int = 2000,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    if not _db_ready():
+        return []
+    fn = getattr(db, "list_operator_events_for_run", None)
+    return fn(run_id, limit=limit, offset=offset) if fn else []
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +356,57 @@ def list_experiment_runs(
     if not _db_ready():
         return []
     return db.list_runs_for_experiment(experiment_id, arm_id=arm_id, limit=limit, offset=offset)
+
+
+def get_experiment_summary(experiment_id: int) -> Dict[str, Any]:
+    """Arm comparison: per-arm fitness stats, run count, win rate."""
+    if not _db_ready():
+        return {"arms": [], "error": "Database not available"}
+    arms = db.list_experiment_arms(experiment_id)
+    if not arms:
+        return {"arms": []}
+
+    arm_stats = []
+    for arm in arms:
+        arm_id = arm.get("arm_id")
+        runs = db.list_runs_for_experiment(experiment_id, arm_id=arm_id, limit=500)
+        fitnesses = []
+        for run in runs:
+            gens = db.list_generations(run["run_id"])
+            if gens:
+                best = max((g.get("best_fitness") or 0) for g in gens)
+                fitnesses.append(best)
+
+        if fitnesses:
+            fitnesses_sorted = sorted(fitnesses)
+            n = len(fitnesses_sorted)
+            mean_f = sum(fitnesses_sorted) / n
+            median_f = fitnesses_sorted[n // 2]
+            std_f = (sum((x - mean_f) ** 2 for x in fitnesses_sorted) / n) ** 0.5
+            q1 = fitnesses_sorted[n // 4] if n >= 4 else fitnesses_sorted[0]
+            q3 = fitnesses_sorted[(3 * n) // 4] if n >= 4 else fitnesses_sorted[-1]
+        else:
+            mean_f = median_f = std_f = q1 = q3 = None
+
+        arm_stats.append({
+            "arm_id": arm_id,
+            "arm_name": arm.get("arm_name", ""),
+            "run_count": len(runs),
+            "mean_fitness": round(mean_f, 4) if mean_f is not None else None,
+            "median_fitness": round(median_f, 4) if median_f is not None else None,
+            "std_fitness": round(std_f, 4) if std_f is not None else None,
+            "q1": round(q1, 4) if q1 is not None else None,
+            "q3": round(q3, 4) if q3 is not None else None,
+            "min_fitness": round(min(fitnesses), 4) if fitnesses else None,
+            "max_fitness": round(max(fitnesses), 4) if fitnesses else None,
+            "fitnesses": [round(f, 4) for f in fitnesses],
+        })
+
+    best_arm = max((a for a in arm_stats if a["mean_fitness"] is not None), key=lambda a: a["mean_fitness"], default=None)
+    for a in arm_stats:
+        a["is_best"] = (best_arm is not None and a["arm_id"] == best_arm["arm_id"])
+
+    return {"arms": arm_stats}
 
 
 def get_control_impact_report(

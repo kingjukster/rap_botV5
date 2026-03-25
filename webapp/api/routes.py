@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json as _json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -13,6 +15,9 @@ from webapp.services.evolution_service import (
     list_songs_for_artist,
 )
 from webapp.services.analysis_service import get_analysis_data
+from webapp.services.cache import ttl_cached
+from webapp.services.compare_service import compare_runs as svc_compare_runs
+from webapp.services.insight_service import get_run_insights, get_global_insights
 from webapp.services.run_service import (
     list_runs as svc_list_runs,
     mark_stale_runs_failed,
@@ -31,7 +36,9 @@ from webapp.services.run_service import (
     list_experiment_arms,
     list_experiment_runs,
     get_control_impact_report,
+    get_experiment_summary,
     execute_sql,
+    list_operator_events_for_run,
 )
 
 router = APIRouter()
@@ -39,8 +46,11 @@ router = APIRouter()
 
 @router.get("/analysis")
 def api_analysis():
-    """Evolution analysis: run stats, fitness trend, config dominance, stagnation."""
-    return get_analysis_data()
+    """Evolution analysis: run stats, fitness trend, config dominance, stagnation, insights."""
+    data = ttl_cached("analysis_data", 30, get_analysis_data)
+    data = dict(data)  # shallow copy so we don't mutate the cached dict
+    data["insights"] = ttl_cached("global_insights", 30, lambda: get_global_insights(data))
+    return data
 
 
 @router.post("/sql")
@@ -73,6 +83,20 @@ def api_list_runs(
 ):
     """List runs with pagination."""
     return svc_list_runs(limit=limit, offset=offset, status_filter=status)
+
+
+@router.get("/runs/compare")
+def api_compare_runs(
+    ids: str = Query(..., description="Comma-separated run IDs to compare"),
+):
+    """Compare multiple runs: generation series and summaries."""
+    try:
+        run_ids = [int(x.strip()) for x in ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run IDs")
+    if len(run_ids) < 2:
+        raise HTTPException(status_code=400, detail="Provide at least 2 run IDs")
+    return svc_compare_runs(run_ids)
 
 
 @router.get("/runs/{run_id}")
@@ -144,6 +168,16 @@ def api_get_run_lineage(
     return get_run_lineage(run_id, gen=gen, limit=limit, offset=offset)
 
 
+@router.get("/runs/{run_id}/operator-events", response_model=List[Dict[str, Any]])
+def api_get_run_operator_events(
+    run_id: int,
+    limit: int = Query(2000, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+):
+    """Operator trace events (mutation/crossover) when mirrored to the database."""
+    return list_operator_events_for_run(run_id, limit=limit, offset=offset)
+
+
 @router.get("/runs/{run_id}/seeds", response_model=List[Dict[str, Any]])
 def api_get_run_seeds(
     run_id: int,
@@ -196,6 +230,12 @@ def api_list_experiment_runs(
 ):
     """List runs for an experiment, optionally filtered by arm."""
     return list_experiment_runs(experiment_id, arm_id=arm_id, limit=limit, offset=offset)
+
+
+@router.get("/experiments/{experiment_id}/summary")
+def api_get_experiment_summary(experiment_id: int):
+    """Aggregated arm comparison: per-arm fitness stats, run count, box plot data."""
+    return get_experiment_summary(experiment_id)
 
 
 @router.get("/experiments/{experiment_id}/impact")
@@ -270,3 +310,56 @@ def api_get_run_progress(run_id: int) -> Dict[str, Any]:
         "current_generation": len(gens),
         "total_generations": total,
     }
+
+
+@router.get("/runs/{run_id}/insights", response_model=List[Dict[str, Any]])
+def api_get_run_insights(run_id: int):
+    """Auto-detected insights for a run (stagnation, fitness decline, etc.)."""
+    gens = get_run_generations(run_id)
+    events = list_operator_events_for_run(run_id, limit=5000)
+    return get_run_insights(gens, operator_events=events)
+
+
+@router.get("/runs/{run_id}/stream")
+async def api_run_stream(run_id: int):
+    """SSE stream: polls DB every 2s for new generation data while a run is active."""
+    try:
+        from sse_starlette.sse import EventSourceResponse
+    except ImportError:
+        raise HTTPException(status_code=501, detail="SSE not available (install sse-starlette)")
+
+    async def event_generator():
+        last_gen = 0
+        while True:
+            run = get_run(run_id)
+            if not run:
+                yield {"event": "error", "data": _json.dumps({"error": "Run not found"})}
+                break
+
+            gens = get_run_generations(run_id)
+            current_gen = len(gens)
+
+            if current_gen > last_gen:
+                new_gens = gens[last_gen:]
+                safe = []
+                for g in new_gens:
+                    row = {}
+                    for k, v in g.items():
+                        if hasattr(v, "isoformat"):
+                            row[k] = v.isoformat()
+                        elif isinstance(v, (bytes, bytearray)):
+                            row[k] = v.decode("utf-8", errors="replace")
+                        else:
+                            row[k] = v
+                    safe.append(row)
+                yield {"event": "generation", "data": _json.dumps(safe)}
+                last_gen = current_gen
+
+            status = run.get("status", "running")
+            if status in ("completed", "failed"):
+                yield {"event": "done", "data": _json.dumps({"status": status, "total_generations": current_gen})}
+                break
+
+            await asyncio.sleep(2)
+
+    return EventSourceResponse(event_generator())

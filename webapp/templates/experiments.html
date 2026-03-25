@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Experiments — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold text-slate-100">Experiments</h1>
+    <p class="text-slate-400 mt-1">Control experiments for comparing evolutionary configurations.</p>
+</div>
+
+{% if not experiments %}
+<div class="rounded-lg border border-slate-600 bg-slate-800/50 p-8 text-center text-slate-400">
+    <p>No experiments found. Run controlled experiments to see them listed here.</p>
+</div>
+{% else %}
+<div class="overflow-x-auto rounded-lg border border-slate-600">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-800 text-slate-400 text-left">
+            <tr>
+                <th class="px-4 py-3 font-medium">ID</th>
+                <th class="px-4 py-3 font-medium">Name</th>
+                <th class="px-4 py-3 font-medium">Description</th>
+                <th class="px-4 py-3 font-medium">Mode</th>
+                <th class="px-4 py-3 font-medium">Created</th>
+                <th class="px-4 py-3 font-medium"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-700">
+            {% for e in experiments %}
+            <tr class="hover:bg-slate-800/50">
+                <td class="px-4 py-3 text-slate-500">{{ e.experiment_id }}</td>
+                <td class="px-4 py-3 text-slate-200 font-medium">{{ e.name or '—' }}</td>
+                <td class="px-4 py-3 text-slate-400 max-w-sm truncate" title="{{ e.description or '' }}">{{ e.description or '—' }}</td>
+                <td class="px-4 py-3 text-slate-400">{{ e.mode or '—' }}</td>
+                <td class="px-4 py-3 text-slate-500">{{ e.created_at or '—' }}</td>
+                <td class="px-4 py-3">
+                    <a href="/experiments/{{ e.experiment_id }}" class="text-amber-400 hover:text-amber-300 font-medium">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

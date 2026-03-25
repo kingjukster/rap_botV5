@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Compare Runs — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-6" x-data="comparePage()" x-init="init()">
+    <a href="/" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">&larr; Back to Dashboard</a>
+    <h1 class="text-2xl font-bold text-slate-100">Compare Runs</h1>
+    <p class="text-slate-400 mt-1">Select 2 or more runs to compare fitness curves and summaries side by side.</p>
+
+    <div class="mt-4 flex flex-wrap gap-2 items-end">
+        <div class="flex-1 min-w-[200px]">
+            <label class="block text-slate-400 text-xs mb-1">Run IDs (comma-separated)</label>
+            <input type="text" x-model="idsInput" placeholder="e.g. 42, 55, 63"
+                class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-3 py-2 text-sm font-mono">
+        </div>
+        <button @click="loadComparison()" :disabled="loading"
+            class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium disabled:opacity-50">
+            <span x-show="!loading">Compare</span>
+            <span x-show="loading">Loading&hellip;</span>
+        </button>
+    </div>
+
+    <div x-show="error" class="mt-4 p-4 rounded-lg border border-red-500/50 bg-red-500/10 text-red-400" x-cloak>
+        <span x-text="error"></span>
+    </div>
+
+    <template x-if="data && data.runs && data.runs.length">
+        <div class="mt-6 space-y-6">
+            <section>
+                <h2 class="text-lg font-semibold text-slate-100 mb-3">Fitness Over Generations</h2>
+                <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+                    <div style="height: 320px;"><canvas id="compare-chart"></canvas></div>
+                </div>
+            </section>
+
+            <section>
+                <h2 class="text-lg font-semibold text-slate-100 mb-3">Run Summary</h2>
+                <div class="overflow-x-auto rounded-lg border border-slate-600">
+                    <table class="w-full text-sm">
+                        <thead class="bg-slate-800 text-slate-400 text-left">
+                            <tr>
+                                <th class="px-4 py-3 font-medium">Run</th>
+                                <th class="px-4 py-3 font-medium">Theme</th>
+                                <th class="px-4 py-3 font-medium">Status</th>
+                                <th class="px-4 py-3 font-medium">Gens</th>
+                                <th class="px-4 py-3 font-medium">Best Fitness</th>
+                                <th class="px-4 py-3 font-medium">Avg Fitness</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700">
+                            <template x-for="r in data.runs" :key="r.run_id">
+                                <tr class="hover:bg-slate-800/50">
+                                    <td class="px-4 py-3"><a :href="'/runs/' + r.run_id" class="text-amber-400 hover:text-amber-300" x-text="'#' + r.run_id"></a></td>
+                                    <td class="px-4 py-3 text-slate-300 max-w-xs truncate" x-text="r.theme_keywords || '\u2014'"></td>
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-0.5 rounded text-xs font-medium"
+                                            :class="{
+                                                'bg-emerald-500/20 text-emerald-400': r.status === 'completed',
+                                                'bg-amber-500/20 text-amber-400': r.status === 'running',
+                                                'bg-red-500/20 text-red-400': r.status === 'failed',
+                                                'bg-slate-600 text-slate-400': !['completed','running','failed'].includes(r.status)
+                                            }" x-text="r.status || 'pending'"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="r.num_generations || 0"></td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="r.last_best_fitness != null ? r.last_best_fitness.toFixed(4) : '\u2014'"></td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="r.last_avg_fitness != null ? r.last_avg_fitness.toFixed(4) : '\u2014'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section x-show="autoInsights.length">
+                <h2 class="text-lg font-semibold text-slate-100 mb-3">Comparison Insights</h2>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <template x-for="(ins, i) in autoInsights" :key="i">
+                        <div class="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3">
+                            <p class="text-sky-400 text-sm font-medium" x-text="ins"></p>
+                        </div>
+                    </template>
+                </div>
+            </section>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const COMPARE_PALETTE = [
+    'rgb(251,191,36)', 'rgb(34,197,94)', 'rgb(59,130,246)', 'rgb(244,63,94)',
+    'rgb(168,85,247)', 'rgb(14,165,233)', 'rgb(236,72,153)', 'rgb(132,204,22)',
+    'rgb(245,158,11)', 'rgb(99,102,241)'
+];
+
+function comparePage() {
+    return {
+        idsInput: '',
+        loading: false,
+        error: null,
+        data: null,
+        chart: null,
+
+        init() {
+            const params = new URLSearchParams(window.location.search);
+            const ids = params.get('ids');
+            if (ids) {
+                this.idsInput = ids;
+                this.loadComparison();
+            }
+        },
+
+        get autoInsights() {
+            if (!this.data || !this.data.runs || this.data.runs.length < 2) return [];
+            const runs = this.data.runs.filter(r => r.last_best_fitness != null);
+            if (!runs.length) return [];
+            const insights = [];
+
+            const best = runs.reduce((a, b) => (a.last_best_fitness > b.last_best_fitness ? a : b));
+            const worst = runs.reduce((a, b) => (a.last_best_fitness < b.last_best_fitness ? a : b));
+            if (best.run_id !== worst.run_id) {
+                insights.push(`Run #${best.run_id} achieved the highest fitness (${best.last_best_fitness.toFixed(4)}) vs Run #${worst.run_id} (${worst.last_best_fitness.toFixed(4)}).`);
+            }
+
+            const series = this.data.generation_series || {};
+            const genCounts = runs.map(r => ({ id: r.run_id, gens: (series[String(r.run_id)] || []).length }));
+            const fastest = genCounts.reduce((a, b) => (a.gens < b.gens ? a : b));
+            const slowest = genCounts.reduce((a, b) => (a.gens > b.gens ? a : b));
+            if (fastest.id !== slowest.id && fastest.gens > 0 && slowest.gens > fastest.gens) {
+                insights.push(`Run #${slowest.id} ran ${slowest.gens} generations vs #${fastest.id} with ${fastest.gens}.`);
+            }
+
+            return insights;
+        },
+
+        async loadComparison() {
+            this.loading = true;
+            this.error = null;
+            this.data = null;
+            try {
+                const ids = this.idsInput.replace(/\s/g, '');
+                if (!ids) { this.error = 'Enter run IDs'; return; }
+                history.replaceState(null, '', '?ids=' + ids);
+                const res = await fetch('/api/runs/compare?ids=' + encodeURIComponent(ids));
+                const d = await res.json();
+                if (d.detail) { this.error = d.detail; return; }
+                this.data = d;
+                this.$nextTick(() => this.renderChart());
+            } catch (e) {
+                this.error = e.message || 'Request failed';
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        renderChart() {
+            if (this.chart) { this.chart.destroy(); this.chart = null; }
+            const canvas = document.getElementById('compare-chart');
+            if (!canvas || !this.data) return;
+            const series = this.data.generation_series || {};
+            const datasets = [];
+            let i = 0;
+            for (const run of this.data.runs) {
+                const gens = series[String(run.run_id)] || [];
+                const color = COMPARE_PALETTE[i % COMPARE_PALETTE.length];
+                datasets.push({
+                    label: '#' + run.run_id + (run.theme_keywords ? ' (' + run.theme_keywords.substring(0, 20) + ')' : ''),
+                    data: gens.map(g => ({ x: g.gen, y: g.best_fitness })),
+                    borderColor: color,
+                    backgroundColor: color.replace('rgb', 'rgba').replace(')', ',0.1)'),
+                    fill: false,
+                    tension: 0.2,
+                    pointRadius: 2,
+                });
+                i++;
+            }
+            this.chart = new Chart(canvas, {
+                type: 'line',
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'nearest' },
+                    scales: {
+                        x: { type: 'linear', title: { display: true, text: 'Generation' }, ticks: { precision: 0 } },
+                        y: { beginAtZero: true, max: 1, title: { display: true, text: 'Best Fitness' } }
+                    },
+                    plugins: { legend: { position: 'bottom', labels: { color: 'rgba(226,232,240,0.9)' } } }
+                }
+            });
+        }
+    };
+}
+</script>
+<style>[x-cloak] { display: none !important; }</style>
+{% endblock %}

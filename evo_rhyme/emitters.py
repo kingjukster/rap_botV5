@@ -51,6 +51,21 @@ def _constraint_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return cc
 
 
+def _mutation_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build standard mutation config from emitter config, including corpus_vocab."""
+    mc: Dict[str, Any] = {
+        "theme_keywords": config.get("theme_keywords", []),
+        "min_syllables": config.get("min_syllables", 6),
+        "max_syllables": config.get("max_syllables", 18),
+        "use_structural_mutations": config.get("use_structural_mutations", False),
+        "embedding_neighbor_k": config.get("embedding_neighbor_k", 12),
+        "embedding_min_cosine": config.get("embedding_min_cosine", 0.58),
+    }
+    if config.get("corpus_vocab"):
+        mc["corpus_vocab"] = config["corpus_vocab"]
+    return mc
+
+
 @dataclass
 class EmitResult:
     """Result of an emitter batch."""
@@ -214,17 +229,12 @@ class MutationEmitter(BaseEmitter):
         if not parents:
             return []
 
-        mutation_config = {
-            "theme_keywords": self.config.get("theme_keywords", []),
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-            "use_structural_mutations": self.config.get("use_structural_mutations", False),
-            "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
-            "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
-        }
+        mutation_config = _mutation_config(self.config)
         constraint_config = _constraint_config(self.config)
         crossover_rate = self.config.get("crossover_rate", 0.5)
         semantic_pairing = self.config.get("semantic_crossover_pairing", False)
+        lm_budget_per_gen = self.config.get("lm_mutation_budget_per_gen", 0)
+        lm_budget = {"remaining": lm_budget_per_gen} if lm_budget_per_gen > 0 else {"remaining": 0}
 
         candidates = []
         attempts = 0
@@ -248,30 +258,36 @@ class MutationEmitter(BaseEmitter):
                 prompt = pr1
 
             r = random.random()
-            if r < 0.10:
+            if r < 0.10 and lm_budget.get("remaining", 0) > 0:
                 from evo_rhyme.verse_evolution import _lm_verse_rewrite
                 rewritten = _lm_verse_rewrite(child, mutation_config)
                 if rewritten:
                     child = rewritten
                 else:
-                    child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS, constraint_config=constraint_config)
+                    child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS,
+                                         constraint_config=constraint_config, lm_budget=lm_budget)
             elif r < 0.25:
-                child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS, constraint_config=constraint_config)
-                child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS, constraint_config=constraint_config)
+                child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS,
+                                     constraint_config=constraint_config, lm_budget=lm_budget)
+                child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS,
+                                     constraint_config=constraint_config, lm_budget=lm_budget)
             elif r < 0.50:
                 heavy_weights = dict(MUTATION_WEIGHTS)
                 for k in heavy_weights:
-                    if k.startswith("lm_"):
-                        heavy_weights[k] *= 1.5
                     if k in ("line_replace", "block_replace"):
                         heavy_weights[k] *= 2.0
-                child = verse_mutate(child, mutation_config, heavy_weights, constraint_config=constraint_config)
+                child = verse_mutate(child, mutation_config, heavy_weights,
+                                     constraint_config=constraint_config, lm_budget=lm_budget)
             else:
-                child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS, constraint_config=constraint_config)
+                child = verse_mutate(child, mutation_config, MUTATION_WEIGHTS,
+                                     constraint_config=constraint_config, lm_budget=lm_budget)
 
             if passes_verse_constraints(child, constraint_config):
                 analyze_verse_individual(child)
                 child.metadata["origin"] = "mutation_emitter"
+                p1_fit = p1.fitness or 0.0
+                p2_fit = p2.fitness or 0.0
+                child.metadata["_parent_fitness"] = max(p1_fit, p2_fit)
                 style = mutate_style_genome(style, mutation_rate=0.20)
                 prompt = mutate_prompt_genome(prompt, mutation_scale=0.12)
                 _attach_genomes(child, style=style, prompt=prompt)
@@ -340,18 +356,13 @@ class DirectedMutationEmitter(BaseEmitter):
         if not parents:
             return []
 
-        mutation_config = {
-            "theme_keywords": self.config.get("theme_keywords", []),
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-            "use_structural_mutations": self.config.get("use_structural_mutations", False),
-            "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
-            "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
-        }
+        mutation_config = _mutation_config(self.config)
         constraint_config = _constraint_config(self.config)
         crossover_rate = self.config.get("crossover_rate", 0.5)
         semantic_pairing = self.config.get("semantic_crossover_pairing", False)
         weights = self._focused_weights(MUTATION_WEIGHTS)
+        lm_budget_per_gen = self.config.get("lm_mutation_budget_per_gen", 0)
+        lm_budget = {"remaining": lm_budget_per_gen} if lm_budget_per_gen > 0 else {"remaining": 0}
 
         candidates: List[VerseIndividual] = []
         attempts = 0
@@ -373,10 +384,13 @@ class DirectedMutationEmitter(BaseEmitter):
                 style = s1
                 prompt = pr1
 
-            # Directed emitters prioritize mutation passes over expensive rewrites.
-            child = verse_mutate(child, mutation_config, weights, constraint_config=constraint_config)
+            child = verse_mutate(child, mutation_config, weights,
+                                 constraint_config=constraint_config,
+                                 lm_budget=lm_budget)
             if random.random() < 0.25:
-                child = verse_mutate(child, mutation_config, weights, constraint_config=constraint_config)
+                child = verse_mutate(child, mutation_config, weights,
+                                     constraint_config=constraint_config,
+                                     lm_budget=lm_budget)
 
             if passes_verse_constraints(child, constraint_config):
                 analyze_verse_individual(child)
@@ -501,14 +515,8 @@ class NicheTargetingEmitter(BaseEmitter):
             logger.info("NicheTargetingEmitter: no empty niches left")
             return []
 
-        mutation_config = {
-            "theme_keywords": list(self.config.get("theme_keywords", [])),
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-            "use_structural_mutations": self.config.get("use_structural_mutations", False),
-            "embedding_neighbor_k": self.config.get("embedding_neighbor_k", 12),
-            "embedding_min_cosine": self.config.get("embedding_min_cosine", 0.58),
-        }
+        mutation_config = _mutation_config(self.config)
+        mutation_config["theme_keywords"] = list(mutation_config.get("theme_keywords", []))
         constraint_config = _constraint_config(self.config)
 
         candidates = []
@@ -542,25 +550,32 @@ class NicheTargetingEmitter(BaseEmitter):
             else:
                 constraint_config_local = constraint_config
 
+            lm_budget_per_gen = self.config.get("lm_mutation_budget_per_gen", 0)
+            niche_lm_budget = {"remaining": lm_budget_per_gen} if lm_budget_per_gen > 0 else {"remaining": 0}
+
             heavy_weights = dict(MUTATION_WEIGHTS)
             for k in heavy_weights:
-                if k.startswith("lm_"):
-                    heavy_weights[k] *= 2.0
                 if k in ("line_replace", "block_replace"):
                     heavy_weights[k] *= 3.0
+            if lm_budget_per_gen > 0:
+                for k in heavy_weights:
+                    if k.startswith("lm_"):
+                        heavy_weights[k] *= 2.0
             for k in hints.get("prefer_ops", []):
                 if k in heavy_weights:
                     heavy_weights[k] *= 2.0
             for k in hints.get("prefer_ops_heavy", []):
                 if k in heavy_weights:
                     heavy_weights[k] *= 3.0
-            if hints.get("force_metaphor"):
+            if hints.get("force_metaphor") and lm_budget_per_gen > 0:
                 if "lm_metaphor_inject" in heavy_weights:
                     heavy_weights["lm_metaphor_inject"] *= 3.0
 
             for attempt in range(3):
                 child = VerseIndividual(lines=list(parent.lines), metadata={"origin": "niche_targeting"})
-                child = verse_mutate(child, mut_cfg, heavy_weights, constraint_config=constraint_config_local)
+                child = verse_mutate(child, mut_cfg, heavy_weights,
+                                     constraint_config=constraint_config_local,
+                                     lm_budget=niche_lm_budget)
 
                 if hints.get("force_aggressive"):
                     aggressive_words = hints.get("extra_keywords", [])
@@ -610,12 +625,7 @@ class RepairEmitter(BaseEmitter):
         if not self._broken_pool:
             return []
 
-        mutation_config = {
-            "theme_keywords": self.config.get("theme_keywords", []),
-            "min_syllables": self.config.get("min_syllables", 6),
-            "max_syllables": self.config.get("max_syllables", 18),
-            "use_structural_mutations": self.config.get("use_structural_mutations", False),
-        }
+        mutation_config = _mutation_config(self.config)
         constraint_config = _constraint_config(self.config)
 
         candidates = []
@@ -810,9 +820,10 @@ def create_emitters(config: Dict[str, Any]) -> Tuple[List[BaseEmitter], EmitterS
     flow_emitter = FlowEmitter(config)
     imagery_emitter = ImageryEmitter(config)
     niche_emitter = NicheTargetingEmitter(config)
-    repair_emitter = RepairEmitter(config)
 
-    emitters = [
+    lm_budget_per_gen = config.get("lm_mutation_budget_per_gen", 0)
+
+    emitters: List[BaseEmitter] = [
         random_emitter,
         rhyme_emitter,
         narrative_emitter,
@@ -820,19 +831,25 @@ def create_emitters(config: Dict[str, Any]) -> Tuple[List[BaseEmitter], EmitterS
         flow_emitter,
         imagery_emitter,
         niche_emitter,
-        repair_emitter,
     ]
 
-    initial_weights = {
-        "random": 0.10,
-        "internal_rhyme": 0.14,
-        "narrative": 0.12,
-        "punchline": 0.12,
-        "flow": 0.12,
-        "imagery": 0.12,
-        "niche_targeting": 0.20,
-        "repair": 0.05,
+    initial_weights: Dict[str, float] = {
+        "random": 0.12,
+        "internal_rhyme": 0.15,
+        "narrative": 0.13,
+        "punchline": 0.13,
+        "flow": 0.13,
+        "imagery": 0.13,
+        "niche_targeting": 0.21,
     }
+
+    if lm_budget_per_gen > 0:
+        repair_emitter = RepairEmitter(config)
+        emitters.append(repair_emitter)
+        total = sum(initial_weights.values())
+        scale = 0.95 / total
+        initial_weights = {k: v * scale for k, v in initial_weights.items()}
+        initial_weights["repair"] = 0.05
 
     scheduler = EmitterScheduler(
         emitters,
@@ -894,7 +911,18 @@ def run_emitter_generation(
         all_scores = score_fn(all_candidates)
         for cand, sc in zip(all_candidates, all_scores):
             cand.scores = sc
-            cand.fitness = fitness_fn(sc)
+        try:
+            from evo_rhyme.fitness import compute_parent_improvement
+            for cand in all_candidates:
+                parent_fit = (cand.metadata or {}).get("_parent_fitness")
+                if parent_fit is not None and cand.scores:
+                    cand.scores["parent_improvement"] = compute_parent_improvement(
+                        cand.scores, parent_fit,
+                    )
+        except Exception:
+            logger.debug("Parent improvement scoring skipped", exc_info=True)
+        for cand in all_candidates:
+            cand.fitness = fitness_fn(cand.scores)
     except Exception:
         logger.warning("Batch scoring failed", exc_info=True)
         return {"total_candidates": len(all_candidates), "inserted": 0, "new_niches": 0}

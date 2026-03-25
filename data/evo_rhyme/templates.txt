@@ -1,3 +1,106 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:15172f84b66f3578a304f3e566c71d8867f38056d7ca8544b298c07d09d9ab1c
-size 4028
+# narrative templates
+I {verb_past} through the {noun} while the {noun2} still {verb}
+I {verb} the {noun} till the {noun2} start {verb_ing}
+I keep my {noun} in the {noun2} when the {noun3} {verb}
+I {verb} through the {noun} with my {noun2} on {state}
+I {verb_past} the {noun} with my {adjective} {noun2}
+I {verb} through the {noun} with {adjective} {noun2}
+
+# struggle / survival templates
+The {noun} got {adjective} when the {noun2} won't {verb}
+{noun} in my {noun2} while the {noun3} still {verb}
+{adjective} {noun} in the {noun2} where the {noun3} {verb}
+The {noun} won't {verb} till the {noun2} {verb_past}
+{noun} in the {state} while the {noun2} {verb}
+The {noun} and the {noun2} both {verb} in the {state}
+The {noun} and {noun2} {verb} in the {adjective} {state}
+
+# internal rhyme templates
+{noun} in the {noun} when the {noun2} start {verb_ing}
+{noun} on my {noun2} when the {noun3} start {verb_ing}
+{adjective} {noun} and the {noun2} keep {verb_ing}
+The {noun} hit {noun2} while the {noun3} stay {verb_ing}
+I {verb_past} through the {noun} while the {noun2} start {verb_ing}
+
+# multisyllabic rhyme templates
+{adjective} {noun} when the {noun2} start {verb_ing}
+{adjective} {noun} while the {noun2} start {verb_ing}
+The {noun} got {adjective} but the {noun2} got {adjective}
+{adjective} {noun} and the {noun2} still {verb}
+I {verb_past} through the {noun} with a {adjective} {noun2}
+
+# metaphor templates
+like a {noun} in the {noun2} I {verb} through the {noun3}
+I'm the {noun} in the {noun2} when the {noun3} start {verb_ing}
+the {noun} like a {noun2} when the {noun3} start {verb_ing}
+{noun} like the {noun2} when the {adjective} {noun3} {verb}
+
+# contrast templates
+they {verb} for the {noun} I {verb} for the {noun2}
+you {verb} the {noun} I {verb} the {noun2}
+they see the {noun} I see the {noun2}
+{noun} on my left {noun2} on my right both {verb}
+
+# punchline templates
+now the {noun} know the {noun2} never {verb}
+now the {noun} see the {noun2} never {verb}
+now the {noun} feel the {noun2} never {verb}
+that's when the {noun} {verb_past} and the {noun2} went {adjective}
+
+# aggressive / battle templates
+I {verb} the {noun} till the {noun2} start {verb_ing}
+your {noun} in the {noun2} when my {noun3} start {verb_ing}
+{verb} the {noun} watch the {noun2} start {verb_ing}
+
+# conditional / question / imperative templates
+if the {noun} {verb} then the {noun2} {verb}
+why the {noun} {verb} when the {noun2} won't {verb}
+{verb} the {noun} before the {noun2} {verb}
+ain't no {noun} in the {noun2} that can {verb} my {state}
+they said the {noun} {verb_past} but I {verb_past} the {noun2}
+and the {noun} {verb_past} like {adjective} {noun2}
+
+# rhyme-tagged templates (slots with same rhyme_X tag share a rhyme group)
+I {verb_rhyme_A} through the {noun} till the {noun2} {verb_rhyme_A}
+{adjective} {noun_rhyme_A} in my {noun2} with the {noun_rhyme_A}
+the {noun} {verb_rhyme_A} when the {noun2} {verb_rhyme_A}
+{noun_rhyme_A} in the {noun2} while the {noun_rhyme_A} still {verb}
+I {verb_past} the {noun_rhyme_A} now I {verb} the {noun_rhyme_A}
+
+# aggressive / high-energy templates
+I spit {noun} when the {noun2} ignite
+{verb} the {noun} till the {noun2} catch {state}
+{noun} on my {noun2} when the rival in sight
+your {noun} got {adjective} when my {noun2} strike
+I {verb} venom and the {noun} feel the {adjective} {state}
+spit {noun} like {noun2} my {noun3} never {verb}
+{adjective} {noun} in the {noun2} watch the {noun3} ignite
+the {noun} strike {adjective} when the {noun2} {verb}
+I {verb_past} the {noun} now the {noun2} bleed {adjective}
+{noun} and {noun2} collide when the {noun3} {verb}
+my {noun} spit {adjective} {noun2} in the {state}
+{verb} hard {noun} in the {noun2} till the {noun3} break
+I {verb} the {noun} like a savage in the {state}
+{adjective} {noun} slash through the {noun2} {verb_ing}
+lethal {noun} in the {noun2} {verb_ing} {adjective}
+{verb} the {noun} crush the {noun2} leave them {adjective}
+I reign {adjective} {noun} on the {noun2} all {state}
+{noun} spit fire {noun2} {verb} through the {state}
+
+# natural sentence structure templates
+I keep the {noun} close while the {noun2} {verb} in {state}
+the {adjective} {noun} won't {verb} without a {noun2}
+I found the {noun} {verb_ing} through the {adjective} {state}
+my {noun} {verb_past} before the {adjective} {noun2} {verb_past}
+every {noun} I {verb} brings me closer to the {noun2}
+the {adjective} {noun} reminds me of the {noun2} I {verb_past}
+I {verb} alone until the {noun} revealed the {state}
+nothing {verb} like the {noun} when the {adjective} {noun2} {verb}
+between the {noun} and the {noun2} I chose {state}
+I was {verb_ing} through the {noun} with {adjective} {state}
+the {noun} can't {verb} what the {adjective} {noun2} {verb_past}
+I let the {noun} {verb} while the {noun2} went {adjective}
+some {noun} {verb} but the {adjective} ones {verb} harder
+I never {verb_past} a {noun} that could {verb} like the {noun2}
+the only {noun} I {verb} is the {adjective} {noun2}
+when the {noun} {verb_past} I felt the {state} in my {noun2}

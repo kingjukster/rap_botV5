@@ -61,8 +61,10 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "theme_penalty": -0.18,
 }
 
-# Cap aggregate fitness to prevent saturation (e.g. truck duck fuck scoring >1.0)
-FITNESS_CAP = 0.95
+# Cap aggregate fitness to prevent saturation. Raised from 0.95 to 1.0 to allow
+# near-optimal candidates to continue improving; anti-exploit guards (ngram_fluency,
+# lexical_validity, penalties) are the primary quality gatekeepers.
+FITNESS_CAP = 1.0
 
 # Minimum ngram_fluency to survive - rejects candidates with unnatural phrase structure.
 # When corpus is available, ngram_fluency < this means phrase never appears in real language.
@@ -787,24 +789,28 @@ def _repeated_shell_penalty(
 # Plan 5 (2026-03-19): rebalance LM fluency vs coherence/novelty. Top verses had fluency 31–40%,
 # coherence 23%, novelty 3–9%. Increased coherence +0.04, novelty +0.05; decreased lm_fluency -0.04,
 # fluency -0.02, flow_continuity_score -0.03. See data/experiments/weight_rebalance_log.md.
+#
+# Plan 6 (2026-03-24): boost flow/rhythm weights per research ("flow may matter more than meaning").
+# beat_fit 0.05->0.10, flow_alignment 0.10->0.15, flow_continuity_score 0.05->0.10.
+# Budget offset: coherence 0.26->0.22, novelty 0.30->0.27, rhyme_graph_density 0.05->0.03.
 VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
-    "rhyme_scheme_score": 0.15,
+    "rhyme_scheme_score": 0.18,
     "internal_rhyme": 0.07,
     "rhyme_chain_density": 0.08,
     "global_rhyme_chain_score": 0.08,
     "internal_chain_score": 0.06,
-    "rhyme_graph_density": 0.05,
+    "rhyme_graph_density": 0.03,
     "rhyme_graph_cluster_coeff": 0.04,
     "rhyme_graph_chain_length": 0.04,
     "syllable_balance": 0.05,
-    "fluency": 0.06,  # Plan 5: was 0.08
-    "lm_fluency": 0.08,  # Plan 5: was 0.12
+    "fluency": 0.10,
+    "lm_fluency": 0.02,
     "semantic": 0.08,
     "lexical_validity": 0.06,
-    "coherence": 0.26,  # Plan 5: was 0.22 (Plan 2: was 0.18)
-    "punchline": 0.08,
+    "coherence": 0.22,
+    "punchline": 0.04,
     "identical_line_penalty": -0.40,
-    "template_penalty": -0.25,  # stronger penalty for rigid templates
+    "template_penalty": -0.25,
     "repetition_penalty": -0.12,
     "near_duplicate_penalty": -0.30,
     "filler_line_penalty": -0.30,
@@ -813,15 +819,14 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "garbled_line_penalty": -0.35,
     "cliche_penalty": -0.25,
     "structural_repetition_penalty": -0.25,
-    "cross_verse_repetition_penalty": -0.20,
-    "novelty": 0.30,  # Plan 5: was 0.25
-    "flow_alignment": 0.10,
-    # Beat-fit / performability (DP alignment against 16-slot bar grid).
-    # Normalized to [0,1] in score_verse to keep scales compatible.
-    "beat_fit": 0.05,
-    "flow_continuity_score": 0.05,  # Plan 5: was 0.08
+    "cross_verse_repetition_penalty": -0.35,
+    "novelty": 0.27,  # Plan 6: was 0.30
+    "flow_alignment": 0.15,  # Plan 6: was 0.10 -- flow/rhythm are critical in rap
+    "beat_fit": 0.10,  # Plan 6: was 0.05 -- DP beat alignment, performability signal
+    "flow_continuity_score": 0.10,  # Plan 6: was 0.05 -- cross-line syllable consistency
     "style_adherence": 0.06,
     "prompt_adherence": 0.05,
+    "parent_improvement": 0.08,
 }
 
 
@@ -1550,11 +1555,46 @@ def score_verse(
     return scores
 
 
+def compute_parent_improvement(
+    child_scores: Dict[str, float],
+    parent_fitness: Optional[float],
+    weights: Optional[Dict[str, float]] = None,
+) -> float:
+    """Compute improvement-over-parent signal in [0, 1].
+
+    Returns 0.5 (neutral) when no parent is known, >0.5 when the child
+    base fitness exceeds the parent, and <0.5 when it regresses.
+    """
+    if parent_fitness is None:
+        return 0.5
+    w = weights or VERSE_DEFAULT_WEIGHTS
+    base = 0.0
+    for key, weight in w.items():
+        if key == "parent_improvement":
+            continue
+        if key in child_scores:
+            if key == "cliche_penalty":
+                base += weight * min(1.0, child_scores.get("cliche_penalty", 0.0) * 80)
+            else:
+                base += weight * child_scores[key]
+    max_pos = _max_positive_weight_sum(w)
+    if max_pos > 0:
+        base /= max_pos
+    base = max(0.0, min(1.0, base))
+    diff = base - parent_fitness
+    return max(0.0, min(1.0, 0.5 + diff * 5.0))
+
+
+def _max_positive_weight_sum(weights: Dict[str, float]) -> float:
+    """Sum of all positive weights -- the theoretical max raw score when all components are 1.0."""
+    return sum(w for w in weights.values() if w > 0)
+
+
 def compute_verse_fitness(
     scores: Dict[str, float],
     weights: Optional[Dict[str, float]] = None,
 ) -> float:
-    """Aggregate verse fitness from weighted sum of component scores."""
+    """Aggregate verse fitness from weighted sum, normalized to [0, 1]."""
     w = weights or VERSE_DEFAULT_WEIGHTS
     total = 0.0
     for key, weight in w.items():
@@ -1565,7 +1605,10 @@ def compute_verse_fitness(
                 total += weight * cliche_scaled
             else:
                 total += weight * scores[key]
-    return total
+    max_pos = _max_positive_weight_sum(w)
+    if max_pos > 0:
+        total /= max_pos
+    return max(0.0, min(1.0, total))
 
 
 # ---------------------------------------------------------------------------
@@ -1660,7 +1703,10 @@ def compute_fitness(
         total += _repeated_shell_penalty(individual, population)
     if style_profile is not None and style_weight > 0 and individual is not None:
         total += style_weight * score_style_similarity(individual, style_profile)
-    return min(total, FITNESS_CAP)
+    max_pos = _max_positive_weight_sum(w)
+    if max_pos > 0:
+        total /= max_pos
+    return max(0.0, min(1.0, total))
 
 
 # ---------------------------------------------------------------------------
@@ -2125,10 +2171,13 @@ def compute_verse_16_fitness(
     scores: Dict[str, float],
     weights: Optional[Dict[str, float]] = None,
 ) -> float:
-    """Aggregate 16-bar verse fitness from weighted sum."""
+    """Aggregate 16-bar verse fitness from weighted sum, normalized to [0, 1]."""
     w = weights or VERSE_16_WEIGHTS
     total = 0.0
     for key, weight in w.items():
         if key in scores:
             total += weight * scores[key]
-    return min(total, 0.95)
+    max_pos = _max_positive_weight_sum(w)
+    if max_pos > 0:
+        total /= max_pos
+    return max(0.0, min(1.0, total))

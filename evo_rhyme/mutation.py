@@ -43,13 +43,20 @@ MUTATION_WEIGHTS: Dict[str, float] = {
     "lm_score_guided": 0.10,
     "lm_tighten": 0.04,
     "lm_expand": 0.02,
-    "stressed_vowel_swap": 0.06,
-    "syllable_adjust": 0.04,
-    "rhyme_graph_expand": 0.04,
-    "embedding_rhyme_walk": 0.05,
-    "chain_extension": 0.06,
-    "end_word_swap": 0.02,
-    "multisyllable_rhyme": 0.02,
+    "end_word_swap": 0.08,
+    "internal_rhyme_insert": 0.10,
+    "stressed_vowel_swap": 0.08,
+    "syllable_adjust": 0.06,
+    "semantic_swap": 0.12,
+    "syntax_synonym": 0.08,
+    "compression": 0.06,
+    "expansion": 0.04,
+    "phrase_replace": 0.06,
+    "rhyme_graph_expand": 0.08,
+    "embedding_rhyme_walk": 0.08,
+    "chain_extension": 0.08,
+    "multisyllable_rhyme": 0.06,
+    "corpus_line_swap": 0.10,
     "line_replace": 0.06,
     "block_replace": 0.04,
 }
@@ -396,14 +403,56 @@ def _syntax_synonym(
     tail_to_words: Dict[str, List[str]],
     config: Any,
 ) -> Optional[CoupletIndividual]:
-    """Replace word with simple synonym (small fixed set)."""
+    """Replace word with simple synonym (rap vocabulary)."""
     synonyms: Dict[str, List[str]] = {
-        "big": ["large", "huge", "massive"],
-        "small": ["little", "tiny"],
-        "good": ["great", "nice", "fine"],
-        "bad": ["wrong", "rough"],
-        "get": ["got", "grab"],
-        "make": ["made", "build"],
+        "big": ["large", "huge", "massive", "heavy"],
+        "small": ["little", "tiny", "slim"],
+        "good": ["great", "solid", "clean", "prime"],
+        "bad": ["wrong", "rough", "foul", "grim"],
+        "get": ["grab", "snatch", "claim", "seize"],
+        "make": ["build", "craft", "forge", "shape"],
+        "fight": ["war", "clash", "brawl", "scrap"],
+        "run": ["dash", "sprint", "bolt", "flee"],
+        "walk": ["stride", "march", "creep", "roam"],
+        "talk": ["speak", "preach", "spit", "rap"],
+        "money": ["bread", "cash", "bands", "paper"],
+        "gun": ["heat", "iron", "steel", "chrome"],
+        "car": ["whip", "ride", "coupe", "ghost"],
+        "house": ["crib", "spot", "pad", "block"],
+        "friend": ["homie", "brother", "ally", "comrade"],
+        "enemy": ["rival", "foe", "opps", "snake"],
+        "kill": ["slay", "murk", "drop", "finish"],
+        "real": ["authentic", "genuine", "raw", "solid"],
+        "fast": ["quick", "swift", "rapid", "flash"],
+        "slow": ["steady", "calm", "patient", "still"],
+        "hard": ["tough", "brutal", "fierce", "savage"],
+        "strong": ["powerful", "mighty", "iron", "solid"],
+        "weak": ["fragile", "broken", "hollow", "thin"],
+        "rich": ["wealthy", "loaded", "blessed", "stacked"],
+        "dark": ["shadow", "midnight", "black", "grim"],
+        "light": ["glow", "shine", "bright", "gleam"],
+        "fire": ["flame", "blaze", "heat", "inferno"],
+        "cold": ["frozen", "icy", "bitter", "numb"],
+        "pain": ["agony", "hurt", "wound", "scar"],
+        "love": ["heart", "soul", "bond", "devotion"],
+        "hate": ["rage", "venom", "fury", "spite"],
+        "king": ["ruler", "lord", "chief", "crown"],
+        "dead": ["gone", "buried", "fallen", "lost"],
+        "old": ["ancient", "worn", "aged", "veteran"],
+        "new": ["fresh", "clean", "mint", "pristine"],
+        "true": ["honest", "loyal", "faithful", "pure"],
+        "fake": ["false", "phony", "fraud", "hollow"],
+        "scared": ["shook", "nervous", "paranoid", "anxious"],
+        "crazy": ["insane", "wild", "mad", "unhinged"],
+        "smart": ["sharp", "clever", "wise", "bright"],
+        "street": ["block", "road", "lane", "avenue"],
+        "dream": ["vision", "ambition", "goal", "destiny"],
+        "grind": ["hustle", "work", "push", "labor"],
+        "drop": ["spit", "release", "unleash", "deliver"],
+        "world": ["globe", "earth", "realm", "domain"],
+        "blood": ["crimson", "life", "vein", "legacy"],
+        "game": ["sport", "hustle", "craft", "trade"],
+        "night": ["midnight", "darkness", "dusk", "shadow"],
     }
     text = f"{individual.line1} {individual.line2}".lower()
     tokens = tokenize_line(text)
@@ -1161,6 +1210,52 @@ def _block_replace_mutation(
         return None
 
 
+def _corpus_line_swap(
+    individual: CoupletIndividual,
+    tail_to_words: Dict[str, List[str]],
+    config: Any,
+) -> Optional[CoupletIndividual]:
+    """Replace one line with a themed corpus line (no LLM)."""
+    from evo_rhyme.generator import _load_corpus_lines
+    from evo_rhyme.phonetics import syllable_count_line
+
+    corpus = _load_corpus_lines()
+    if not corpus:
+        return None
+
+    theme_keywords: Set[str] = set()
+    if config and isinstance(config, dict) and "theme_keywords" in config:
+        theme_keywords = set(w.lower() for w in config["theme_keywords"])
+
+    min_syl = config.get("min_syllables", 6) if isinstance(config, dict) else 6
+    max_syl = config.get("max_syllables", 18) if isinstance(config, dict) else 18
+
+    existing = {individual.line1.lower().strip(), individual.line2.lower().strip()}
+
+    candidates = []
+    sample_size = min(200, len(corpus))
+    for line in random.sample(corpus, sample_size):
+        line = line.strip()
+        if not line or line.lower() in existing:
+            continue
+        syl = syllable_count_line(line)
+        if syl < min_syl or syl > max_syl:
+            continue
+        has_theme = any(kw in line.lower() for kw in theme_keywords) if theme_keywords else True
+        if has_theme:
+            candidates.append(line)
+        elif len(candidates) < 5:
+            candidates.append(line)
+
+    if not candidates:
+        return None
+
+    new_line = random.choice(candidates[:20])
+    if random.random() < 0.5:
+        return _copy_individual(individual, new_line, individual.line2)
+    return _copy_individual(individual, individual.line1, new_line)
+
+
 # Registry of mutation functions
 _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
     # LM-backed operators
@@ -1189,6 +1284,7 @@ _MUTATION_FUNCS: Dict[str, Callable[..., Optional[CoupletIndividual]]] = {
     "chain_extension": _chain_extension,
     "multisyllable_rhyme": _multisyllable_rhyme,
     "embedding_rhyme_walk": _embedding_rhyme_walk,
+    "corpus_line_swap": _corpus_line_swap,
     "line_replace": _line_replace_mutation,
     "block_replace": _block_replace_mutation,
 }

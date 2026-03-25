@@ -32,6 +32,80 @@ _POOL_NAME = "rapbot_pool"
 _POOL_SIZE = 5
 
 
+_ARCHIVE_CELLS_NORMALIZED = False
+
+
+def _ensure_archive_cells_normalized(conn: Any) -> None:
+    """
+    Drop legacy archive_cells payload columns if present (lines_json, fitness, scores_json).
+    Idempotent; safe across concurrent processes (unknown-column errors ignored).
+    """
+    global _ARCHIVE_CELLS_NORMALIZED
+    if _ARCHIVE_CELLS_NORMALIZED:
+        return
+    cur = conn.cursor()
+    try:
+        for col in ("lines_json", "fitness", "scores_json"):
+            try:
+                cur.execute(f"ALTER TABLE archive_cells DROP COLUMN `{col}`")
+            except Exception as e:
+                err = str(e).lower()
+                if "unknown column" in err or "check that column" in err or "1091" in err:
+                    pass
+                else:
+                    raise
+    finally:
+        cur.close()
+    _ARCHIVE_CELLS_NORMALIZED = True
+
+
+def _ensure_run_derived_table(conn: Any) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS run_derived (
+                run_id INT NOT NULL PRIMARY KEY,
+                final_best_fitness DOUBLE DEFAULT NULL,
+                final_avg_fitness DOUBLE DEFAULT NULL,
+                max_diversity_or_coverage DOUBLE DEFAULT NULL,
+                total_generations INT DEFAULT NULL,
+                total_candidates INT DEFAULT NULL,
+                last_occupied_niches INT DEFAULT NULL,
+                archive_cell_count INT DEFAULT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+    finally:
+        cur.close()
+
+
+def _ensure_operator_events_table(conn: Any) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operator_events (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                run_id INT NOT NULL,
+                gen INT NOT NULL,
+                candidate_id INT DEFAULT NULL,
+                operator VARCHAR(64) NOT NULL,
+                parents_json JSON DEFAULT NULL,
+                meta_json JSON DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE,
+                INDEX idx_run_gen (run_id, gen),
+                INDEX idx_run_operator (run_id, operator)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+    finally:
+        cur.close()
+
+
 def ensure_experiment_schema() -> None:
     """
     Ensure experiment tables/columns exist (idempotent).
@@ -500,6 +574,192 @@ def list_runs_for_experiment(
     return _execute(_run, default=[])
 
 
+def refresh_run_derived(run_id: int) -> None:
+    """Recompute denormalized aggregates from generations / candidates / archive_cells."""
+
+    def _run(conn: Any) -> None:
+        _ensure_run_derived_table(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO run_derived (
+                    run_id, final_best_fitness, final_avg_fitness, max_diversity_or_coverage,
+                    total_generations, total_candidates, last_occupied_niches, archive_cell_count
+                )
+                SELECT
+                    %s AS run_id,
+                    (SELECT MAX(g.best_fitness) FROM generations g WHERE g.run_id = %s),
+                    (SELECT g2.avg_fitness FROM generations g2 WHERE g2.run_id = %s ORDER BY g2.gen DESC LIMIT 1),
+                    (SELECT MAX(g3.diversity) FROM generations g3 WHERE g3.run_id = %s),
+                    (SELECT COUNT(*) FROM generations gx WHERE gx.run_id = %s),
+                    (SELECT COUNT(*) FROM candidates cx WHERE cx.run_id = %s),
+                    (
+                        SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(g4.extra_json, '$.occupied_niches')) AS SIGNED)
+                        FROM generations g4
+                        WHERE g4.run_id = %s
+                        ORDER BY g4.gen DESC LIMIT 1
+                    ),
+                    (SELECT COUNT(*) FROM archive_cells ac WHERE ac.run_id = %s)
+                ON DUPLICATE KEY UPDATE
+                    final_best_fitness = VALUES(final_best_fitness),
+                    final_avg_fitness = VALUES(final_avg_fitness),
+                    max_diversity_or_coverage = VALUES(max_diversity_or_coverage),
+                    total_generations = VALUES(total_generations),
+                    total_candidates = VALUES(total_candidates),
+                    last_occupied_niches = VALUES(last_occupied_niches),
+                    archive_cell_count = VALUES(archive_cell_count)
+                """,
+                (run_id, run_id, run_id, run_id, run_id, run_id, run_id, run_id),
+            )
+        finally:
+            cur.close()
+
+    _execute(_run, default=None, commit=True)
+
+
+def get_run_derived(run_id: int) -> Optional[Dict[str, Any]]:
+    """Return run_derived row or None."""
+
+    def _run(conn: Any) -> Optional[Dict[str, Any]]:
+        _ensure_run_derived_table(conn)
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT run_id, final_best_fitness, final_avg_fitness, max_diversity_or_coverage,
+                       total_generations, total_candidates, last_occupied_niches, archive_cell_count, updated_at
+                FROM run_derived WHERE run_id = %s
+                """,
+                (run_id,),
+            )
+            r = cur.fetchone()
+            return dict(r) if r else None
+        finally:
+            cur.close()
+
+    return _execute(_run, default=None)
+
+
+def count_archive_cells(run_id: int) -> int:
+    """Return number of MAP-Elites cells stored for a run."""
+
+    def _run(conn: Any) -> int:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) AS c FROM archive_cells WHERE run_id = %s", (run_id,))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        finally:
+            cur.close()
+
+    return _execute(_run, default=0) or 0
+
+
+def insert_operator_event(
+    run_id: int,
+    gen: int,
+    operator: str,
+    *,
+    candidate_id: Optional[int] = None,
+    parents: Optional[List[int]] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Append one operator trace row. Returns insert id or -1 on failure."""
+
+    def _run(conn: Any) -> int:
+        _ensure_operator_events_table(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO operator_events (run_id, gen, candidate_id, operator, parents_json, meta_json)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    gen,
+                    candidate_id,
+                    operator,
+                    json.dumps(parents) if parents else None,
+                    json.dumps(meta) if meta else None,
+                ),
+            )
+            rid = cur.lastrowid
+            return int(rid) if rid else -1
+        finally:
+            cur.close()
+
+    return _execute(_run, default=-1, commit=True)
+
+
+def list_operator_events_for_run(
+    run_id: int,
+    *,
+    limit: int = 2000,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """List operator events for a run (most recent first)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        _ensure_operator_events_table(conn)
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT id, run_id, gen, candidate_id, operator, parents_json, meta_json, created_at
+                FROM operator_events
+                WHERE run_id = %s
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+                """,
+                (run_id, limit, offset),
+            )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                for key in ("parents_json", "meta_json"):
+                    if d.get(key) and isinstance(d[key], str):
+                        try:
+                            d[key] = json.loads(d[key])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                out.append(d)
+            return out
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def list_operator_mix_global(*, limit_ops: int = 15) -> List[Dict[str, Any]]:
+    """Counts of operator labels across all events (for dashboard)."""
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        _ensure_operator_events_table(conn)
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT operator, COUNT(*) AS cnt
+                FROM operator_events
+                GROUP BY operator
+                ORDER BY cnt DESC
+                LIMIT %s
+                """,
+                (limit_ops,),
+            )
+            return [
+                {"operator": r["operator"], "count": int(r["cnt"] or 0)}
+                for r in cur.fetchall()
+            ]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
 def update_run_status(run_id: int, status: str, failure_reason: Optional[str] = None) -> None:
     """Update run status (e.g. 'running', 'completed', 'failed'). Optionally store failure_reason."""
 
@@ -518,6 +778,11 @@ def update_run_status(run_id: int, status: str, failure_reason: Optional[str] = 
             cur.close()
 
     _execute(_run, default=None, commit=True)
+    if status in ("completed", "failed"):
+        try:
+            refresh_run_derived(run_id)
+        except Exception as e:
+            logger.warning("refresh_run_derived after status=%s failed: %s", status, e)
 
 
 def update_run_config(run_id: int, config_json: Dict[str, Any]) -> None:
@@ -680,9 +945,10 @@ def upsert_archive_cell(
     fitness: float,
     scores_json: Optional[Dict[str, Any]],
 ) -> None:
-    """Insert or update an archive cell. Creates a candidate row if needed."""
+    """Insert or update an archive cell. Creates a candidate row; cell references candidate (no duplicate JSON on archive_cells)."""
 
     def _run(conn: Any) -> None:
+        _ensure_archive_cells_normalized(conn)
         cur = conn.cursor()
         try:
             cur.execute(
@@ -702,19 +968,11 @@ def upsert_archive_cell(
                 return
             cur.execute(
                 """
-                INSERT INTO archive_cells (run_id, cell_key, candidate_id, lines_json, fitness, scores_json)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE candidate_id=VALUES(candidate_id), lines_json=VALUES(lines_json),
-                fitness=VALUES(fitness), scores_json=VALUES(scores_json)
+                INSERT INTO archive_cells (run_id, cell_key, candidate_id)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE candidate_id=VALUES(candidate_id)
                 """,
-                (
-                    run_id,
-                    cell_key,
-                    cid,
-                    json.dumps(lines_json),
-                    fitness,
-                    json.dumps(scores_json) if scores_json else None,
-                ),
+                (run_id, cell_key, cid),
             )
         finally:
             cur.close()
@@ -736,6 +994,7 @@ def upsert_archive_cells_batch(
         return
 
     def _run(conn: Any) -> None:
+        _ensure_archive_cells_normalized(conn)
         cur = conn.cursor()
         try:
             for cell_key, lines_json, fitness, scores_json in cells:
@@ -755,19 +1014,11 @@ def upsert_archive_cells_batch(
                 if cid:
                     cur.execute(
                         """
-                        INSERT INTO archive_cells (run_id, cell_key, candidate_id, lines_json, fitness, scores_json)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE candidate_id=VALUES(candidate_id), lines_json=VALUES(lines_json),
-                        fitness=VALUES(fitness), scores_json=VALUES(scores_json)
+                        INSERT INTO archive_cells (run_id, cell_key, candidate_id)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE candidate_id=VALUES(candidate_id)
                         """,
-                        (
-                            run_id,
-                            cell_key,
-                            cid,
-                            json.dumps(lines_json),
-                            fitness,
-                            json.dumps(scores_json) if scores_json else None,
-                        ),
+                        (run_id, cell_key, cid),
                     )
         finally:
             cur.close()
@@ -784,25 +1035,41 @@ def list_runs(
 
     def _run(conn: Any) -> List[Dict[str, Any]]:
         _ensure_failure_reason_column(conn)
+        _ensure_run_derived_table(conn)
         cur = conn.cursor(dictionary=True)
         try:
+            derived_cols = """
+                , d.final_best_fitness AS drv_final_best_fitness,
+                  d.final_avg_fitness AS drv_final_avg_fitness,
+                  d.max_diversity_or_coverage AS drv_max_diversity_or_coverage,
+                  d.total_generations AS drv_total_generations,
+                  d.total_candidates AS drv_total_candidates,
+                  d.last_occupied_niches AS drv_last_occupied_niches,
+                  d.archive_cell_count AS drv_archive_cell_count
+            """
             if status_filter:
                 cur.execute(
-                    """
-                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at, failure_reason
-                    FROM runs
-                    WHERE status = %s
-                    ORDER BY created_at DESC
+                    f"""
+                    SELECT r.run_id, r.script_name, r.theme_keywords, r.config_json, r.status,
+                           r.created_at, r.updated_at, r.failure_reason
+                           {derived_cols}
+                    FROM runs r
+                    LEFT JOIN run_derived d ON d.run_id = r.run_id
+                    WHERE r.status = %s
+                    ORDER BY r.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
                     (status_filter, limit, offset),
                 )
             else:
                 cur.execute(
-                    """
-                    SELECT run_id, script_name, theme_keywords, config_json, status, created_at, updated_at, failure_reason
-                    FROM runs
-                    ORDER BY created_at DESC
+                    f"""
+                    SELECT r.run_id, r.script_name, r.theme_keywords, r.config_json, r.status,
+                           r.created_at, r.updated_at, r.failure_reason
+                           {derived_cols}
+                    FROM runs r
+                    LEFT JOIN run_derived d ON d.run_id = r.run_id
+                    ORDER BY r.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
                     (limit, offset),
@@ -811,6 +1078,12 @@ def list_runs(
             out: List[Dict[str, Any]] = []
             for r in rows:
                 d: Dict[str, Any] = dict(r)
+                derived: Dict[str, Any] = {}
+                for key in list(d.keys()):
+                    if key.startswith("drv_"):
+                        derived[key[4:]] = d.pop(key)
+                if any(v is not None for v in derived.values()):
+                    d["derived"] = derived
                 if d.get("config_json"):
                     try:
                         d["config_json"] = json.loads(d["config_json"]) if isinstance(d["config_json"], str) else d["config_json"]
@@ -1154,24 +1427,51 @@ def list_artifacts(*, limit: int = 200, offset: int = 0, kind: Optional[str] = N
 
 
 def load_archive_cells(run_id: int) -> List[Dict[str, Any]]:
-    """Load all archive cells for a run as list of dicts."""
+    """Load all archive cells for a run as list of dicts (lines/scores from candidates)."""
 
     def _run(conn: Any) -> List[Dict[str, Any]]:
+        _ensure_archive_cells_normalized(conn)
         cur = conn.cursor(dictionary=True)
         try:
             cur.execute(
-                "SELECT cell_key, candidate_id, lines_json, fitness, scores_json FROM archive_cells WHERE run_id = %s",
+                """
+                SELECT ac.cell_key, ac.candidate_id,
+                       c.lines_json, c.fitness, c.scores_json
+                FROM archive_cells ac
+                INNER JOIN candidates c ON c.candidate_id = ac.candidate_id
+                WHERE ac.run_id = %s
+                """,
                 (run_id,),
             )
             rows = cur.fetchall()
             out: List[Dict[str, Any]] = []
             for r in rows:
+                raw_lines = r.get("lines_json")
+                if isinstance(raw_lines, str):
+                    try:
+                        lines_parsed = json.loads(raw_lines) if raw_lines else []
+                    except (json.JSONDecodeError, TypeError):
+                        lines_parsed = []
+                elif raw_lines is not None:
+                    lines_parsed = raw_lines
+                else:
+                    lines_parsed = []
+                raw_scores = r.get("scores_json")
+                scores_parsed = None
+                if raw_scores:
+                    if isinstance(raw_scores, str):
+                        try:
+                            scores_parsed = json.loads(raw_scores)
+                        except (json.JSONDecodeError, TypeError):
+                            scores_parsed = None
+                    else:
+                        scores_parsed = raw_scores
                 d: Dict[str, Any] = {
                     "cell_key": r["cell_key"],
                     "candidate_id": r["candidate_id"],
-                    "lines": json.loads(r["lines_json"]) if r.get("lines_json") else [],
+                    "lines": lines_parsed,
                     "fitness": float(r["fitness"]) if r.get("fitness") is not None else 0.0,
-                    "scores": json.loads(r["scores_json"]) if r.get("scores_json") else None,
+                    "scores": scores_parsed,
                 }
                 out.append(d)
             return out
@@ -1456,6 +1756,84 @@ def get_song_lines(song_id: str) -> List[str]:
                 (song_id,),
             )
             return [row[0] for row in cur.fetchall() if row and row[0]]
+        finally:
+            cur.close()
+
+    return _execute(_run, default=[])
+
+
+def load_top_candidates_cross_run(
+    *,
+    limit: int = 50,
+    min_fitness: float = 0.0,
+    candidate_type: Optional[str] = "verse4",
+    exclude_run_ids: Optional[List[int]] = None,
+    recent_runs: int = 200,
+) -> List[Dict[str, Any]]:
+    """Load top candidates across recent completed runs for cross-run seeding.
+
+    Returns list of dicts with lines, fitness, scores, run_id, sorted by fitness desc.
+    """
+
+    def _run(conn: Any) -> List[Dict[str, Any]]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            run_filter = ""
+            params: list[Any] = []
+            if exclude_run_ids:
+                placeholders = ",".join(["%s"] * len(exclude_run_ids))
+                run_filter = f" AND r.run_id NOT IN ({placeholders})"
+                params.extend(exclude_run_ids)
+            cur.execute(
+                f"""
+                SELECT c.candidate_id, c.run_id, c.lines_json, c.fitness, c.scores_json
+                FROM candidates c
+                JOIN runs r ON r.run_id = c.run_id
+                WHERE r.status = 'completed'
+                  AND c.fitness >= %s
+                  {"AND c.candidate_type = %s" if candidate_type else ""}
+                  {run_filter}
+                ORDER BY c.fitness DESC
+                LIMIT %s
+                """,
+                tuple(
+                    [min_fitness]
+                    + ([candidate_type] if candidate_type else [])
+                    + params
+                    + [limit]
+                ),
+            )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d: Dict[str, Any] = {
+                    "candidate_id": r["candidate_id"],
+                    "run_id": r["run_id"],
+                    "fitness": float(r["fitness"]) if r.get("fitness") is not None else 0.0,
+                }
+                raw_lines = r.get("lines_json")
+                if isinstance(raw_lines, str):
+                    try:
+                        d["lines"] = json.loads(raw_lines)
+                    except (json.JSONDecodeError, TypeError):
+                        d["lines"] = []
+                elif raw_lines is not None:
+                    d["lines"] = raw_lines
+                else:
+                    d["lines"] = []
+                raw_scores = r.get("scores_json")
+                if raw_scores:
+                    if isinstance(raw_scores, str):
+                        try:
+                            d["scores"] = json.loads(raw_scores)
+                        except (json.JSONDecodeError, TypeError):
+                            d["scores"] = None
+                    else:
+                        d["scores"] = raw_scores
+                else:
+                    d["scores"] = None
+                out.append(d)
+            return out
         finally:
             cur.close()
 

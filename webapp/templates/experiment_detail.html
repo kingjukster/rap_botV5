@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block title %}Experiment {{ experiment.experiment_id }} — Rap Bot{% endblock %}
+
+{% block content %}
+<div class="mb-6" x-data="experimentPage()" x-init="load()">
+    <a href="/experiments" class="text-slate-400 hover:text-white text-sm mb-2 inline-block">&larr; Back to Experiments</a>
+    <h1 class="text-2xl font-bold text-slate-100">{{ experiment.name or 'Experiment ' ~ experiment.experiment_id }}</h1>
+    <p class="text-slate-400 mt-1">{{ experiment.description or 'No description' }}</p>
+    <div class="flex gap-4 mt-2 text-sm text-slate-500">
+        <span>Mode: <span class="text-slate-300">{{ experiment.mode or '—' }}</span></span>
+        <span>Created: <span class="text-slate-300">{{ experiment.created_at or '—' }}</span></span>
+    </div>
+
+    <div x-show="loading" class="mt-6 p-4 rounded-lg border border-slate-600 bg-slate-800/50 text-slate-400">Loading arm data&hellip;</div>
+
+    <template x-if="!loading && summary">
+        <div class="mt-6 space-y-6">
+            <section>
+                <h2 class="text-lg font-semibold text-slate-100 mb-3">Arm Comparison</h2>
+                <div class="overflow-x-auto rounded-lg border border-slate-600">
+                    <table class="w-full text-sm">
+                        <thead class="bg-slate-800 text-slate-400 text-left">
+                            <tr>
+                                <th class="px-4 py-3 font-medium">Arm</th>
+                                <th class="px-4 py-3 font-medium">Runs</th>
+                                <th class="px-4 py-3 font-medium">Mean Fitness</th>
+                                <th class="px-4 py-3 font-medium">Median</th>
+                                <th class="px-4 py-3 font-medium">Std Dev</th>
+                                <th class="px-4 py-3 font-medium">Min</th>
+                                <th class="px-4 py-3 font-medium">Max</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700">
+                            <template x-for="a in summary.arms" :key="a.arm_id">
+                                <tr class="hover:bg-slate-800/50" :class="a.is_best && 'bg-amber-500/5'">
+                                    <td class="px-4 py-3">
+                                        <span class="text-slate-200 font-medium" x-text="a.arm_name || 'Arm ' + a.arm_id"></span>
+                                        <span x-show="a.is_best" class="ml-1 text-amber-400 text-xs">best</span>
+                                    </td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="a.run_count"></td>
+                                    <td class="px-4 py-3 text-slate-300 font-medium" x-text="a.mean_fitness != null ? a.mean_fitness.toFixed(4) : '\u2014'"></td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="a.median_fitness != null ? a.median_fitness.toFixed(4) : '\u2014'"></td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="a.std_fitness != null ? a.std_fitness.toFixed(4) : '\u2014'"></td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="a.min_fitness != null ? a.min_fitness.toFixed(4) : '\u2014'"></td>
+                                    <td class="px-4 py-3 text-slate-400" x-text="a.max_fitness != null ? a.max_fitness.toFixed(4) : '\u2014'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section>
+                <h2 class="text-lg font-semibold text-slate-100 mb-3">Fitness Distribution by Arm</h2>
+                <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+                    <div style="height: 320px;"><canvas id="box-chart"></canvas></div>
+                </div>
+            </section>
+
+            <section>
+                <h2 class="text-lg font-semibold text-slate-100 mb-3">Impact Report</h2>
+                <div x-show="impactLoading" class="p-4 text-slate-400">Loading impact data&hellip;</div>
+                <div x-show="impactError" class="p-4 text-red-400" x-text="impactError"></div>
+                <template x-if="impactData && !impactError">
+                    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+                        <pre class="text-slate-300 text-xs font-mono whitespace-pre-wrap" x-text="JSON.stringify(impactData, null, 2)"></pre>
+                    </div>
+                </template>
+            </section>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const EXP_PALETTE = [
+    'rgba(251,191,36,0.7)', 'rgba(34,197,94,0.7)', 'rgba(59,130,246,0.7)',
+    'rgba(244,63,94,0.7)', 'rgba(168,85,247,0.7)', 'rgba(14,165,233,0.7)'
+];
+
+function experimentPage() {
+    return {
+        experimentId: {{ experiment.experiment_id }},
+        loading: true,
+        summary: null,
+        impactData: null,
+        impactLoading: false,
+        impactError: null,
+        chart: null,
+
+        async load() {
+            try {
+                const res = await fetch('/api/experiments/' + this.experimentId + '/summary');
+                this.summary = await res.json();
+                this.$nextTick(() => this.renderBoxChart());
+            } catch (e) {
+                this.summary = { arms: [] };
+            } finally {
+                this.loading = false;
+            }
+            this.loadImpact();
+        },
+
+        async loadImpact() {
+            this.impactLoading = true;
+            try {
+                const res = await fetch('/api/experiments/' + this.experimentId + '/impact');
+                if (res.ok) {
+                    this.impactData = await res.json();
+                } else {
+                    this.impactError = 'Impact report not available';
+                }
+            } catch (e) {
+                this.impactError = 'Failed to load impact report';
+            } finally {
+                this.impactLoading = false;
+            }
+        },
+
+        renderBoxChart() {
+            if (this.chart) this.chart.destroy();
+            const canvas = document.getElementById('box-chart');
+            if (!canvas || !this.summary || !this.summary.arms.length) return;
+
+            const arms = this.summary.arms;
+            const labels = arms.map(a => a.arm_name || 'Arm ' + a.arm_id);
+            const datasets = [];
+
+            arms.forEach((arm, i) => {
+                const color = EXP_PALETTE[i % EXP_PALETTE.length];
+                const fitnesses = arm.fitnesses || [];
+                if (!fitnesses.length) return;
+
+                const min = arm.min_fitness || 0;
+                const q1 = arm.q1 || min;
+                const median = arm.median_fitness || q1;
+                const q3 = arm.q3 || median;
+                const max = arm.max_fitness || q3;
+
+                datasets.push({
+                    label: labels[i],
+                    data: [{x: i, y: [q1, q3]}],
+                    backgroundColor: color,
+                    barPercentage: 0.6,
+                });
+            });
+
+            const scatterData = [];
+            arms.forEach((arm, i) => {
+                (arm.fitnesses || []).forEach(f => {
+                    scatterData.push({ x: i, y: f });
+                });
+            });
+
+            this.chart = new Chart(canvas, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Fitness range (Q1-Q3)',
+                        data: arms.map(a => [a.q1 || 0, a.q3 || 0]),
+                        backgroundColor: arms.map((_, i) => EXP_PALETTE[i % EXP_PALETTE.length]),
+                        barPercentage: 0.5,
+                    }, {
+                        type: 'scatter',
+                        label: 'Individual runs',
+                        data: scatterData,
+                        backgroundColor: 'rgba(226,232,240,0.5)',
+                        pointRadius: 3,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, max: 1, title: { display: true, text: 'Fitness' } },
+                        x: { title: { display: true, text: 'Arm' } }
+                    },
+                    plugins: { legend: { position: 'bottom', labels: { color: 'rgba(226,232,240,0.9)' } } }
+                }
+            });
+        }
+    };
+}
+</script>
+{% endblock %}

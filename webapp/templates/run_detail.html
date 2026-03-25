@@ -10,13 +10,22 @@
             <h1 class="text-2xl font-bold text-slate-100">Run {{ run.run_id }}</h1>
             <p class="text-slate-400 mt-1">{{ run.script_name }} — {{ run.theme_keywords or 'no theme' }}</p>
         </div>
-        <span class="px-3 py-1 rounded text-sm font-medium
+        <span id="status-badge" class="px-3 py-1 rounded text-sm font-medium
             {% if run.status == 'completed' %}bg-emerald-500/20 text-emerald-400
             {% elif run.status == 'running' %}bg-amber-500/20 text-amber-400
             {% elif run.status == 'failed' %}bg-red-500/20 text-red-400
             {% else %}bg-slate-600 text-slate-400{% endif %}">
             {{ run.status or 'pending' }}
         </span>
+        {% if run.status == 'running' %}
+        <span id="live-indicator" class="ml-2 inline-flex items-center gap-1 text-xs text-amber-400">
+            <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+            </span>
+            Live
+        </span>
+        {% endif %}
     </div>
 </div>
 
@@ -33,7 +42,53 @@
         <p class="text-slate-500 text-sm">Created</p>
         <p class="text-slate-100">{{ run.created_at or '—' }}</p>
     </div>
+    {% if run.derived and (run.derived.get('archive_cell_count') is not none or run.derived.get('total_candidates') is not none) %}
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4 md:col-span-2 lg:col-span-3">
+        <p class="text-slate-500 text-sm mb-2">Snapshot at run completion (run_derived)</p>
+        <div class="flex flex-wrap gap-6 text-sm">
+            {% if run.derived.get('archive_cell_count') is not none %}
+            <div><span class="text-slate-500">Archive cells</span> <span class="text-slate-200 font-medium">{{ run.derived.archive_cell_count }}</span></div>
+            {% endif %}
+            {% if run.derived.get('total_candidates') is not none %}
+            <div><span class="text-slate-500">Candidates logged</span> <span class="text-slate-200 font-medium">{{ run.derived.total_candidates }}</span></div>
+            {% endif %}
+            {% if run.derived.get('last_occupied_niches') is not none %}
+            <div><span class="text-slate-500">Last niches filled</span> <span class="text-slate-200 font-medium">{{ run.derived.last_occupied_niches }}</span></div>
+            {% endif %}
+            {% if run.derived.get('max_diversity_or_coverage') is not none %}
+            <div><span class="text-slate-500">Max coverage / diversity col</span> <span class="text-slate-200 font-medium">{{ "%.4f" | format(run.derived.max_diversity_or_coverage) }}</span></div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
 </div>
+
+<section class="mb-6" x-data="{ insights: [], loaded: false }" x-init="
+    fetch('/api/runs/{{ run.run_id }}/insights').then(r => r.json()).then(d => { insights = d; loaded = true; }).catch(() => { loaded = true; })
+">
+    <template x-if="loaded && insights.length">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mb-2">
+            <template x-for="(ins, i) in insights" :key="i">
+                <div class="rounded-lg border p-3"
+                    :class="{
+                        'border-amber-500/40 bg-amber-500/10': ins.level === 'warning',
+                        'border-red-500/40 bg-red-500/10': ins.level === 'error',
+                        'border-emerald-500/40 bg-emerald-500/10': ins.level === 'success',
+                        'border-sky-500/40 bg-sky-500/10': ins.level === 'info'
+                    }">
+                    <p class="font-medium text-sm"
+                        :class="{
+                            'text-amber-400': ins.level === 'warning',
+                            'text-red-400': ins.level === 'error',
+                            'text-emerald-400': ins.level === 'success',
+                            'text-sky-400': ins.level === 'info'
+                        }" x-text="ins.title"></p>
+                    <p class="text-slate-400 text-xs mt-1" x-text="ins.detail"></p>
+                </div>
+            </template>
+        </div>
+    </template>
+</section>
 
 {% if has_archive %}
 <div class="mb-6">
@@ -172,28 +227,8 @@
     {% if not candidates %}
     <p class="text-slate-500">No candidates for this run.</p>
     {% else %}
-    <div x-data="{
-        candidates: {{ candidates | tojson }},
-        genFilter: null,
-        page: 0,
-        perPage: 20,
-        get filtered() {
-            let list = this.genFilter != null ? this.candidates.filter(c => c.gen === this.genFilter) : this.candidates;
-            return list;
-        },
-        get paginated() {
-            const start = this.page * this.perPage;
-            return this.filtered.slice(start, start + this.perPage);
-        },
-        get totalPages() {
-            return Math.max(1, Math.ceil(this.filtered.length / this.perPage));
-        },
-        get genOptions() {
-            const g = [...new Set(this.candidates.map(c => c.gen))].sort((a,b) => a - b);
-            return g;
-        }
-    }" x-init="$watch('genFilter', () => page = 0); $watch('page', () => {});">
-        <div class="flex flex-wrap gap-2 mb-4 items-center">
+    <div x-data="candidateExplorer()" x-init="init()">
+        <div class="flex flex-wrap gap-2 mb-3 items-center">
             <label class="text-slate-400 text-sm">Generation:</label>
             <select x-model="genFilter" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
                 <option :value="null">All</option>
@@ -201,7 +236,27 @@
                     <option :value="g" x-text="'Gen ' + g"></option>
                 </template>
             </select>
-            <span class="text-slate-500 text-sm" x-text="'Showing ' + paginated.length + ' of ' + filtered.length"></span>
+            <label class="text-slate-400 text-sm ml-2">Type:</label>
+            <select x-model="typeFilter" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+                <option value="">All</option>
+                <template x-for="t in typeOptions" :key="t">
+                    <option :value="t" x-text="t"></option>
+                </template>
+            </select>
+            <label class="text-slate-400 text-sm ml-2">Scheme:</label>
+            <select x-model="schemeFilter" class="rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+                <option value="">All</option>
+                <template x-for="s in schemeOptions" :key="s">
+                    <option :value="s" x-text="s"></option>
+                </template>
+            </select>
+        </div>
+        <div class="flex flex-wrap gap-2 mb-4 items-center">
+            <label class="text-slate-400 text-sm">Fitness:</label>
+            <input type="number" step="0.01" x-model.number="fitnessMin" placeholder="min" class="w-20 rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+            <span class="text-slate-500">&ndash;</span>
+            <input type="number" step="0.01" x-model.number="fitnessMax" placeholder="max" class="w-20 rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1 text-sm">
+            <span class="text-slate-500 text-sm ml-2" x-text="'Showing ' + paginated.length + ' of ' + filtered.length"></span>
             <div class="flex gap-1 ml-2" x-show="totalPages > 1">
                 <button @click="page = Math.max(0, page - 1)" :disabled="page === 0" class="px-2 py-1 rounded border border-slate-600 text-sm disabled:opacity-50">Prev</button>
                 <span class="px-2 py-1 text-slate-400 text-sm" x-text="(page + 1) + ' / ' + totalPages"></span>
@@ -243,6 +298,42 @@
 {% if generations or candidates %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
+function candidateExplorer() {
+    return {
+        candidates: {{ candidates | tojson if candidates else '[]' }},
+        genFilter: null,
+        typeFilter: '',
+        schemeFilter: '',
+        fitnessMin: null,
+        fitnessMax: null,
+        page: 0,
+        perPage: 20,
+
+        init() {
+            this.$watch('genFilter', () => this.page = 0);
+            this.$watch('typeFilter', () => this.page = 0);
+            this.$watch('schemeFilter', () => this.page = 0);
+            this.$watch('fitnessMin', () => this.page = 0);
+            this.$watch('fitnessMax', () => this.page = 0);
+        },
+
+        get filtered() {
+            let list = this.candidates;
+            if (this.genFilter != null) list = list.filter(c => c.gen === this.genFilter);
+            if (this.typeFilter) list = list.filter(c => c.candidate_type === this.typeFilter);
+            if (this.schemeFilter) list = list.filter(c => c.scheme === this.schemeFilter);
+            if (this.fitnessMin != null && this.fitnessMin !== '') list = list.filter(c => c.fitness != null && c.fitness >= this.fitnessMin);
+            if (this.fitnessMax != null && this.fitnessMax !== '') list = list.filter(c => c.fitness != null && c.fitness <= this.fitnessMax);
+            return list;
+        },
+        get paginated() { return this.filtered.slice(this.page * this.perPage, (this.page + 1) * this.perPage); },
+        get totalPages() { return Math.max(1, Math.ceil(this.filtered.length / this.perPage)); },
+        get genOptions() { return [...new Set(this.candidates.map(c => c.gen))].sort((a, b) => a - b); },
+        get typeOptions() { return [...new Set(this.candidates.map(c => c.candidate_type).filter(Boolean))].sort(); },
+        get schemeOptions() { return [...new Set(this.candidates.map(c => c.scheme).filter(Boolean))].sort(); },
+    };
+}
+
 (function() {
     const candidates = {{ candidates | tojson if candidates else '[]' }};
 
@@ -337,6 +428,58 @@
                 y1: { display: coverage.some(function(c) { return c != null; }), position: 'right', beginAtZero: true, title: { display: true, text: 'Niches' }, grid: { drawOnChartArea: false } }
             }
         }
+    });
+})();
+</script>
+{% endif %}
+
+{% if run.status == 'running' %}
+<script>
+(function() {
+    const runId = {{ run.run_id }};
+    const es = new EventSource('/api/runs/' + runId + '/stream');
+
+    const genCountEl = document.querySelector('.grid .text-xl');
+    const fitnessChart = Chart.getChart('fitness-chart');
+    const badge = document.getElementById('status-badge');
+    const liveInd = document.getElementById('live-indicator');
+
+    es.addEventListener('generation', function(e) {
+        try {
+            const gens = JSON.parse(e.data);
+            gens.forEach(function(g) {
+                if (fitnessChart) {
+                    fitnessChart.data.labels.push(g.gen);
+                    fitnessChart.data.datasets[0].data.push(g.best_fitness);
+                    if (fitnessChart.data.datasets.length > 1) {
+                        fitnessChart.data.datasets[1].data.push(g.avg_fitness);
+                    }
+                    fitnessChart.update('none');
+                }
+            });
+            if (genCountEl && gens.length) {
+                const lastGen = gens[gens.length - 1];
+                genCountEl.textContent = lastGen.gen + 1;
+            }
+        } catch (_) {}
+    });
+
+    es.addEventListener('done', function(e) {
+        es.close();
+        try {
+            const d = JSON.parse(e.data);
+            if (badge) {
+                badge.textContent = d.status;
+                badge.className = 'px-3 py-1 rounded text-sm font-medium ' +
+                    (d.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400');
+            }
+        } catch (_) {}
+        if (liveInd) liveInd.style.display = 'none';
+    });
+
+    es.addEventListener('error', function() {
+        es.close();
+        if (liveInd) liveInd.style.display = 'none';
     });
 })();
 </script>

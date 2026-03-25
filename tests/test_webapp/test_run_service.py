@@ -16,6 +16,7 @@ from webapp.services.run_service import (
     get_run_seeds,
     get_score_cache_recent,
     list_runs,
+    lineage_empty_explanation,
 )
 
 
@@ -85,6 +86,7 @@ def test_get_run_summary_db_enabled_includes_generations(monkeypatch):
     monkeypatch.setattr(run_service.db, "db_enabled", lambda: True)
     monkeypatch.setattr(run_service.db, "get_run", lambda run_id: {"run_id": run_id, "status": "completed"})
     monkeypatch.setattr(run_service.db, "list_generations", lambda run_id: [{"gen": 0, "best_fitness": 0.9}])
+    monkeypatch.setattr(run_service.db, "get_run_derived", lambda run_id: None)
     summary = get_run_summary(1)
     assert summary is not None
     assert summary.get("last_best_fitness") == 0.9
@@ -96,11 +98,39 @@ def test_get_run_summary_db_enabled_no_generations(monkeypatch):
     monkeypatch.setattr(run_service.db, "db_enabled", lambda: True)
     monkeypatch.setattr(run_service.db, "get_run", lambda run_id: {"run_id": run_id, "status": "completed"})
     monkeypatch.setattr(run_service.db, "list_generations", lambda run_id: [])
+    monkeypatch.setattr(run_service.db, "get_run_derived", lambda run_id: None)
     summary = get_run_summary(1)
     assert summary is not None
     assert summary.get("last_best_fitness") is None
     assert summary.get("last_avg_fitness") is None
     assert summary.get("num_generations") == 0
+
+
+def test_lineage_empty_explanation_maps_elites_when_cells():
+    note = lineage_empty_explanation(edge_count=0, archive_cell_count=5, script_name="run_couplet.py")
+    assert note is not None
+    assert "MAP-Elites" in note or "verse" in note.lower()
+
+
+def test_lineage_empty_explanation_couplet_copy_when_no_cells():
+    note = lineage_empty_explanation(edge_count=0, archive_cell_count=0, script_name="run_couplet_evolution.py")
+    assert note is not None
+    assert "couplet" in note.lower() or "No lineage" in note
+
+
+def test_get_run_summary_merges_derived(monkeypatch):
+    monkeypatch.setattr(run_service.db, "db_enabled", lambda: True)
+    monkeypatch.setattr(run_service.db, "get_run", lambda run_id: {"run_id": run_id})
+    monkeypatch.setattr(run_service.db, "list_generations", lambda run_id: [])
+    monkeypatch.setattr(
+        run_service.db,
+        "get_run_derived",
+        lambda run_id: {"archive_cell_count": 12, "total_candidates": 100, "run_id": run_id},
+    )
+    summary = get_run_summary(1)
+    assert summary is not None
+    assert summary["derived"]["archive_cell_count"] == 12
+    assert summary["derived"]["total_candidates"] == 100
 
 
 def test_get_run_archive_db_enabled_returns_cells(monkeypatch):

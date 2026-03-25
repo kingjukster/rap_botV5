@@ -377,42 +377,55 @@ class VerseSeedGenerator:
         from evo_rhyme.generator import generate_random_couplets, template_fill_couplets
         from evo_rhyme.seed_generator import SeedGenerator
 
-        couplets_needed = size * 2
+        def _gen_couplets(count: int) -> List[CoupletIndividual]:
+            if self.init_mode == "template":
+                return template_fill_couplets(
+                    theme_keywords=theme_keywords, count=count, analyze=False,
+                )
+            elif self.init_mode == "random":
+                return generate_random_couplets(
+                    theme_keywords=theme_keywords, count=count, analyze=False,
+                )
+            else:
+                return create_mixed_population(
+                    corpus_path=self.corpus_path,
+                    theme_keywords=theme_keywords, size=count, analyze=False,
+                )
 
-        if self.init_mode == "template":
-            couplets = template_fill_couplets(
-                theme_keywords=theme_keywords,
-                count=couplets_needed,
-                analyze=False,
-            )
-        elif self.init_mode == "random":
-            couplets = generate_random_couplets(
-                theme_keywords=theme_keywords,
-                count=couplets_needed,
-                analyze=False,
-            )
-        else:
-            raw = create_mixed_population(
-                corpus_path=self.corpus_path,
-                theme_keywords=theme_keywords,
-                size=couplets_needed,
-                analyze=False,
-            )
-            couplets = raw
+        couplets = _gen_couplets(size * 2)
+        verses = self._couplets_to_verses(couplets)
 
-        return self._couplets_to_verses(couplets)[:size]
+        backfill_rounds = 0
+        while len(verses) < size and backfill_rounds < 3:
+            backfill_rounds += 1
+            extra = _gen_couplets((size - len(verses)) * 3)
+            verses.extend(self._couplets_to_verses(extra))
+
+        return verses[:size]
 
     # -- helpers -----------------------------------------------------------
 
     @staticmethod
+    def _verse_fingerprint(lines: List[str]) -> tuple:
+        """Lowercase first-3-words of each line as a fast similarity proxy."""
+        return tuple(" ".join(l.lower().split()[:3]) for l in lines)
+
+    @classmethod
     def _couplets_to_verses(
+        cls,
         couplets: List[CoupletIndividual],
     ) -> List[VerseIndividual]:
-        """Pair sequential couplets into 4-line VerseIndividuals."""
+        """Pair sequential couplets into 4-line VerseIndividuals, skipping near-dupes."""
+        random.shuffle(couplets)
         verses: List[VerseIndividual] = []
+        seen_fps: set = set()
         for i in range(0, len(couplets) - 1, 2):
             c1, c2 = couplets[i], couplets[i + 1]
             lines = [c1.line1, c1.line2, c2.line1, c2.line2]
+            fp = cls._verse_fingerprint(lines)
+            if fp in seen_fps:
+                continue
+            seen_fps.add(fp)
             verses.append(VerseIndividual(lines=lines))
         return verses
 

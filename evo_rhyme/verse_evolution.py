@@ -33,6 +33,7 @@ from evo_rhyme.scoring.novelty import NoveltyArchive, embed_texts, compute_verse
 from evo_rhyme.fitness import (
     OBJECTIVE_KEYS,
     VERSE_DEFAULT_WEIGHTS,
+    compute_parent_improvement,
     compute_verse_fitness,
     score_vector,
     score_verse,
@@ -186,6 +187,22 @@ class QDEvolutionConfig:
     use_structural_mutations: bool = False
 
 
+def _cull_near_duplicates(
+    population: List[VerseIndividual],
+    max_pop: int,
+) -> List[VerseIndividual]:
+    """Remove near-duplicate verses, keeping highest-fitness copy.
+    Uses first-3-words-per-line fingerprint as a fast proxy."""
+    seen_fps: set = set()
+    result: list = []
+    for ind in sorted(population, key=lambda x: x.fitness or 0.0, reverse=True):
+        fp = tuple(" ".join(l.lower().split()[:3]) for l in ind.lines)
+        if fp not in seen_fps:
+            seen_fps.add(fp)
+            result.append(ind)
+    return result[:max_pop]
+
+
 def verse_crossover(
     parent1: VerseIndividual,
     parent2: VerseIndividual,
@@ -211,16 +228,45 @@ def verse_crossover(
             )
             return child
 
+    scheme = cfg.get("scheme", "AABB") if isinstance(cfg, dict) else "AABB"
+
+    # Rhyme-scheme-aware crossover groups
+    # AABB: lines (0,1) and (2,3) rhyme together
+    # ABAB: lines (0,2) and (1,3) rhyme together
+    # ABBA: lines (0,3) and (1,2) rhyme together
+    # ABCB: lines (1,3) rhyme together, 0 and 2 are independent
+    if scheme == "ABAB":
+        rhyme_pairs = [(0, 2), (1, 3)]
+    elif scheme == "ABBA":
+        rhyme_pairs = [(0, 3), (1, 2)]
+    elif scheme == "ABCB":
+        rhyme_pairs = [(1, 3)]
+    else:
+        rhyme_pairs = [(0, 1), (2, 3)]
+
     op_name: str = "half_swap"
     r = random.random()
-    if r < 0.5:
+    if r < 0.45:
+        # Scheme-aware swap: keep rhyme-paired lines from same parent
+        if random.random() < 0.5:
+            lines = list(parent1.lines)
+            for a, b in rhyme_pairs[len(rhyme_pairs) // 2:]:
+                lines[a] = parent2.lines[a]
+                lines[b] = parent2.lines[b]
+        else:
+            lines = list(parent2.lines)
+            for a, b in rhyme_pairs[:len(rhyme_pairs) // 2 + 1]:
+                lines[a] = parent1.lines[a]
+                lines[b] = parent1.lines[b]
+        op_name = "scheme_aware_swap"
+    elif r < 0.65:
         # Half swap (preserves rhyming couplets within AABB)
         if random.random() < 0.5:
             lines = parent1.lines[:2] + parent2.lines[2:]
         else:
             lines = parent2.lines[:2] + parent1.lines[2:]
-    elif r < 0.8:
-        # Single-line swap (minimal disruption)
+    elif r < 0.85:
+        # Single-line swap (minimal disruption, prefer non-rhyming line)
         op_name = "single_line_swap"
         idx = random.randint(0, 3)
         lines = list(parent1.lines)
@@ -465,7 +511,8 @@ def verse_mutate(
             )
             return result
 
-    # 15% chance: mutate both couplets
+    # 20% chance: mutate both couplets, 15% chance: multi-point (2 passes)
+    multi_point = r < 0.15
     if r < 0.20:
         pair_indices = [0, 1]
     else:
@@ -477,6 +524,8 @@ def verse_mutate(
         line2 = lines[pair_idx * 2 + 1]
         couplet = CoupletIndividual(line1=line1, line2=line2)
         mutated = mutate(couplet, config, weights, lm_budget=lm_budget)
+        if multi_point:
+            mutated = mutate(mutated, config, weights, lm_budget=lm_budget)
         if passes_constraints(mutated, constraint_config):
             lines[pair_idx * 2] = mutated.line1
             lines[pair_idx * 2 + 1] = mutated.line2
@@ -488,13 +537,19 @@ def verse_mutate(
                     lines[pair_idx * 2] = repaired.line1
                     lines[pair_idx * 2 + 1] = repaired.line2
 
-    return VerseIndividual(
+    mutated = VerseIndividual(
         lines=lines,
         features=None,
         scores=None,
         fitness=None,
         metadata=dict(individual.metadata),
     )
+
+    from evo_rhyme.fitness import _score_verse_garbled_line_penalty
+    if _score_verse_garbled_line_penalty(mutated) > 0.25:
+        return individual
+
+    return mutated
 
 
 def _get_verse_rhyme_family(ind: VerseIndividual) -> tuple:
@@ -605,6 +660,10 @@ def evolve_verse_population(
     crossover_config = {"phrase_slice": cfg.phrase_slice}
 
     for gen in range(generations):
+        _tracer = _get_active_tracer()
+        if _tracer is not None:
+            _tracer.gen = gen
+
         for ind in population:
             analyze_verse_individual(ind)
 
@@ -952,11 +1011,16 @@ class VerseQDRunLogger:
                     if archive is not None:
                         scheme = "AABB"
                         for ind in archive.top_k(5):
+                            if (ind.metadata or {}).get("db_id"):
+                                continue
                             ct = f"verse{len(ind.lines)}"
-                            _db.insert_candidate(
+                            cid = _db.insert_candidate(
                                 self.run_id, gen, ct, scheme,
                                 ind.lines, ind.fitness or 0.0, ind.scores,
                             )
+                            if cid and cid > 0:
+                                ind.metadata = ind.metadata or {}
+                                ind.metadata["db_id"] = cid
             except Exception as e:
                 logger.warning("DB log_generation failed: %s", e)
 
@@ -1122,6 +1186,11 @@ def evolve_verse_qd(
 
     run_id_for_lineage = getattr(config, "run_id", None) or 0
 
+    _stagnation_counter = 0
+    _prev_best_fitness = -1.0
+    _stagnation_threshold = 3
+    _stagnation_boost_gens = 0
+
     for gen in range(config.num_generations):
         # Keep the operator tracer aware of current generation (if active)
         _tracer = _get_active_tracer()
@@ -1280,9 +1349,25 @@ def evolve_verse_qd(
                 constraint_config=constraint_config,
                 lm_budget=None,
             )
+            if _stagnation_boost_gens > 0 and random.random() < 0.5:
+                child = verse_mutate(
+                    child, mutation_config, mut_weights,
+                    constraint_config=constraint_config,
+                    lm_budget=None,
+                )
 
             if passes_verse_constraints(child, constraint_config):
                 analyze_verse_individual(child)
+                child.metadata = child.metadata or {}
+                p1_fit = p1.fitness or 0.0
+                p2_fit = p2.fitness or 0.0
+                child.metadata["_parent_fitness"] = max(p1_fit, p2_fit)
+                p1_db = (p1.metadata or {}).get("db_id")
+                p2_db = (p2.metadata or {}).get("db_id")
+                if p1_db or p2_db:
+                    child.metadata["_parent_db_ids"] = [
+                        pid for pid in (p1_db, p2_db) if pid and pid > 0
+                    ]
                 evolved_candidates.append(child)
 
         candidates.extend(evolved_candidates)
@@ -1382,17 +1467,49 @@ def evolve_verse_qd(
                     cand.scores.setdefault("novelty", 0.5)
 
         for cand in filtered:
+            parent_fit = (cand.metadata or {}).get("_parent_fitness")
+            if parent_fit is not None:
+                cand.scores["parent_improvement"] = compute_parent_improvement(
+                    cand.scores, parent_fit, weights,
+                )
             cand.fitness = compute_verse_fitness(cand.scores, weights)
 
         all_offspring = sorted(filtered, key=lambda c: c.fitness or 0.0, reverse=True)[:target]
 
+        # 6f. Persist offspring to DB + write lineage rows
+        if run_id_for_lineage and run_id_for_lineage > 0:
+            try:
+                from evo_rhyme import db as _db
+                if _db.db_enabled():
+                    for cand in all_offspring:
+                        ct = f"verse{len(cand.lines)}"
+                        cid = _db.insert_candidate(
+                            run_id_for_lineage, gen, ct, scheme,
+                            cand.lines, cand.fitness or 0.0, cand.scores,
+                        )
+                        if cid and cid > 0:
+                            cand.metadata = cand.metadata or {}
+                            cand.metadata["db_id"] = cid
+                            parent_ids = cand.metadata.pop("_parent_db_ids", None)
+                            if parent_ids:
+                                for pid in parent_ids:
+                                    _db.insert_lineage(cid, pid, "crossover+mutate", gen)
+            except Exception as e:
+                logger.debug("verse QD offspring DB/lineage failed: %s", e)
+
         # 7. Elites from archive (best per niche, diverse)
         elites = archive.top_k(config.num_elites)
 
-        # 8. Random immigrants
+        # 8. Random immigrants (boosted during stagnation)
+        immigrant_count = config.random_immigrants_per_gen
+        if _stagnation_boost_gens > 0:
+            immigrant_count = config.random_immigrants_per_gen * 2
+            _stagnation_boost_gens -= 1
+            logger.info("Stagnation boost active: immigrants=%d (2x), boost_gens_left=%d",
+                        immigrant_count, _stagnation_boost_gens)
         immigrants: List[VerseIndividual] = []
         if immigrant_generator:
-            for _ in range(config.random_immigrants_per_gen):
+            for _ in range(immigrant_count):
                 try:
                     imm = immigrant_generator()
                     if imm and passes_verse_constraints(imm, constraint_config):
@@ -1400,8 +1517,9 @@ def evolve_verse_qd(
                 except Exception:
                     pass
 
-        # 9. Assemble next generation
+        # 9. Assemble next generation + diversity cull
         population = elites + all_offspring + immigrants
+        population = _cull_near_duplicates(population, config.population_size)
 
         while len(population) < config.population_size and archive.occupied_niches() > 0:
             population.extend(archive.sample_parents(1))
@@ -1423,11 +1541,22 @@ def evolve_verse_qd(
                     template_pool.top_k(1)[0].avg_fitness if template_pool.top_k(1) else 0.0,
                 )
 
-        # 10. Logging
+        # 10. Logging + stagnation detection
         best_fit = max((ind.fitness or 0.0 for ind in population), default=0.0)
         mean_fit = (
             sum(ind.fitness or 0.0 for ind in population) / max(1, len(population))
         )
+
+        if best_fit > _prev_best_fitness + 1e-4:
+            _stagnation_counter = 0
+            _prev_best_fitness = best_fit
+        else:
+            _stagnation_counter += 1
+            if _stagnation_counter >= _stagnation_threshold and _stagnation_boost_gens <= 0:
+                _stagnation_boost_gens = 2
+                _stagnation_counter = 0
+                logger.info("Stagnation detected at gen %d (best=%.4f unchanged for %d gens) -- activating boost",
+                            gen, best_fit, _stagnation_threshold)
 
         if run_logger:
             run_logger.log_generation(
@@ -1454,6 +1583,12 @@ def evolve_verse_qd(
             gen, len(population), archive.coverage() * 100,
             best_fit, lm_repair_budget.get("remaining", 0), improved,
         )
+        if gen % 10 == 0 and gen > 0:
+            try:
+                from evo_rhyme.verse_fitness_breakdown import audit_population_fitness
+                audit_population_fitness(population, weights, log_results=True)
+            except Exception:
+                logger.debug("Fitness audit skipped", exc_info=True)
         try:
             cs = verse_score_cache_snapshot()
             logger.info(
@@ -1599,15 +1734,18 @@ def evolve_verse_qd_emitters(
         "crossover_rate": config.crossover_rate,
         "enable_style_genome": config.enable_style_genome,
         "enable_prompt_genome": config.enable_prompt_genome,
-        "prompt_llm_fraction": config.prompt_llm_fraction,
+        "prompt_llm_fraction": config.prompt_llm_fraction if config.lm_mutation_budget_per_gen > 0 else 0.0,
         "prompt_dedup_enabled": config.prompt_dedup_enabled,
-        "proposer_config": config.proposer_config or {},
+        "proposer_config": config.proposer_config if config.lm_mutation_budget_per_gen > 0 else {},
         "niche_targeting_sample": 600,
         "niche_targeting_queue": 400,
         "coverage_target": config.coverage_target,
         "coverage_boost_threshold": 0.35,
         "semantic_crossover_pairing": getattr(config, "semantic_crossover_pairing", False),
+        "lm_mutation_budget_per_gen": config.lm_mutation_budget_per_gen,
     }
+    if config.corpus_vocab:
+        emitter_config["corpus_vocab"] = config.corpus_vocab
     emitters, scheduler = create_emitters(emitter_config)
 
     def batch_score(candidates):
@@ -1628,6 +1766,10 @@ def evolve_verse_qd_emitters(
         return compute_verse_fitness(scores, weights)
 
     for gen in range(config.num_generations):
+        _tracer = _get_active_tracer()
+        if _tracer is not None:
+            _tracer.gen = gen
+
         if (
             config.archive_mode == "curriculum_compact"
             and gen == max(1, int(config.curriculum_switch_gen))
@@ -1708,6 +1850,12 @@ def evolve_verse_qd_emitters(
             runtime["niches_per_sec"],
             sched_weights,
         )
+        if gen % 10 == 0 and gen > 0:
+            try:
+                from evo_rhyme.verse_fitness_breakdown import audit_population_fitness
+                audit_population_fitness(population, weights, log_results=True)
+            except Exception:
+                logger.debug("Fitness audit skipped", exc_info=True)
 
     if run_logger:
         run_logger.flush(archive)

@@ -1,6 +1,6 @@
 """Tests for verse fitness breakdown parity."""
 
-from evo_rhyme.fitness import VERSE_DEFAULT_WEIGHTS, compute_verse_fitness
+from evo_rhyme.fitness import VERSE_DEFAULT_WEIGHTS, compute_parent_improvement, compute_verse_fitness
 from evo_rhyme.verse_fitness_breakdown import compute_verse_fitness_breakdown
 
 
@@ -43,3 +43,29 @@ def test_breakdown_aggregate_matches_compute_verse_fitness():
     a = compute_verse_fitness(scores, w)
     bd = compute_verse_fitness_breakdown(scores, w)
     assert abs(bd.aggregate - a) < 1e-9
+
+
+def test_parent_improvement_neutral_without_parent():
+    scores = {"coherence": 0.5, "novelty": 0.3}
+    assert compute_parent_improvement(scores, None) == 0.5
+
+
+def test_parent_improvement_positive_when_better():
+    scores = {"coherence": 0.8, "novelty": 0.5, "rhyme_scheme_score": 0.9}
+    parent_fit = 0.05
+    result = compute_parent_improvement(scores, parent_fit)
+    assert result > 0.5
+
+
+def test_parent_improvement_negative_when_worse():
+    scores = {"coherence": 0.01}
+    parent_fit = 0.9
+    result = compute_parent_improvement(scores, parent_fit)
+    assert result < 0.5
+
+
+def test_parent_improvement_clamped():
+    scores = {"coherence": 0.0}
+    result = compute_parent_improvement(scores, 10.0)
+    assert result >= 0.0
+    assert result <= 1.0

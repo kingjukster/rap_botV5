@@ -10,8 +10,10 @@ import datetime as _dt
 import decimal
 
 from webapp.config import TEMPLATES_DIR
+from webapp.services.cache import ttl_cached
 from webapp.services.run_service import (
     list_runs,
+    bulk_generation_stats,
     get_run_counts_by_status,
     mark_stale_runs_failed,
     get_run_summary,
@@ -24,6 +26,11 @@ from webapp.services.run_service import (
     get_run_lineage,
     get_run_seeds,
     get_score_cache_recent,
+    count_archive_cells_for_run,
+    lineage_empty_explanation,
+    list_experiments,
+    get_experiment,
+    list_experiment_arms,
 )
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -101,23 +108,30 @@ def _dashboard_summary(runs: list) -> dict:
 def dashboard(request: Request, status: str | None = None, stale_marked: int | None = None):
     """Dashboard: list runs."""
     data = list_runs(limit=50, offset=0, status_filter=status)
-    # Enrich each run with summary if we have it, and sanitize for template
-    for r in data["runs"]:
-        summary = get_run_summary(r["run_id"])
-        if summary:
-            r["last_best_fitness"] = summary.get("last_best_fitness")
-            r["num_generations"] = summary.get("num_generations", 0)
+    runs = data["runs"]
+
+    # IDs that lack run_derived stats and need a bulk fallback query
+    need_stats = [r["run_id"] for r in runs if r.get("drv_final_best_fitness") is None and r.get("drv_total_generations") is None]
+    gen_stats = bulk_generation_stats(need_stats) if need_stats else {}
+
+    enriched = []
+    for r in runs:
+        if r.get("drv_final_best_fitness") is not None or r.get("drv_total_generations") is not None:
+            r["last_best_fitness"] = r.get("drv_final_best_fitness")
+            r["num_generations"] = r.get("drv_total_generations") or 0
         else:
-            r["last_best_fitness"] = None
-            r["num_generations"] = 0
+            stats = gen_stats.get(r["run_id"], {})
+            r["last_best_fitness"] = stats.get("last_best_fitness")
+            r["num_generations"] = stats.get("num_generations", 0)
         r["created_at"] = _format_created_at(r.get("created_at"))
-    summary_stats = get_run_counts_by_status()
+        enriched.append(_make_json_safe(r))
+    summary_stats = ttl_cached("run_counts_by_status", 10, get_run_counts_by_status)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "request": request,
-            "runs": data["runs"],
+            "runs": enriched,
             "total": data["total"],
             "status_filter": status,
             "summary": summary_stats,
@@ -136,15 +150,15 @@ def mark_stale_runs_post(minutes: int = 30):
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
 def run_detail(request: Request, run_id: int):
     """Run detail page."""
-    run = get_run_summary(run_id)
+    run = get_run_summary(run_id, include_generations=True)
     if not run:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/", status_code=302)
+    generations = _sanitize_dicts_for_json(run.pop("_generations", []))
     run = _sanitize_run_for_template(run)
-    generations = _sanitize_dicts_for_json(get_run_generations(run_id))
     candidates = _sanitize_dicts_for_json(get_run_candidates(run_id, gen=None)[:50])
     top_candidates = _sanitize_dicts_for_json(get_run_top_candidates(run_id, limit=12))
-    has_archive = len(get_run_archive(run_id)) > 0
+    has_archive = count_archive_cells_for_run(run_id) > 0
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -168,12 +182,12 @@ def about(request: Request):
 @router.get("/runs/{run_id}/generations", response_class=HTMLResponse)
 def run_generations(request: Request, run_id: int):
     """Generations view: chart + table for a run."""
-    run = get_run_summary(run_id)
+    run = get_run_summary(run_id, include_generations=True)
     if not run:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/", status_code=302)
+    generations = _sanitize_dicts_for_json(run.pop("_generations", []))
     run = _sanitize_run_for_template(run)
-    generations = _sanitize_dicts_for_json(get_run_generations(run_id))
     return templates.TemplateResponse(
         request,
         "run_generations.html",
@@ -213,10 +227,23 @@ def run_lineage(request: Request, run_id: int, gen: str | None = None):
         except (ValueError, TypeError):
             pass
     edges = _sanitize_dicts_for_json(get_run_lineage(run_id, gen=gen_int, limit=2000, offset=0))
+    archive_n = count_archive_cells_for_run(run_id)
+    lineage_note = lineage_empty_explanation(
+        edge_count=len(edges),
+        archive_cell_count=archive_n,
+        script_name=str(run.get("script_name") or ""),
+    )
     return templates.TemplateResponse(
         request,
         "lineage.html",
-        {"request": request, "run": run, "edges": edges, "gen_filter": gen_int},
+        {
+            "request": request,
+            "run": run,
+            "edges": edges,
+            "gen_filter": gen_int,
+            "lineage_note": lineage_note,
+            "archive_cell_count": archive_n,
+        },
     )
 
 
@@ -276,6 +303,38 @@ def sql_page(request: Request):
 def analysis_page(request: Request):
     """Evolution analysis dashboard."""
     return templates.TemplateResponse(request, "analysis.html", {"request": request})
+
+
+@router.get("/compare", response_class=HTMLResponse)
+def compare_page(request: Request):
+    """Compare multiple runs side by side."""
+    return templates.TemplateResponse(request, "compare.html", {"request": request})
+
+
+@router.get("/experiments", response_class=HTMLResponse)
+def experiments_page(request: Request):
+    """List all experiments."""
+    exps = _sanitize_dicts_for_json(list_experiments(limit=100, offset=0))
+    return templates.TemplateResponse(
+        request,
+        "experiments.html",
+        {"request": request, "experiments": exps},
+    )
+
+
+@router.get("/experiments/{experiment_id}", response_class=HTMLResponse)
+def experiment_detail_page(request: Request, experiment_id: int):
+    """Experiment detail with arm comparison."""
+    exp = get_experiment(experiment_id)
+    if not exp:
+        return RedirectResponse(url="/experiments", status_code=302)
+    exp = _make_json_safe(exp)
+    arms = _sanitize_dicts_for_json(list_experiment_arms(experiment_id))
+    return templates.TemplateResponse(
+        request,
+        "experiment_detail.html",
+        {"request": request, "experiment": exp, "arms": arms},
+    )
 
 
 @router.get("/score-cache", response_class=HTMLResponse)

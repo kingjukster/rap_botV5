@@ -7,6 +7,14 @@ import pytest
 import evo_rhyme.db as db
 
 
+@pytest.fixture(autouse=True)
+def _reset_archive_schema_normalization_flag():
+    """Each test gets a fresh archive_cells normalization gate (ALTER DROP may run once)."""
+    db._ARCHIVE_CELLS_NORMALIZED = False
+    yield
+    db._ARCHIVE_CELLS_NORMALIZED = False
+
+
 class _DummyCursor:
     def __init__(self, rows: Optional[List[Dict[str, Any]]] = None, row: Optional[Dict[str, Any]] = None):
         self._rows = rows or []
@@ -396,6 +404,61 @@ def test_list_runs_json_decode_error_sets_empty_config(monkeypatch):
         db._DB_CONFIG = None
 
 
+def test_refresh_run_derived_with_stub(monkeypatch):
+    cursor = _DummyCursor()
+    _install_mysql_stub(monkeypatch, cursor)
+    monkeypatch.setenv("RAPBOT_USE_DB", "1")
+    db._DB_CONFIG = None
+    try:
+        db.refresh_run_derived(5)
+        assert any("run_derived" in str(e[0]).lower() for e in cursor.executed)
+    finally:
+        db._DB_CONFIG = None
+
+
+def test_insert_operator_event_with_stub(monkeypatch):
+    cursor = _DummyCursor()
+    cursor.lastrowid = 99
+    _install_mysql_stub(monkeypatch, cursor)
+    monkeypatch.setenv("RAPBOT_USE_DB", "1")
+    db._DB_CONFIG = None
+    try:
+        oid = db.insert_operator_event(1, 0, "mutation", candidate_id=2, parents=[10], meta={"emitter": "x"})
+        assert oid == 99
+        assert any("operator_events" in str(e[0]).lower() for e in cursor.executed)
+    finally:
+        db._DB_CONFIG = None
+
+
+def test_list_operator_mix_global_with_stub(monkeypatch):
+    cursor = _DummyCursor(
+        rows=[
+            {"operator": "mutation", "cnt": 5},
+            {"operator": "crossover", "cnt": 3},
+        ]
+    )
+    _install_mysql_stub(monkeypatch, cursor)
+    monkeypatch.setenv("RAPBOT_USE_DB", "1")
+    db._DB_CONFIG = None
+    try:
+        mix = db.list_operator_mix_global(limit_ops=10)
+        assert mix == [{"operator": "mutation", "count": 5}, {"operator": "crossover", "count": 3}]
+    finally:
+        db._DB_CONFIG = None
+
+
+def test_count_archive_cells_with_stub(monkeypatch):
+    cursor = _DummyCursor()
+    cursor._row = (42,)
+    _install_mysql_stub(monkeypatch, cursor)
+    monkeypatch.setenv("RAPBOT_USE_DB", "1")
+    db._DB_CONFIG = None
+    try:
+        assert db.count_archive_cells(7) == 42
+    finally:
+        db._DB_CONFIG = None
+
+
 def test_execute_rollback_on_exception(monkeypatch):
     """_execute returns default and rollback is called when callback raises."""
     class FailingCursor(_DummyCursor):
@@ -408,6 +471,33 @@ def test_execute_rollback_on_exception(monkeypatch):
     try:
         result = db.get_run(1)
         assert result is None
+    finally:
+        db._DB_CONFIG = None
+
+
+def test_load_top_candidates_cross_run(monkeypatch):
+    """load_top_candidates_cross_run returns parsed candidate dicts."""
+    import json
+    rows = [
+        {
+            "candidate_id": 10,
+            "run_id": 5,
+            "lines_json": json.dumps(["line a", "line b", "line c", "line d"]),
+            "fitness": 0.85,
+            "scores_json": json.dumps({"coherence": 0.9}),
+        },
+    ]
+    cursor = _DummyCursor(rows=rows)
+    _install_mysql_stub(monkeypatch, cursor)
+    monkeypatch.setenv("RAPBOT_USE_DB", "1")
+    db._DB_CONFIG = None
+    try:
+        result = db.load_top_candidates_cross_run(limit=10, min_fitness=0.3)
+        assert len(result) == 1
+        assert result[0]["lines"] == ["line a", "line b", "line c", "line d"]
+        assert result[0]["fitness"] == 0.85
+        assert result[0]["scores"]["coherence"] == 0.9
+        assert result[0]["run_id"] == 5
     finally:
         db._DB_CONFIG = None
 

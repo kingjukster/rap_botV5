@@ -34,61 +34,211 @@
         <p class="text-xl font-semibold text-red-400">{{ _by.get("failed", 0) }}</p>
     </div>
 </div>
-<div class="flex flex-wrap gap-2 mb-4 items-center">
-    {% if stale_marked is not none and stale_marked > 0 %}
-    <p class="text-emerald-400 text-sm">Marked {{ stale_marked }} stale run(s) as failed.</p>
-    {% endif %}
-    <a href="/" class="px-3 py-1.5 rounded text-sm {% if not status_filter %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">All</a>
-    <a href="/?status=running" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'running' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Running</a>
-    <a href="/?status=completed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'completed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Completed</a>
-    <a href="/?status=failed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'failed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Failed</a>
-    {% if _by.get("running", 0) > 0 %}
-    <form action="/mark-stale-runs" method="post" class="ml-auto">
-        <button type="submit" class="px-3 py-1.5 rounded text-sm border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200">Mark stale runs as failed</button>
-    </form>
-    {% endif %}
-</div>
 
-<div class="overflow-x-auto rounded-lg border border-slate-600">
-    <table class="w-full text-sm">
-        <thead class="bg-slate-800 text-slate-400 text-left">
-            <tr>
-                <th class="px-4 py-3 font-medium">ID</th>
-                <th class="px-4 py-3 font-medium">Script</th>
-                <th class="px-4 py-3 font-medium">Theme</th>
-                <th class="px-4 py-3 font-medium">Status</th>
-                <th class="px-4 py-3 font-medium">Generations</th>
-                <th class="px-4 py-3 font-medium">Best Fitness</th>
-                <th class="px-4 py-3 font-medium">Created</th>
-                <th class="px-4 py-3 font-medium"></th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-700">
-            {% for r in runs %}
-            <tr class="hover:bg-slate-800/50">
-                <td class="px-4 py-3 text-slate-500">{{ r.run_id }}</td>
-                <td class="px-4 py-3 text-slate-300">{{ r.script_name }}</td>
-                <td class="px-4 py-3 text-slate-300 max-w-xs truncate" title="{{ r.theme_keywords or '' }}">{{ r.theme_keywords or '—' }}</td>
-                <td class="px-4 py-3">
-                    <span class="px-2 py-0.5 rounded text-xs font-medium
-                        {% if r.status == 'completed' %}bg-emerald-500/20 text-emerald-400
-                        {% elif r.status == 'running' %}bg-amber-500/20 text-amber-400
-                        {% elif r.status == 'failed' %}bg-red-500/20 text-red-400
-                        {% else %}bg-slate-600 text-slate-400{% endif %}">
-                        {{ r.status or 'pending' }}
-                    </span>
-                </td>
-                <td class="px-4 py-3 text-slate-400">{{ r.num_generations or 0 }}</td>
-                <td class="px-4 py-3 text-slate-400">{{ "%.3f" | format(r.last_best_fitness) if r.last_best_fitness is not none else '—' }}</td>
-                <td class="px-4 py-3 text-slate-500">{{ r.created_at or '—' }}</td>
-                <td class="px-4 py-3">
-                    <a href="/runs/{{ r.run_id }}" class="text-amber-400 hover:text-amber-300 font-medium">View</a>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div x-data="dashboardFilters()" x-init="init()">
+    <div class="flex flex-wrap gap-2 mb-4 items-center">
+        {% if stale_marked is not none and stale_marked > 0 %}
+        <p class="text-emerald-400 text-sm">Marked {{ stale_marked }} stale run(s) as failed.</p>
+        {% endif %}
+        <a href="/" class="px-3 py-1.5 rounded text-sm {% if not status_filter %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">All</a>
+        <a href="/?status=running" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'running' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Running</a>
+        <a href="/?status=completed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'completed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Completed</a>
+        <a href="/?status=failed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'failed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Failed</a>
+
+        <button @click="showFilters = !showFilters" class="px-3 py-1.5 rounded text-sm border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 ml-2"
+            :class="hasActiveFilters && 'border-amber-500/40 text-amber-400'">
+            <span x-text="showFilters ? 'Hide Filters' : 'Filters'"></span>
+            <span x-show="hasActiveFilters" class="ml-1 text-xs text-amber-400">&bull;</span>
+        </button>
+
+        <button x-show="selected.length >= 2" @click="goCompare()" class="px-3 py-1.5 rounded text-sm bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500/30 ml-2">
+            Compare <span x-text="selected.length"></span> runs
+        </button>
+
+        {% if _by.get("running", 0) > 0 %}
+        <form action="/mark-stale-runs" method="post" class="ml-auto">
+            <button type="submit" class="px-3 py-1.5 rounded text-sm border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200">Mark stale runs as failed</button>
+        </form>
+        {% endif %}
+    </div>
+
+    <div x-show="showFilters" x-cloak class="mb-4 rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Theme keyword</label>
+                <input type="text" x-model="filters.theme" placeholder="e.g. pressure"
+                    class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Script</label>
+                <select x-model="filters.script" class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-sm">
+                    <option value="">All</option>
+                    <template x-for="s in scriptOptions" :key="s">
+                        <option :value="s" x-text="s"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Min fitness</label>
+                <input type="number" step="0.01" x-model.number="filters.fitnessMin" placeholder="0.0"
+                    class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Max fitness</label>
+                <input type="number" step="0.01" x-model.number="filters.fitnessMax" placeholder="1.0"
+                    class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Min generations</label>
+                <input type="number" x-model.number="filters.gensMin" placeholder="0"
+                    class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="block text-slate-400 text-xs mb-1">Max generations</label>
+                <input type="number" x-model.number="filters.gensMax" placeholder=""
+                    class="w-full rounded border border-slate-600 bg-slate-800 text-slate-200 px-2 py-1.5 text-sm">
+            </div>
+            <div class="sm:col-span-2 flex items-end gap-2">
+                <button @click="clearFilters()" class="px-3 py-1.5 rounded text-sm border border-slate-600 text-slate-400 hover:bg-slate-700">Clear all</button>
+                <span class="text-slate-500 text-xs" x-text="filteredRuns.length + ' of ' + allRuns.length + ' runs'"></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="overflow-x-auto rounded-lg border border-slate-600">
+        <table class="w-full text-sm">
+            <thead class="bg-slate-800 text-slate-400 text-left">
+                <tr>
+                    <th class="px-2 py-3 w-8"><input type="checkbox" @change="toggleAll($event.target.checked)" class="rounded border-slate-600 bg-slate-700 text-amber-500"></th>
+                    <th class="px-4 py-3 font-medium cursor-pointer hover:text-slate-200" @click="toggleSort('run_id')">ID <span x-text="sortIcon('run_id')"></span></th>
+                    <th class="px-4 py-3 font-medium">Script</th>
+                    <th class="px-4 py-3 font-medium">Theme</th>
+                    <th class="px-4 py-3 font-medium">Status</th>
+                    <th class="px-4 py-3 font-medium cursor-pointer hover:text-slate-200" @click="toggleSort('num_generations')">Generations <span x-text="sortIcon('num_generations')"></span></th>
+                    <th class="px-4 py-3 font-medium cursor-pointer hover:text-slate-200" @click="toggleSort('last_best_fitness')">Best Fitness <span x-text="sortIcon('last_best_fitness')"></span></th>
+                    <th class="px-4 py-3 font-medium cursor-pointer hover:text-slate-200" @click="toggleSort('created_at')">Created <span x-text="sortIcon('created_at')"></span></th>
+                    <th class="px-4 py-3 font-medium"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-700">
+                <template x-for="r in filteredRuns" :key="r.run_id">
+                    <tr class="hover:bg-slate-800/50">
+                        <td class="px-2 py-3"><input type="checkbox" :value="r.run_id" x-model.number="selected" class="rounded border-slate-600 bg-slate-700 text-amber-500"></td>
+                        <td class="px-4 py-3 text-slate-500" x-text="r.run_id"></td>
+                        <td class="px-4 py-3 text-slate-300" x-text="r.script_name"></td>
+                        <td class="px-4 py-3 text-slate-300 max-w-xs truncate" :title="r.theme_keywords || ''" x-text="r.theme_keywords || '\u2014'"></td>
+                        <td class="px-4 py-3">
+                            <span class="px-2 py-0.5 rounded text-xs font-medium"
+                                :class="{
+                                    'bg-emerald-500/20 text-emerald-400': r.status === 'completed',
+                                    'bg-amber-500/20 text-amber-400': r.status === 'running',
+                                    'bg-red-500/20 text-red-400': r.status === 'failed',
+                                    'bg-slate-600 text-slate-400': !['completed','running','failed'].includes(r.status)
+                                }" x-text="r.status || 'pending'"></span>
+                        </td>
+                        <td class="px-4 py-3 text-slate-400" x-text="r.num_generations || 0"></td>
+                        <td class="px-4 py-3 text-slate-400" x-text="r.last_best_fitness != null ? r.last_best_fitness.toFixed(3) : '\u2014'"></td>
+                        <td class="px-4 py-3 text-slate-500" x-text="r.created_at || '\u2014'"></td>
+                        <td class="px-4 py-3">
+                            <a :href="'/runs/' + r.run_id" class="text-amber-400 hover:text-amber-300 font-medium">View</a>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+    <p class="mt-2 text-slate-500 text-sm" x-text="filteredRuns.length + ' run(s) shown, ' + allRuns.length + ' total'"></p>
 </div>
-<p class="mt-2 text-slate-500 text-sm">{{ total }} run(s) total</p>
 {% endif %}
+
+<script>
+function dashboardFilters() {
+    return {
+        allRuns: {{ runs | tojson if runs else '[]' }},
+        selected: [],
+        showFilters: false,
+        sortCol: 'run_id',
+        sortDir: 'desc',
+        filters: { theme: '', script: '', fitnessMin: null, fitnessMax: null, gensMin: null, gensMax: null },
+
+        init() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('theme')) this.filters.theme = params.get('theme');
+            if (params.get('script')) this.filters.script = params.get('script');
+            if (params.get('fitness_min')) this.filters.fitnessMin = parseFloat(params.get('fitness_min'));
+            if (params.get('fitness_max')) this.filters.fitnessMax = parseFloat(params.get('fitness_max'));
+            if (params.has('theme') || params.has('script') || params.has('fitness_min') || params.has('fitness_max'))
+                this.showFilters = true;
+            this.$watch('filters', () => this.syncUrl(), { deep: true });
+        },
+
+        get scriptOptions() {
+            return [...new Set(this.allRuns.map(r => r.script_name).filter(Boolean))].sort();
+        },
+
+        get hasActiveFilters() {
+            const f = this.filters;
+            return !!(f.theme || f.script || f.fitnessMin != null || f.fitnessMax != null || f.gensMin != null || f.gensMax != null);
+        },
+
+        get filteredRuns() {
+            let list = this.allRuns;
+            const f = this.filters;
+            if (f.theme) list = list.filter(r => (r.theme_keywords || '').toLowerCase().includes(f.theme.toLowerCase()));
+            if (f.script) list = list.filter(r => r.script_name === f.script);
+            if (f.fitnessMin != null && f.fitnessMin !== '') list = list.filter(r => r.last_best_fitness != null && r.last_best_fitness >= f.fitnessMin);
+            if (f.fitnessMax != null && f.fitnessMax !== '') list = list.filter(r => r.last_best_fitness != null && r.last_best_fitness <= f.fitnessMax);
+            if (f.gensMin != null && f.gensMin !== '') list = list.filter(r => (r.num_generations || 0) >= f.gensMin);
+            if (f.gensMax != null && f.gensMax !== '') list = list.filter(r => (r.num_generations || 0) <= f.gensMax);
+
+            const col = this.sortCol;
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            list = [...list].sort((a, b) => {
+                const av = a[col], bv = b[col];
+                if (av == null && bv == null) return 0;
+                if (av == null) return 1;
+                if (bv == null) return -1;
+                return av < bv ? -dir : av > bv ? dir : 0;
+            });
+            return list;
+        },
+
+        toggleSort(col) {
+            if (this.sortCol === col) { this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc'; }
+            else { this.sortCol = col; this.sortDir = 'desc'; }
+        },
+
+        sortIcon(col) {
+            if (this.sortCol !== col) return '';
+            return this.sortDir === 'asc' ? '\u25B2' : '\u25BC';
+        },
+
+        clearFilters() {
+            this.filters = { theme: '', script: '', fitnessMin: null, fitnessMax: null, gensMin: null, gensMax: null };
+        },
+
+        syncUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const f = this.filters;
+            f.theme ? params.set('theme', f.theme) : params.delete('theme');
+            f.script ? params.set('script', f.script) : params.delete('script');
+            (f.fitnessMin != null && f.fitnessMin !== '') ? params.set('fitness_min', f.fitnessMin) : params.delete('fitness_min');
+            (f.fitnessMax != null && f.fitnessMax !== '') ? params.set('fitness_max', f.fitnessMax) : params.delete('fitness_max');
+            (f.gensMin != null && f.gensMin !== '') ? params.set('gens_min', f.gensMin) : params.delete('gens_min');
+            (f.gensMax != null && f.gensMax !== '') ? params.set('gens_max', f.gensMax) : params.delete('gens_max');
+            const qs = params.toString();
+            history.replaceState(null, '', qs ? '?' + qs : window.location.pathname);
+        },
+
+        toggleAll(checked) {
+            this.selected = checked ? this.filteredRuns.map(r => r.run_id) : [];
+        },
+
+        goCompare() {
+            window.location.href = '/compare?ids=' + this.selected.join(',');
+        }
+    };
+}
+</script>
+<style>[x-cloak] { display: none !important; }</style>
 {% endblock %}
