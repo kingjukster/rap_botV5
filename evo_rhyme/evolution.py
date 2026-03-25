@@ -29,6 +29,7 @@ from evo_rhyme.style_profile import StyleProfile
 from evo_rhyme.individual import CoupletIndividual, analyze_individual
 from evo_rhyme.mutation import MUTATION_WEIGHTS, mutate
 from evo_rhyme.phonetics import extract_rhyme_tail, tokenize_line
+from evo_rhyme.repro import append_jsonl, run_provenance_dict
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +326,7 @@ class EvolutionRunLogger:
         }
         if extra:
             data.update(extra)
+        data["provenance"] = run_provenance_dict()
         path = self.run_dir / "config.json"
         with path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -350,6 +352,10 @@ class EvolutionRunLogger:
         if best_raw is not None:
             entry["best_raw"] = best_raw
         self.score_history.append(entry)
+        try:
+            append_jsonl(self.run_dir / "generation_metrics.jsonl", dict(entry))
+        except Exception as e:
+            logger.warning("generation_metrics.jsonl append failed: %s", e)
         self.top_candidates_by_gen[gen] = [
             {
                 "line1": ind.line1,
@@ -399,6 +405,16 @@ class EvolutionRunLogger:
         json_path = self.run_dir / "top_candidates.json"
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(self.top_candidates_by_gen, f, indent=2)
+        man_path = self.run_dir / "run_manifest.json"
+        with man_path.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "provenance": run_provenance_dict(),
+                    "score_history_rows": len(self.score_history),
+                },
+                f,
+                indent=2,
+            )
 
 
 def evolve(

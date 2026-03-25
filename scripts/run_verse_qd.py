@@ -273,6 +273,12 @@ def parse_args() -> argparse.Namespace:
         help="Minimum semantic floor (default: 0.0)",
     )
     parser.add_argument(
+        "--min-coherence",
+        type=float,
+        default=float(defaults.get("min_coherence", 0.25)),
+        help="Minimum coherence for candidates and archive insertion (default: 0.25)",
+    )
+    parser.add_argument(
         "--line-pop",
         type=int,
         default=int(defaults.get("line_pop", 1500)),
@@ -333,6 +339,18 @@ def parse_args() -> argparse.Namespace:
         choices=["default", "style_chain", "compact_style", "ultra_compact", "curriculum_compact"],
         default=str(defaults.get("archive_mode", "compact_style")),
         help="Archive dimensions mode (default: compact_style)",
+    )
+    parser.add_argument(
+        "--archive-novelty-tiebreak",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("archive_novelty_tiebreak", False)),
+        help="On equal fitness in a niche, keep higher novelty (default: off)",
+    )
+    parser.add_argument(
+        "--semantic-crossover-pairing",
+        action=argparse.BooleanOptionalAction,
+        default=bool(defaults.get("semantic_crossover_pairing", False)),
+        help="Pick crossover parents with similar verse embeddings (default: off)",
     )
     parser.add_argument(
         "--curriculum-switch-gen",
@@ -676,8 +694,10 @@ def main() -> None:
         num_lines=args.num_lines,
         lm_mutation_budget_per_gen=args.lm_budget,
         min_fluency=args.min_fluency,
-        min_coherence=0.25,
+        min_coherence=args.min_coherence,
         min_semantic=args.min_semantic,
+        archive_novelty_tiebreak=args.archive_novelty_tiebreak,
+        semantic_crossover_pairing=args.semantic_crossover_pairing,
         corpus_vocab=corpus_vocab,
         use_embeddings=args.use_embeddings,
         embedding_weight=args.embedding_weight,
@@ -906,6 +926,13 @@ def main() -> None:
     logger.info("Starting QD evolution (%d generations)...", args.generations)
     verse_16_results = []
 
+    tracer_tok = None
+    if output_dir is not None:
+        from evo_rhyme.operator_telemetry import OperatorTracer, set_operator_tracer
+        tracer_tok = set_operator_tracer(
+            OperatorTracer(output_dir, run_id=run_id or 0)
+        )
+
     try:
         if getattr(qd_config, 'use_emitters', False):
             from evo_rhyme.verse_evolution import evolve_verse_qd_emitters
@@ -930,6 +957,10 @@ def main() -> None:
             except Exception:
                 pass
         raise
+    finally:
+        if tracer_tok is not None:
+            from evo_rhyme.operator_telemetry import reset_operator_tracer
+            reset_operator_tracer(tracer_tok)
 
     if run_id and run_id > 0:
         try:

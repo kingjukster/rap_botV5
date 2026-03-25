@@ -7,6 +7,7 @@ provides aggregation over candidates for run-level metrics.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 # Schema version for reproducibility of fitness vector mapping
@@ -14,6 +15,21 @@ FITNESS_VECTOR_SCHEMA_VERSION = "v1"
 
 # Axis keys in the canonical fitness vector
 FITNESS_VECTOR_KEYS = ("rhyme", "flow", "semantic", "novelty", "punchline")
+
+
+def ucb_score(
+    mean_reward: float,
+    n_pulls: int,
+    total_pulls: int,
+    exploration_c: float = 1.414,
+) -> float:
+    """UCB1-style score for uncertainty-aware policy arm ranking."""
+    if n_pulls <= 0:
+        return float("inf")
+    return float(
+        mean_reward
+        + exploration_c * math.sqrt(math.log(max(total_pulls, 1)) / n_pulls)
+    )
 
 
 def fitness_vector_from_scores(scores: Optional[Dict[str, float]]) -> Dict[str, float]:

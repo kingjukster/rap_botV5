@@ -27,6 +27,7 @@ from evo_rhyme.phonetics import (
     syllable_count_word,
     tokenize_line,
 )
+from evo_rhyme.operator_telemetry import record_operator_event
 from evo_rhyme.rhyme_graph import build_rhyme_graph
 
 logger = logging.getLogger(__name__)
@@ -1257,6 +1258,12 @@ def mutate(
         if result is not None:
             if lm_budget is not None and name.startswith("lm_"):
                 lm_budget["remaining"] -= 1
+            record_operator_event(
+                scope="couplet",
+                operator_kind="mutation",
+                operator_name=name,
+                succeeded=True,
+            )
             return result
 
     # Fallback: try each mutation once (only from allowed choices)
@@ -1265,6 +1272,13 @@ def mutate(
         if result is not None:
             if lm_budget is not None and name.startswith("lm_"):
                 lm_budget["remaining"] -= 1
+            record_operator_event(
+                scope="couplet",
+                operator_kind="mutation",
+                operator_name=name,
+                succeeded=True,
+                fallback=True,
+            )
             return result
 
     return _copy_individual(individual, individual.line1, individual.line2)

@@ -118,3 +118,5 @@ Plus: ngram_fluency, lm_fluency, semantic, stress_alignment, multisyllabic, lexi
 - Modular — replaceable scoring, mutation, init
 - Config-driven — evolution.yaml, rapbot.yaml
 - Reproducible — seed + config snapshot + git hash
+
+For a narrative research-oriented view of the same system (modes, policy loop, assessment), see [docs/analysis/system_overview.md](analysis/system_overview.md).

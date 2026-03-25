@@ -67,6 +67,7 @@ def _empty_analysis() -> Dict[str, Any]:
         "config_stats": [],
         "best_fitness": None,
         "stagnation_runs": 0,
+        "operator_mix": [],
     }
 
 
@@ -82,6 +83,7 @@ def get_analysis_data() -> Dict[str, Any]:
     fitness_trend = _fetch_fitness_trend()
     config_stats = _fetch_config_stats()
     best_fitness, stagnation_runs = _compute_stagnation()
+    operator_mix = _fetch_operator_mix()
 
     return {
         "runs": run_stats,
@@ -89,6 +91,7 @@ def get_analysis_data() -> Dict[str, Any]:
         "config_stats": config_stats,
         "best_fitness": best_fitness,
         "stagnation_runs": stagnation_runs,
+        "operator_mix": operator_mix,
     }
 
 
@@ -232,3 +235,33 @@ def _compute_stagnation() -> tuple[float | None, int]:
     if result is None:
         return None, 0
     return result
+
+
+def _fetch_operator_mix() -> List[Dict[str, Any]]:
+    fn = getattr(db, "list_operator_mix_global", None)
+    if fn is None:
+        return []
+    try:
+        return fn(limit_ops=15)
+    except Exception as e:
+        logger.warning("operator mix query failed: %s", e)
+        return []
+
+
+def get_failure_mode_kpis() -> Dict[str, Any]:
+    """
+    Dashboard-oriented KPI bundle: extends analysis with failure-mode placeholders.
+
+    Coherence/repetition rates require candidate-level aggregates; wire when
+    available from DB or run artifacts.
+    """
+    base = get_analysis_data()
+    return {
+        **base,
+        "failure_mode_kpis": {
+            "schema": "v1",
+            "coherence_floor_violations": None,
+            "template_penalty_rate": None,
+            "stagnation_runs": base.get("stagnation_runs"),
+        },
+    }

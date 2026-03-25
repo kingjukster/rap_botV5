@@ -423,11 +423,18 @@ class MAPElitesArchive:
 
     Stores at most one individual per behavioral niche.  An individual only
     enters a niche if the niche is empty or the newcomer has strictly higher
-    fitness than the current occupant.
+    fitness than the current occupant. Optional novelty tie-break when fitness
+    is effectively tied (see ``novelty_tiebreak``).
     """
 
-    def __init__(self, dimensions: List[ArchiveDimension]) -> None:
+    def __init__(
+        self,
+        dimensions: List[ArchiveDimension],
+        *,
+        novelty_tiebreak: bool = False,
+    ) -> None:
         self.dimensions = dimensions
+        self._novelty_tiebreak = novelty_tiebreak
         self._grid: Dict[Tuple[int, ...], VerseIndividual] = {}
         self._total_niches = math.prod(d.bins for d in dimensions)
 
@@ -453,9 +460,20 @@ class MAPElitesArchive:
     def add(self, individual: VerseIndividual) -> bool:
         coord = self._get_behavior(individual)
         existing = self._grid.get(coord)
-        if existing is None or self._fitness_of(individual) > self._fitness_of(existing):
+        new_f = self._fitness_of(individual)
+        if existing is None:
             self._grid[coord] = individual
             return True
+        old_f = self._fitness_of(existing)
+        if new_f > old_f + 1e-12:
+            self._grid[coord] = individual
+            return True
+        if self._novelty_tiebreak and new_f >= old_f - 1e-12:
+            nov = float((individual.scores or {}).get("novelty", 0.0))
+            old_nov = float((existing.scores or {}).get("novelty", 0.0))
+            if nov > old_nov + 1e-12:
+                self._grid[coord] = individual
+                return True
         return False
 
     def add_batch(self, individuals: List[VerseIndividual]) -> int:
@@ -486,6 +504,49 @@ class MAPElitesArchive:
         if self._total_niches == 0:
             return 0.0
         return len(self._grid) / self._total_niches
+
+    def occupancy_diversity_stats(self) -> Dict[str, Any]:
+        """Marginal entropy per axis and mean normalized entropy (evenness proxy)."""
+        if not self._grid:
+            return {
+                "occupied": 0,
+                "total_niches": self._total_niches,
+                "coverage": 0.0,
+                "axis_entropy": [],
+                "mean_normalized_entropy": 0.0,
+            }
+        dim = len(self.dimensions)
+        counts_per_axis: List[Dict[int, int]] = [{} for _ in range(dim)]
+        for coord in self._grid:
+            for i, c in enumerate(coord):
+                counts_per_axis[i][c] = counts_per_axis[i].get(c, 0) + 1
+        entropies: List[Dict[str, Any]] = []
+        for i, ctr in enumerate(counts_per_axis):
+            bins = self.dimensions[i].bins
+            n = sum(ctr.values())
+            h = 0.0
+            for j in range(bins):
+                p = ctr.get(j, 0) / n if n else 0.0
+                if p > 0:
+                    h -= p * math.log(p + 1e-30)
+            hmax = math.log(max(bins, 1)) or 1.0
+            entropies.append(
+                {
+                    "axis": self.dimensions[i].name,
+                    "entropy": h,
+                    "normalized_entropy": h / hmax,
+                }
+            )
+        mean_norm = (
+            sum(e["normalized_entropy"] for e in entropies) / max(len(entropies), 1)
+        )
+        return {
+            "occupied": len(self._grid),
+            "total_niches": self._total_niches,
+            "coverage": len(self._grid) / max(1, self._total_niches),
+            "axis_entropy": entropies,
+            "mean_normalized_entropy": mean_norm,
+        }
 
     def total_niches(self) -> int:
         return self._total_niches
@@ -645,8 +706,10 @@ class MAPElitesArchive:
 
 def create_verse_archive(
     dimensions: Optional[List[ArchiveDimension]] = None,
+    *,
+    novelty_tiebreak: bool = False,
 ) -> MAPElitesArchive:
     """Create a MAP-Elites archive with default or custom dimensions."""
     if dimensions is None:
         dimensions = default_verse_dimensions()
-    return MAPElitesArchive(dimensions)
+    return MAPElitesArchive(dimensions, novelty_tiebreak=novelty_tiebreak)

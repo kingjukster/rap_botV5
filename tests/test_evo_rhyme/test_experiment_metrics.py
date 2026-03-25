@@ -8,12 +8,19 @@ from evo_rhyme.experiment_metrics import (
     FITNESS_VECTOR_SCHEMA_VERSION,
     aggregate_outcome,
     fitness_vector_from_scores,
+    ucb_score,
 )
 
 
 def test_fitness_vector_schema_version():
     assert FITNESS_VECTOR_SCHEMA_VERSION == "v1"
     assert set(FITNESS_VECTOR_KEYS) == {"rhyme", "flow", "semantic", "novelty", "punchline"}
+
+
+def test_ucb_score_is_finite_for_positive_pulls():
+    s = ucb_score(0.5, n_pulls=5, total_pulls=100)
+    assert s == s + 0.0  # not NaN
+    assert s > 0.5
 
 
 def test_fitness_vector_from_scores_empty():

@@ -9,6 +9,7 @@ from evo_rhyme.selection import (
     compute_population_objectives,
     crowding_distance,
     elitism,
+    epsilon_dominates,
     inject_random_immigrants,
     pareto_elitism,
     pareto_rank,
@@ -193,3 +194,8 @@ def test_compute_population_objectives():
     assert len(vecs) == 2
     assert len(vecs[0]) == len(OBJECTIVE_KEYS)
     assert vecs[1] == [0.0] * len(OBJECTIVE_KEYS)
+
+
+def test_epsilon_dominates():
+    assert epsilon_dominates([0.6, 0.6], [0.5, 0.5], eps=0.02)
+    assert not epsilon_dominates([0.5, 0.5], [0.6, 0.6], eps=0.02)

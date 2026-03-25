@@ -13,11 +13,16 @@ optional libraries are missing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+import hashlib
+import json
 import os
 import random
+import subprocess
 import sys
+from datetime import datetime, timezone
 
 
 @dataclass(frozen=True)
@@ -141,4 +146,75 @@ def seed_everything(seed: int, *, deterministic_torch: bool = True) -> Dict[str,
         versions=versions,
     )
     return info.as_dict()
+
+
+def repo_root() -> Path:
+    """Project root (parent of the `evo_rhyme` package)."""
+    return Path(__file__).resolve().parents[1]
+
+
+def get_git_commit_sha(cwd: Optional[Path] = None) -> Optional[str]:
+    """Best-effort `git rev-parse HEAD` for reproducibility metadata."""
+    root = cwd or repo_root()
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def sha256_file(path: Path) -> Optional[str]:
+    """SHA256 hex digest of file contents, or None if missing/unreadable."""
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def learned_policy_sha256(root: Optional[Path] = None) -> Optional[str]:
+    """Hash of `artifacts/learned_policy.json` when present."""
+    r = root or repo_root()
+    p = r / "artifacts" / "learned_policy.json"
+    return sha256_file(p) if p.is_file() else None
+
+
+def run_provenance_dict(
+    *,
+    extra: Optional[Dict[str, Any]] = None,
+    project_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Structured provenance for run artifacts (config.json, JSONL, etc.)."""
+    root = project_root or repo_root()
+    prov: Dict[str, Any] = {
+        "git_commit_sha": get_git_commit_sha(root),
+        "learned_policy_sha256": learned_policy_sha256(root),
+        "written_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    env_policy = os.environ.get("RAPBOT_POLICY_SHA256", "").strip()
+    if env_policy:
+        prov["policy_sha256_env"] = env_policy
+    if extra:
+        prov.update(extra)
+    return prov
+
+
+def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
+    """Append one JSON object per line (creates parent dirs)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
 

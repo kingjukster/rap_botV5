@@ -202,7 +202,11 @@ class MutationEmitter(BaseEmitter):
         batch_size: int,
         generation: int,
     ) -> List[VerseIndividual]:
-        from evo_rhyme.verse_evolution import verse_crossover, verse_mutate
+        from evo_rhyme.verse_evolution import (
+            select_crossover_parents,
+            verse_crossover,
+            verse_mutate,
+        )
         from evo_rhyme.constraints import passes_verse_constraints
         from evo_rhyme.mutation import MUTATION_WEIGHTS
 
@@ -220,6 +224,7 @@ class MutationEmitter(BaseEmitter):
         }
         constraint_config = _constraint_config(self.config)
         crossover_rate = self.config.get("crossover_rate", 0.5)
+        semantic_pairing = self.config.get("semantic_crossover_pairing", False)
 
         candidates = []
         attempts = 0
@@ -227,8 +232,9 @@ class MutationEmitter(BaseEmitter):
 
         while len(candidates) < batch_size and attempts < max_attempts:
             attempts += 1
-            p1 = random.choice(parents)
-            p2 = random.choice(parents)
+            p1, p2 = select_crossover_parents(
+                parents, semantic_pairing=semantic_pairing,
+            )
             s1, pr1 = _genome_from_metadata(p1)
             s2, pr2 = _genome_from_metadata(p2)
 
@@ -322,7 +328,11 @@ class DirectedMutationEmitter(BaseEmitter):
         batch_size: int,
         generation: int,
     ) -> List[VerseIndividual]:
-        from evo_rhyme.verse_evolution import verse_crossover, verse_mutate
+        from evo_rhyme.verse_evolution import (
+            select_crossover_parents,
+            verse_crossover,
+            verse_mutate,
+        )
         from evo_rhyme.constraints import passes_verse_constraints
         from evo_rhyme.mutation import MUTATION_WEIGHTS
 
@@ -340,6 +350,7 @@ class DirectedMutationEmitter(BaseEmitter):
         }
         constraint_config = _constraint_config(self.config)
         crossover_rate = self.config.get("crossover_rate", 0.5)
+        semantic_pairing = self.config.get("semantic_crossover_pairing", False)
         weights = self._focused_weights(MUTATION_WEIGHTS)
 
         candidates: List[VerseIndividual] = []
@@ -347,8 +358,9 @@ class DirectedMutationEmitter(BaseEmitter):
         max_attempts = batch_size * 4
         while len(candidates) < batch_size and attempts < max_attempts:
             attempts += 1
-            p1 = random.choice(parents)
-            p2 = random.choice(parents)
+            p1, p2 = select_crossover_parents(
+                parents, semantic_pairing=semantic_pairing,
+            )
             s1, pr1 = _genome_from_metadata(p1)
             s2, pr2 = _genome_from_metadata(p2)
 
@@ -840,6 +852,7 @@ def run_emitter_generation(
     score_fn: Callable,
     fitness_fn: Callable,
     novelty_weight: float = 0.3,
+    min_coherence: float = 0.0,
 ) -> Dict[str, Any]:
     """Run one generation of emitter-based MAP-Elites.
 
@@ -917,6 +930,10 @@ def run_emitter_generation(
         improved = 0
 
         for cand in batch:
+            if min_coherence > 0:
+                coh = (cand.scores or {}).get("coherence")
+                if coh is not None and float(coh) < float(min_coherence):
+                    continue
             occ_pre = archive.occupied_niches()
             inserted = archive.add(cand)
             if inserted:

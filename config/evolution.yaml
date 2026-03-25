@@ -81,3 +81,7 @@ proposer:
   batch_size: 20
   timeout: 30.0
   max_retries: 3
+
+# Run directories (when --runs-dir / output_dir): loggers write config.json (with provenance:
+# git SHA, learned_policy hash), score_history.csv, generation_metrics.jsonl (per-gen rows),
+# run_manifest.json on flush, and operator_events.jsonl when operator tracer is enabled.

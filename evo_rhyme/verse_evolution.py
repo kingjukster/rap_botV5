@@ -28,6 +28,7 @@ from evo_rhyme.archive import (
 from evo_rhyme.line_archive import ScoredLine, LineArchive
 from evo_rhyme.line_evolution import LineEvolutionConfig, evolve_lines, score_line
 from evo_rhyme.verse_builder import build_verse_batch
+from evo_rhyme.repro import append_jsonl, run_provenance_dict
 from evo_rhyme.scoring.novelty import NoveltyArchive, embed_texts, compute_verse_novelty
 from evo_rhyme.fitness import (
     OBJECTIVE_KEYS,
@@ -56,6 +57,33 @@ from evo_rhyme.phonetics import tokenize_line, syllable_count_line
 from evo_rhyme.template_grammar import get_template_pool
 
 logger = logging.getLogger(__name__)
+
+
+def _get_active_tracer():
+    """Return the active OperatorTracer (if any) without creating import cycles."""
+    try:
+        from evo_rhyme.operator_telemetry import get_operator_tracer
+        return get_operator_tracer()
+    except Exception:
+        return None
+
+
+def _write_verse_lineage(run_id: int, child_id: int, parents, gen: int) -> None:
+    """Best-effort DB lineage insert for verse QD offspring."""
+    if run_id <= 0 or child_id <= 0:
+        return
+    try:
+        from evo_rhyme import db as _db
+        if not _db.db_enabled():
+            return
+        seen = set()
+        for p in (parents if isinstance(parents, (list, tuple)) else [parents]):
+            pid = (p.metadata or {}).get("db_id") if hasattr(p, "metadata") else None
+            if pid and pid > 0 and pid not in seen:
+                seen.add(pid)
+                _db.insert_lineage(child_id, pid, "crossover+mutate", gen)
+    except Exception as e:
+        logger.debug("verse lineage write failed: %s", e)
 
 
 @dataclass
@@ -120,6 +148,11 @@ class QDEvolutionConfig:
     curriculum_switch_gen: int = 20
     coverage_target: Optional[float] = None  # e.g. 0.5 for 50% coverage; enables adaptive emitter boost
 
+    # Archive: break ties with embedding novelty when fitness is equal (optional)
+    archive_novelty_tiebreak: bool = False
+    # Crossover: prefer semantically similar parent pairs (reduces mixed-topic crossover)
+    semantic_crossover_pairing: bool = False
+
     # Runtime-efficiency controls
     fast_mode: bool = True
     graph_top_k: int = 24
@@ -164,14 +197,21 @@ def verse_crossover(
     2. Single-line swap: replace one line from A with the same-position line from B
     3. Phrase-slice: swap phrase slices when structure matches
     """
+    from evo_rhyme.operator_telemetry import record_operator_event
+
     cfg = config or {}
     try_phrase_slice = cfg.get("phrase_slice", False)
 
     if try_phrase_slice and random.random() < 0.2:
         child = _verse_phrase_slice_crossover(parent1, parent2)
         if child is not None:
+            record_operator_event(
+                scope="verse", operator_kind="crossover",
+                operator_name="phrase_slice", succeeded=True,
+            )
             return child
 
+    op_name: str = "half_swap"
     r = random.random()
     if r < 0.5:
         # Half swap (preserves rhyming couplets within AABB)
@@ -181,11 +221,13 @@ def verse_crossover(
             lines = parent2.lines[:2] + parent1.lines[2:]
     elif r < 0.8:
         # Single-line swap (minimal disruption)
+        op_name = "single_line_swap"
         idx = random.randint(0, 3)
         lines = list(parent1.lines)
         lines[idx] = parent2.lines[idx]
     else:
         # Best-of-each: pick best-scoring parent's line at each position
+        op_name = "best_of_each"
         lines = []
         for i in range(4):
             s1 = parent1.fitness or 0
@@ -195,6 +237,10 @@ def verse_crossover(
             else:
                 lines.append(parent2.lines[i] if random.random() < 0.7 else parent1.lines[i])
 
+    record_operator_event(
+        scope="verse", operator_kind="crossover",
+        operator_name=op_name, succeeded=True,
+    )
     return VerseIndividual(
         lines=lines,
         features=None,
@@ -202,6 +248,65 @@ def verse_crossover(
         fitness=None,
         metadata={},
     )
+
+
+def select_crossover_parents(
+    parents: List[VerseIndividual],
+    *,
+    semantic_pairing: bool,
+) -> Tuple[VerseIndividual, VerseIndividual]:
+    """Pick two parents for crossover; optionally prefer semantically similar pair."""
+    if len(parents) < 2:
+        p = parents[0]
+        return p, p
+    if not semantic_pairing:
+        p1 = random.choice(parents)
+        pool = [x for x in parents if x is not p1] or parents
+        return p1, random.choice(pool)
+    try:
+        import numpy as np
+
+        texts = [" ".join(p.lines) for p in parents]
+        embs = embed_texts(texts)
+        idx1 = random.randint(0, len(parents) - 1)
+        p1 = parents[idx1]
+        e1 = embs[idx1]
+        n1 = float(np.linalg.norm(e1)) + 1e-9
+        best_j: Optional[int] = None
+        best_sim = -2.0
+        for j in range(len(parents)):
+            if j == idx1:
+                continue
+            e2 = embs[j]
+            sim = float(np.dot(e1, e2) / (n1 * (float(np.linalg.norm(e2)) + 1e-9)))
+            if sim > best_sim:
+                best_sim = sim
+                best_j = j
+        if best_j is not None:
+            return p1, parents[best_j]
+    except Exception:
+        logger.debug("select_crossover_parents semantic_pairing failed", exc_info=True)
+    p1 = random.choice(parents)
+    pool = [x for x in parents if x is not p1] or parents
+    return p1, random.choice(pool)
+
+
+def verse_archive_add_batch(
+    archive: MAPElitesArchive,
+    individuals: List[VerseIndividual],
+    *,
+    min_coherence: float,
+) -> int:
+    """Insert into MAP-Elites archive, skipping individuals below coherence floor."""
+    n = 0
+    for ind in individuals:
+        if min_coherence > 0:
+            coh = (ind.scores or {}).get("coherence")
+            if coh is not None and float(coh) < float(min_coherence):
+                continue
+        if archive.add(ind):
+            n += 1
+    return n
 
 
 def _verse_phrase_slice_crossover(
@@ -324,6 +429,7 @@ def verse_mutate(
     When use_structural_mutations=True in config: 15% swap_couplets, 10% rewrite_transition."""
     from evo_rhyme.constraints import passes_constraints
     from evo_rhyme.structural_mutations import swap_couplets, rewrite_transition_line
+    from evo_rhyme.operator_telemetry import record_operator_event
 
     cfg = config if isinstance(config, dict) else {}
     use_structural = cfg.get("use_structural_mutations", False)
@@ -333,10 +439,18 @@ def verse_mutate(
     # Structural mutations at 4-bar level (when enabled)
     if use_structural and len(individual.lines) == 4:
         if r < 0.15:
+            record_operator_event(
+                scope="verse", operator_kind="mutation",
+                operator_name="swap_couplets", succeeded=True,
+            )
             return swap_couplets(individual)
         if r < 0.25 and lm_budget and lm_budget.get("remaining", 0) > 0:
             result = rewrite_transition_line(individual, boundary_idx=1, lm_budget=lm_budget)
             if result is not None:
+                record_operator_event(
+                    scope="verse", operator_kind="mutation",
+                    operator_name="rewrite_transition", succeeded=True,
+                )
                 return result
         if r < 0.25:
             r = random.random()  # fall through to couplet mutation
@@ -345,6 +459,10 @@ def verse_mutate(
     if r < 0.05 and lm_budget and lm_budget.get("remaining", 0) > 0:
         result = _lm_verse_rewrite(individual, config, lm_budget)
         if result is not None:
+            record_operator_event(
+                scope="verse", operator_kind="mutation",
+                operator_name="lm_verse_rewrite", succeeded=True,
+            )
             return result
 
     # 15% chance: mutate both couplets
@@ -671,6 +789,7 @@ class VerseRunLogger:
             data["seed_info"] = seed_info
         if extra:
             data.update(extra)
+        data["provenance"] = run_provenance_dict()
         path = self.run_dir / "config.json"
         with path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -682,11 +801,16 @@ class VerseRunLogger:
         avg_fitness: float,
         top5: List[VerseIndividual],
     ) -> None:
-        self.score_history.append({
+        row = {
             "gen": gen,
             "best_fitness": best_fitness,
             "avg_fitness": avg_fitness,
-        })
+        }
+        self.score_history.append(row)
+        try:
+            append_jsonl(self.run_dir / "generation_metrics.jsonl", dict(row))
+        except Exception as e:
+            logger.warning("generation_metrics.jsonl append failed: %s", e)
         self.top_candidates_by_gen[gen] = [
             {
                 "lines": ind.lines,
@@ -709,6 +833,16 @@ class VerseRunLogger:
         json_path = self.run_dir / "top_candidates.json"
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(self.top_candidates_by_gen, f, indent=2)
+        man_path = self.run_dir / "run_manifest.json"
+        with man_path.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "provenance": run_provenance_dict(),
+                    "score_history_rows": len(self.score_history),
+                },
+                f,
+                indent=2,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +904,7 @@ class VerseQDRunLogger:
             data["seed_info"] = seed_info
         if extra:
             data.update(extra)
+        data["provenance"] = run_provenance_dict()
         path = self.run_dir / "config.json"
         with path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -793,7 +928,17 @@ class VerseQDRunLogger:
         }
         if runtime:
             row.update(runtime)
+        if archive is not None:
+            try:
+                row["occupancy_diversity"] = archive.occupancy_diversity_stats()
+            except Exception:
+                logger.debug("occupancy_diversity_stats failed", exc_info=True)
         self.score_history.append(row)
+        if self.run_dir is not None:
+            try:
+                append_jsonl(self.run_dir / "generation_metrics.jsonl", dict(row))
+            except Exception as e:
+                logger.warning("generation_metrics.jsonl append failed: %s", e)
         if self.run_id is not None and self.run_id > 0:
             try:
                 from evo_rhyme import db as _db
@@ -837,6 +982,18 @@ class VerseQDRunLogger:
             ]
             with top_path.open("w", encoding="utf-8") as f:
                 json.dump(candidates, f, indent=2)
+            man_path = self.run_dir / "run_manifest.json"
+            with man_path.open("w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "provenance": run_provenance_dict(),
+                        "score_history_rows": len(self.score_history),
+                        "archive_occupied": archive.occupied_niches(),
+                        "archive_total_niches": archive.total_niches(),
+                    },
+                    f,
+                    indent=2,
+                )
         if self.run_id is not None and self.run_id > 0:
             try:
                 from evo_rhyme import db as _db
@@ -931,7 +1088,10 @@ def evolve_verse_qd(
             dims = ultra_compact_dimensions()
         elif mode == "curriculum_compact":
             dims = default_verse_dimensions()
-    archive = create_verse_archive(dims)
+    archive = create_verse_archive(
+        dims,
+        novelty_tiebreak=getattr(config, "archive_novelty_tiebreak", False),
+    )
 
     # Novelty archives
     verse_novelty_archive = NoveltyArchive(max_size=5000, k_nearest=10)
@@ -960,13 +1120,23 @@ def evolve_verse_qd(
         template_pool = None
         logger.warning("Template pool initialization failed, using static templates")
 
+    run_id_for_lineage = getattr(config, "run_id", None) or 0
+
     for gen in range(config.num_generations):
+        # Keep the operator tracer aware of current generation (if active)
+        _tracer = _get_active_tracer()
+        if _tracer is not None:
+            _tracer.gen = gen
+
         if (
             config.archive_mode == "curriculum_compact"
             and gen == max(1, int(config.curriculum_switch_gen))
         ):
             old_entries = list(archive.best_per_niche().values())
-            archive = create_verse_archive(compact_style_dimensions())
+            archive = create_verse_archive(
+                compact_style_dimensions(),
+                novelty_tiebreak=getattr(config, "archive_novelty_tiebreak", False),
+            )
             archive.add_batch(old_entries)
             logger.info(
                 "Curriculum switch: default -> compact_style at gen %d (%d niches)",
@@ -1032,7 +1202,9 @@ def evolve_verse_qd(
             logger.warning("Line evolution failed, using previous archive", exc_info=True)
 
         # 2. Add all to archive
-        improved = archive.add_batch(population)
+        improved = verse_archive_add_batch(
+            archive, population, min_coherence=config.min_coherence,
+        )
 
         # 3. Extract objectives for Pareto selection
         objectives = compute_population_objectives(population, score_vector)
@@ -1090,7 +1262,10 @@ def evolve_verse_qd(
         while len(evolved_candidates) < evolved_target and attempts < config.max_offspring_attempts:
             attempts += 1
             if len(parent_pool) >= 2:
-                p1, p2 = random.sample(parent_pool, 2)
+                p1, p2 = select_crossover_parents(
+                    parent_pool,
+                    semantic_pairing=getattr(config, "semantic_crossover_pairing", False),
+                )
             else:
                 p1 = parent_pool[0]
                 p2 = parent_pool[0]
@@ -1376,7 +1551,10 @@ def evolve_verse_qd_emitters(
             dims = ultra_compact_dimensions()
         elif mode == "curriculum_compact":
             dims = default_verse_dimensions()
-    archive = config.initial_archive if getattr(config, "initial_archive", None) else create_verse_archive(dims)
+    archive = config.initial_archive if getattr(config, "initial_archive", None) else create_verse_archive(
+        dims,
+        novelty_tiebreak=getattr(config, "archive_novelty_tiebreak", False),
+    )
 
     for ind in population:
         analyze_verse_individual(ind)
@@ -1398,7 +1576,9 @@ def evolve_verse_qd_emitters(
     for ind, sc in zip(population, pop_scores):
         ind.scores = sc
         ind.fitness = compute_verse_fitness(sc, weights)
-    archive.add_batch(population)
+    verse_archive_add_batch(
+        archive, population, min_coherence=config.min_coherence,
+    )
 
     logger.info(
         "Initial archive: %d/%d niches (%.1f%% coverage), best=%.3f",
@@ -1426,6 +1606,7 @@ def evolve_verse_qd_emitters(
         "niche_targeting_queue": 400,
         "coverage_target": config.coverage_target,
         "coverage_boost_threshold": 0.35,
+        "semantic_crossover_pairing": getattr(config, "semantic_crossover_pairing", False),
     }
     emitters, scheduler = create_emitters(emitter_config)
 
@@ -1452,7 +1633,10 @@ def evolve_verse_qd_emitters(
             and gen == max(1, int(config.curriculum_switch_gen))
         ):
             old_entries = list(archive.best_per_niche().values())
-            archive = create_verse_archive(compact_style_dimensions())
+            archive = create_verse_archive(
+                compact_style_dimensions(),
+                novelty_tiebreak=getattr(config, "archive_novelty_tiebreak", False),
+            )
             archive.add_batch(old_entries)
             logger.info(
                 "Curriculum switch: default -> compact_style at gen %d (%d niches)",
@@ -1472,6 +1656,7 @@ def evolve_verse_qd_emitters(
             score_fn=batch_score,
             fitness_fn=fitness_fn,
             novelty_weight=config.novelty_weight if hasattr(config, 'novelty_weight') else 0.3,
+            min_coherence=config.min_coherence,
         )
 
         population = list(archive.top_k(min(config.population_size, archive.occupied_niches())))

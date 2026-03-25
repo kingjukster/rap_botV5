@@ -279,3 +279,24 @@ def compute_population_objectives(
         else:
             result.append([0.0] * len(score_vector_fn({})))
     return result
+
+
+def epsilon_dominates(
+    a: List[float],
+    b: List[float],
+    eps: float = 0.02,
+) -> bool:
+    """
+    Return True if vector *a* epsilon-dominates *b* (constrained multi-objective).
+
+    Requires: a_i >= b_i - eps for all i; a_i > b_i + eps for at least one i.
+    """
+    if len(a) != len(b) or not a:
+        return False
+    strictly_better = False
+    for x, y in zip(a, b):
+        if x + eps < y:
+            return False
+        if x > y + eps:
+            strictly_better = True
+    return strictly_better

@@ -261,6 +261,8 @@ def test_evolution_run_logger_write_config(tmp_path):
     data = json.loads(config_file.read_text())
     assert data["population_size"] == 40
     assert data["num_elites"] == 4
+    assert "provenance" in data
+    assert "written_at_utc" in data["provenance"]
 
 
 def test_evolution_run_logger_log_generation_and_flush(tmp_path):
@@ -272,6 +274,8 @@ def test_evolution_run_logger_log_generation_and_flush(tmp_path):
     logger.flush()
     assert (tmp_path / "score_history.csv").exists()
     assert (tmp_path / "top_candidates.json").exists()
+    assert (tmp_path / "generation_metrics.jsonl").exists()
+    assert (tmp_path / "run_manifest.json").exists()
 
 
 def test_tournament_select_multiobjective():

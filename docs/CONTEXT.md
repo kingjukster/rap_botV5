@@ -99,6 +99,22 @@ Initialize → Score → Select → Mutate/Crossover → Repeat
 - Roadmap → docs/TODO_ROADMAP.md
 - Paper → docs/RESEARCH_PAPER_OUTLINE.md
 
+### Analysis / research notes (`docs/analysis/`)
+
+Suggested order: `system_overview` → `fitness_breakdown` / `diversity` → `convergence` → `failure_modes` → `recommendations`.
+
+- docs/analysis/system_overview.md — Research-oriented system overview
+- docs/analysis/fitness_breakdown.md — Couplet vs verse fitness components
+- docs/analysis/diversity.md — MAP-Elites / QD behavior
+- docs/analysis/convergence.md — Convergence analysis (DB/logs methodology)
+- docs/analysis/failure_modes.md — Failure modes and mitigations
+- docs/analysis/recommendations.md — Prioritized P0–P3 improvements
+
+### Fitness and operators
+
+- docs/FITNESS_AUDIT_AND_API_PROPOSAL.md — Verse/couplet scoring audit and proposed FitnessBreakdown API
+- docs/OPERATOR_INVENTORY.md — Mutation/crossover catalog and operator telemetry proposal
+
 ---
 
 ## Related Operational Docs

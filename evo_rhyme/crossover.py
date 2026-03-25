@@ -11,6 +11,7 @@ import random
 from typing import Any, Optional
 
 from evo_rhyme.individual import CoupletIndividual
+from evo_rhyme.operator_telemetry import record_operator_event
 from evo_rhyme.phonetics import tokenize_line, syllable_count_line
 
 
@@ -45,11 +46,23 @@ def crossover(
     if try_phrase_slice:
         child = _phrase_slice_crossover(p_a, p_b)
         if child is not None:
+            record_operator_event(
+                scope="couplet",
+                operator_kind="crossover",
+                operator_name="phrase_slice",
+                succeeded=True,
+            )
             return child
 
     # Standard line-level crossover
     line1 = p_a.line1
     line2 = p_b.line2
+    record_operator_event(
+        scope="couplet",
+        operator_kind="crossover",
+        operator_name="line_level",
+        succeeded=True,
+    )
     return CoupletIndividual(
         line1=line1,
         line2=line2,

@@ -558,6 +558,14 @@ def main():
     def immigrant_gen(size: int):
         return generator.generate_seed_couplets(theme_keywords=theme_keywords, size=size)
 
+    tracer_tok = None
+    if output_dir is not None:
+        from evo_rhyme.operator_telemetry import OperatorTracer, set_operator_tracer
+
+        tracer_tok = set_operator_tracer(
+            OperatorTracer(output_dir, run_id=run_id or 0)
+        )
+
     try:
         evolve_fn = evolve_multiobjective if args.multiobjective else evolve
         population = evolve_fn(
@@ -576,6 +584,11 @@ def main():
             except Exception:
                 pass
         raise
+    finally:
+        if tracer_tok is not None:
+            from evo_rhyme.operator_telemetry import reset_operator_tracer
+
+            reset_operator_tracer(tracer_tok)
 
     if run_id and run_id > 0:
         try:
