@@ -25,6 +25,28 @@
     </div>
 </section>
 
+<section class="mb-8">
+    <h2 class="text-lg font-semibold text-slate-100 mb-3">Acceptance rate vs best fitness (by generation)</h2>
+    <p class="text-slate-500 text-sm mb-2">
+        <strong class="text-slate-300">Best fitness</strong> (left) and <strong class="text-slate-300">acceptance rate</strong> (right, 0–1) share the generation index on the x-axis.
+        Verse QD: acceptance is evolved-offspring yield in the Pareto path, or archive insert rate in the emitter path. Older runs may show empty acceptance until re-logged.
+    </p>
+    <div class="rounded-lg border border-slate-600 bg-slate-800/50 p-4">
+        <div class="chart-container" style="height: 260px;">
+            <canvas id="accept-fitness-chart"></canvas>
+        </div>
+        <p id="accept-fitness-empty" class="hidden text-slate-500 text-sm mt-2">No acceptance_rate values for this run — only best fitness is shown, or data predates logging.</p>
+    </div>
+</section>
+
+<details class="mb-8 rounded-lg border border-slate-600 bg-slate-800/40 p-4">
+    <summary class="cursor-pointer text-sm font-medium text-slate-300 hover:text-amber-400">SQL: fetch generations for this run</summary>
+    <pre class="mt-3 text-xs text-slate-400 overflow-x-auto whitespace-pre-wrap"><code>SELECT gen, best_fitness, avg_fitness, diversity, acceptance_rate
+FROM generations
+WHERE run_id = {{ run.run_id }}
+ORDER BY gen;</code></pre>
+</details>
+
 <div class="overflow-x-auto rounded-lg border border-slate-600">
     <table class="w-full text-sm">
         <thead class="bg-slate-800 text-slate-400 text-left">
@@ -92,6 +114,41 @@
             }
         }
     });
+
+    const ctx2 = document.getElementById('accept-fitness-chart');
+    const emptyNote = document.getElementById('accept-fitness-empty');
+    if (ctx2 && gens.length) {
+        const accept = gens.map(function(g) { return g.acceptance_rate != null ? Number(g.acceptance_rate) : null; });
+        const hasAccept = accept.some(function(v) { return v != null && !isNaN(v); });
+        if (!hasAccept && emptyNote) emptyNote.classList.remove('hidden');
+        const dsAccept = [
+            { label: 'Best fitness', data: best, borderColor: 'rgb(251, 191, 36)', backgroundColor: 'rgba(251, 191, 36, 0.08)', fill: false, tension: 0.2, yAxisID: 'y' }
+        ];
+        if (hasAccept) {
+            dsAccept.push({
+                label: 'Acceptance rate', data: accept, borderColor: 'rgb(96, 165, 250)', backgroundColor: 'rgba(96, 165, 250, 0.08)', fill: false, tension: 0.2, yAxisID: 'yAccept', spanGaps: false
+            });
+        }
+        new Chart(ctx2, {
+            type: 'line',
+            data: { labels: labels, datasets: dsAccept },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { position: 'left', beginAtZero: true, max: 1, title: { display: true, text: hasAccept ? 'Best fitness' : 'Best fitness (no accept data)' } },
+                    yAccept: {
+                        display: hasAccept,
+                        position: 'right',
+                        beginAtZero: true,
+                        max: 1,
+                        grid: { drawOnChartArea: false },
+                        title: { display: true, text: 'Acceptance rate' }
+                    }
+                }
+            }
+        });
+    }
 })();
 </script>
 {% endif %}

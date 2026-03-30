@@ -447,3 +447,21 @@ def get_control_impact_report(
         return analyze_control_impact(rows, bootstrap_n=200)
     except ImportError:
         return {"runs": len(rows), "error": "experiment_analysis not available"}
+
+
+def get_db_metrics_summary() -> Dict[str, Any]:
+    """Lightweight run counts by status (for dashboards / health)."""
+    out: Dict[str, Any] = {"db_enabled": _db_ready()}
+    if not out["db_enabled"]:
+        return out
+    fn = getattr(db, "run_status_counts", None)
+    if not callable(fn):
+        return out
+    try:
+        counts = fn() or {}
+    except Exception as exc:  # pragma: no cover - DB-specific
+        logger.warning("run_status_counts failed: %s", exc)
+        return out
+    out["run_status_counts"] = counts
+    out["total_runs"] = int(sum(counts.values()))
+    return out

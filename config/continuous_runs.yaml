@@ -23,22 +23,43 @@
 # ORDER BY arm, seed;
 
 seeds: [1, 2, 3]
+# Optional: link all runs to an experiments row (scripts/run_verse_qd --experiment-id / --arm-id)
+# continuous_experiment_id: 1
+# continuous_arm_id: 1
+# Optional: elite replay only samples top_configs matching these rhyme schemes (comma list or YAML array)
+# elite_replay_schemes: AABB, ABAB
 # Policy: learned = use top configs from DB; explore_mix = epsilon-greedy
-policy_mode: learned
+policy_mode: explore_mix
 # Elite replay: probability of sampling from top_configs instead of YAML round-robin
-elite_replay_fraction: 0.3
+elite_replay_fraction: 0.1
 # Epsilon decay for explore_mix: reduces randomness over time
-epsilon_decay_factor: 0.98
-epsilon_decay_cap: 50
+epsilon_decay_factor: 0.995
+epsilon_decay_cap: 200
 # LM budgets: 0 = no external API calls (pure local evolution, fastest)
 lm_budget: 0
 line_lm_budget: 0
-# Cross-run seeding: inject top N verses from prior completed runs (low to reduce convergence)
-seed_from_archive: 3
+# Cross-run seeding: disabled to let fresh populations explore under new weights
+# (old seeds converged to gibberish that gamed stale weights)
+seed_from_archive: 0
 # Use ultra-compact archive (729 niches) for realistic coverage targets
 archive_mode: ultra_compact
-# Immigrants per generation (fresh genetic material to counter convergence)
-immigrants: 25
+# Immigrants per generation (high to inject diverse genetic material)
+immigrants: 60
+# MAP-Elites / emitter exploration vs exploitation (run_verse_qd --novelty-weight)
+novelty_weight: 0.45
+# Anti-plateau: do NOT tighten min fluency/coherence when fitness stalls — that shrinks
+# the search space exactly when you need more room to improve.
+curriculum_tighten_on_stagnation: false
+# Anti-plateau controls (non-LM): stop stale runs early (give a bit more room than 5 gens)
+early_stop_stagnant_gens: 8
+early_stop_min_delta: 0.0015
+# Slightly looser floors so offspring are not filtered out before archive sees them
+min_coherence: 0.34
+min_rhyme_scheme_score: 0.28
+# Off: DB operator priors echo past runs and can lock the loop on the same mutations
+operator_db_weights: false
+seed_max_per_source_run: 1
+no_seed_diversify: false
 
 runs:
 
@@ -48,29 +69,29 @@ runs:
 
   - arm: theme_pressure
     theme: pressure,mask,survival
-    population: 80
-    generations: 20
+    population: 120
+    generations: 30
     scheme: AABB
     init: mixed
 
   - arm: theme_crown
     theme: crown,empire,power
-    population: 80
-    generations: 20
+    population: 120
+    generations: 30
     scheme: AABB
     init: mixed
 
   - arm: theme_flow
     theme: flow,show,dream
-    population: 80
-    generations: 20
+    population: 120
+    generations: 30
     scheme: AABB
     init: mixed
 
   - arm: theme_street
     theme: street,king,war
-    population: 80
-    generations: 20
+    population: 120
+    generations: 30
     scheme: AABB
     init: mixed
 

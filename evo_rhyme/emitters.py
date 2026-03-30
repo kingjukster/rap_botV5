@@ -919,6 +919,8 @@ def run_emitter_generation(
                     cand.scores["parent_improvement"] = compute_parent_improvement(
                         cand.scores, parent_fit,
                     )
+                elif cand.scores:
+                    cand.scores.setdefault("parent_improvement", 0.5)
         except Exception:
             logger.debug("Parent improvement scoring skipped", exc_info=True)
         for cand in all_candidates:

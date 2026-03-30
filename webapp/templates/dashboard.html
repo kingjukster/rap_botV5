@@ -44,6 +44,20 @@
         <a href="/?status=running" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'running' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Running</a>
         <a href="/?status=completed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'completed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Completed</a>
         <a href="/?status=failed" class="px-3 py-1.5 rounded text-sm {% if status_filter == 'failed' %}bg-amber-500/20 text-amber-400 border border-amber-500/40{% else %}border border-slate-600 text-slate-400 hover:bg-slate-700{% endif %}">Failed</a>
+        <button
+            @click="filters.restartOnly = !filters.restartOnly"
+            class="px-3 py-1.5 rounded text-sm border ml-2"
+            :class="filters.restartOnly ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'border-slate-600 text-slate-400 hover:bg-slate-700'"
+        >
+            Restart runs
+        </button>
+        <span
+            x-show="filters.restartOnly"
+            x-cloak
+            class="px-2 py-1 rounded text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30"
+        >
+            restart-only
+        </span>
 
         <button @click="showFilters = !showFilters" class="px-3 py-1.5 rounded text-sm border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 ml-2"
             :class="hasActiveFilters && 'border-amber-500/40 text-amber-400'">
@@ -135,6 +149,11 @@
                                     'bg-red-500/20 text-red-400': r.status === 'failed',
                                     'bg-slate-600 text-slate-400': !['completed','running','failed'].includes(r.status)
                                 }" x-text="r.status || 'pending'"></span>
+                            <div x-show="r.config_json && r.config_json.config_source === 'plateau_restart'" class="mt-1">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                    plateau restart
+                                </span>
+                            </div>
                         </td>
                         <td class="px-4 py-3 text-slate-400" x-text="r.num_generations || 0"></td>
                         <td class="px-4 py-3 text-slate-400" x-text="r.last_best_fitness != null ? r.last_best_fitness.toFixed(3) : '\u2014'"></td>
@@ -159,7 +178,7 @@ function dashboardFilters() {
         showFilters: false,
         sortCol: 'run_id',
         sortDir: 'desc',
-        filters: { theme: '', script: '', fitnessMin: null, fitnessMax: null, gensMin: null, gensMax: null },
+        filters: { theme: '', script: '', fitnessMin: null, fitnessMax: null, gensMin: null, gensMax: null, restartOnly: false },
 
         init() {
             const params = new URLSearchParams(window.location.search);
@@ -167,7 +186,8 @@ function dashboardFilters() {
             if (params.get('script')) this.filters.script = params.get('script');
             if (params.get('fitness_min')) this.filters.fitnessMin = parseFloat(params.get('fitness_min'));
             if (params.get('fitness_max')) this.filters.fitnessMax = parseFloat(params.get('fitness_max'));
-            if (params.has('theme') || params.has('script') || params.has('fitness_min') || params.has('fitness_max'))
+            if (params.get('restart') === '1') this.filters.restartOnly = true;
+            if (params.has('theme') || params.has('script') || params.has('fitness_min') || params.has('fitness_max') || params.get('restart') === '1')
                 this.showFilters = true;
             this.$watch('filters', () => this.syncUrl(), { deep: true });
         },
@@ -178,7 +198,7 @@ function dashboardFilters() {
 
         get hasActiveFilters() {
             const f = this.filters;
-            return !!(f.theme || f.script || f.fitnessMin != null || f.fitnessMax != null || f.gensMin != null || f.gensMax != null);
+            return !!(f.theme || f.script || f.fitnessMin != null || f.fitnessMax != null || f.gensMin != null || f.gensMax != null || f.restartOnly);
         },
 
         get filteredRuns() {
@@ -190,6 +210,7 @@ function dashboardFilters() {
             if (f.fitnessMax != null && f.fitnessMax !== '') list = list.filter(r => r.last_best_fitness != null && r.last_best_fitness <= f.fitnessMax);
             if (f.gensMin != null && f.gensMin !== '') list = list.filter(r => (r.num_generations || 0) >= f.gensMin);
             if (f.gensMax != null && f.gensMax !== '') list = list.filter(r => (r.num_generations || 0) <= f.gensMax);
+            if (f.restartOnly) list = list.filter(r => r.config_json && r.config_json.config_source === 'plateau_restart');
 
             const col = this.sortCol;
             const dir = this.sortDir === 'asc' ? 1 : -1;
@@ -214,7 +235,7 @@ function dashboardFilters() {
         },
 
         clearFilters() {
-            this.filters = { theme: '', script: '', fitnessMin: null, fitnessMax: null, gensMin: null, gensMax: null };
+            this.filters = { theme: '', script: '', fitnessMin: null, fitnessMax: null, gensMin: null, gensMax: null, restartOnly: false };
         },
 
         syncUrl() {
@@ -226,6 +247,7 @@ function dashboardFilters() {
             (f.fitnessMax != null && f.fitnessMax !== '') ? params.set('fitness_max', f.fitnessMax) : params.delete('fitness_max');
             (f.gensMin != null && f.gensMin !== '') ? params.set('gens_min', f.gensMin) : params.delete('gens_min');
             (f.gensMax != null && f.gensMax !== '') ? params.set('gens_max', f.gensMax) : params.delete('gens_max');
+            f.restartOnly ? params.set('restart', '1') : params.delete('restart');
             const qs = params.toString();
             history.replaceState(null, '', qs ? '?' + qs : window.location.pathname);
         },

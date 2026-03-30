@@ -33,6 +33,7 @@ Config file (YAML) format:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+_DB_MODULE: Optional[Any] = None
 
 # Built-in defaults if no config file (lm_budget=0 = no OpenAI calls)
 # seed_from_archive=10: seed each run with top-10 verses from prior completed runs
@@ -79,11 +81,38 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     runs = data.get("runs", [])
+    continuous_experiment_id = data.get("continuous_experiment_id")
+    continuous_arm_id = data.get("continuous_arm_id")
+    elite_replay_schemes_raw = data.get("elite_replay_schemes")
+    if isinstance(elite_replay_schemes_raw, str):
+        elite_replay_schemes = [s.strip().upper() for s in elite_replay_schemes_raw.split(",") if s.strip()]
+    elif isinstance(elite_replay_schemes_raw, list):
+        elite_replay_schemes = [str(s).strip().upper() for s in elite_replay_schemes_raw if str(s).strip()]
+    else:
+        elite_replay_schemes = []
     default_lm = int(data.get("lm_budget", 0))
     default_line_lm = int(data.get("line_lm_budget", 0))
     default_seed_from_archive = int(data.get("seed_from_archive", 0))
     default_archive_mode = data.get("archive_mode", "compact_style")
     default_immigrants = int(data.get("immigrants", 20))
+    default_novelty_weight = data.get("novelty_weight")
+    default_early_stop_stagnant_gens = data.get("early_stop_stagnant_gens")
+    default_early_stop_min_delta = data.get("early_stop_min_delta")
+    default_min_coherence = data.get("min_coherence")
+    default_min_rhyme_scheme_score = data.get("min_rhyme_scheme_score")
+    default_operator_db_weights = bool(data.get("operator_db_weights", False))
+    default_seed_max_per_source_run = data.get("seed_max_per_source_run")
+    default_no_seed_diversify = bool(data.get("no_seed_diversify", False))
+    default_curriculum_tighten_on_stagnation = bool(
+        data.get("curriculum_tighten_on_stagnation", True)
+    )
+    default_curriculum_tighten_after_stagnant_gens = data.get(
+        "curriculum_tighten_after_stagnant_gens"
+    )
+    default_curriculum_tighten_fluency_step = data.get("curriculum_tighten_fluency_step")
+    default_curriculum_tighten_coherence_step = data.get("curriculum_tighten_coherence_step")
+    default_curriculum_tighten_fluency_cap = data.get("curriculum_tighten_fluency_cap")
+    default_curriculum_tighten_coherence_cap = data.get("curriculum_tighten_coherence_cap")
     seeds = data.get("seeds")
     if seeds is None:
         seeds = []
@@ -105,6 +134,48 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
             "archive_mode": r.get("archive_mode", default_archive_mode),
             "immigrants": int(r.get("immigrants", default_immigrants)),
         }
+        if r.get("experiment_id") is not None:
+            c["experiment_id"] = int(r["experiment_id"])
+        elif continuous_experiment_id is not None:
+            c["experiment_id"] = int(continuous_experiment_id)
+        if r.get("arm_id") is not None:
+            c["arm_id"] = int(r["arm_id"])
+        elif continuous_arm_id is not None:
+            c["arm_id"] = int(continuous_arm_id)
+        for key, default_val in (
+            ("early_stop_stagnant_gens", default_early_stop_stagnant_gens),
+            ("early_stop_min_delta", default_early_stop_min_delta),
+            ("min_coherence", default_min_coherence),
+            ("min_rhyme_scheme_score", default_min_rhyme_scheme_score),
+            ("operator_db_weights", default_operator_db_weights),
+            ("seed_max_per_source_run", default_seed_max_per_source_run),
+            ("novelty_weight", default_novelty_weight),
+        ):
+            val = r.get(key, default_val)
+            if val is not None:
+                c[key] = val
+        c["no_seed_diversify"] = bool(
+            r.get("no_seed_diversify", default_no_seed_diversify)
+        )
+        c["curriculum_tighten_on_stagnation"] = bool(
+            r.get(
+                "curriculum_tighten_on_stagnation",
+                default_curriculum_tighten_on_stagnation,
+            )
+        )
+        for ck, default_val in (
+            (
+                "curriculum_tighten_after_stagnant_gens",
+                default_curriculum_tighten_after_stagnant_gens,
+            ),
+            ("curriculum_tighten_fluency_step", default_curriculum_tighten_fluency_step),
+            ("curriculum_tighten_coherence_step", default_curriculum_tighten_coherence_step),
+            ("curriculum_tighten_fluency_cap", default_curriculum_tighten_fluency_cap),
+            ("curriculum_tighten_coherence_cap", default_curriculum_tighten_coherence_cap),
+        ):
+            val = r.get(ck, default_val)
+            if val is not None:
+                c[ck] = val
         if seeds:
             for seed in seeds:
                 cc = dict(c)
@@ -124,11 +195,32 @@ def load_configs(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         "epsilon_decay_cap": epsilon_decay_cap,
         "default_lm_budget": default_lm,
         "default_line_lm_budget": default_line_lm,
+        "default_seed_from_archive": default_seed_from_archive,
         "default_generations": default_generations,
         "default_archive_mode": default_archive_mode,
         "default_immigrants": default_immigrants,
+        "default_novelty_weight": default_novelty_weight,
+        "elite_replay_schemes": elite_replay_schemes,
+        "continuous_experiment_id": continuous_experiment_id,
+        "continuous_arm_id": continuous_arm_id,
     }
     return out, metadata
+
+
+def _clamp_lm_budgets_for_continuous(
+    proposed_lm: int,
+    proposed_line_lm: int,
+    *,
+    default_lm_budget: int,
+    default_line_lm_budget: int,
+) -> tuple[int, int]:
+    """Honor continuous YAML LM defaults: if both are 0, never enable LM from DB/model."""
+    if default_lm_budget == 0 and default_line_lm_budget == 0:
+        return 0, 0
+    return (
+        max(int(proposed_lm), int(default_lm_budget)),
+        max(int(proposed_line_lm), int(default_line_lm_budget)),
+    )
 
 
 def _sample_elite_config(
@@ -138,6 +230,9 @@ def _sample_elite_config(
     default_generations: int = 40,
     default_archive_mode: str = "compact_style",
     default_immigrants: int = 20,
+    *,
+    default_seed_from_archive: int = 0,
+    elite_replay_schemes: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Sample a config from learned policy top_configs (score-weighted).
@@ -153,11 +248,23 @@ def _sample_elite_config(
     top_configs = data.get("top_configs")
     if not isinstance(top_configs, list) or not top_configs:
         return None
-    viable = [
-        (i, item)
-        for i, item in enumerate(top_configs)
-        if isinstance(item, dict)
-    ]
+    allowed_schemes = None
+    if elite_replay_schemes:
+        allowed_schemes = {str(s).strip().upper() for s in elite_replay_schemes if str(s).strip()}
+    viable = []
+    for i, item in enumerate(top_configs):
+        if not isinstance(item, dict):
+            continue
+        if allowed_schemes:
+            ctrls_preview = item.get("controls") or {}
+            sch = str(
+                ctrls_preview.get("scheme")
+                or ctrls_preview.get("rhyme_scheme")
+                or "AABB",
+            ).strip().upper()
+            if sch not in allowed_schemes:
+                continue
+        viable.append((i, item))
     weights = []
     indices = []
     for i, item in viable:
@@ -179,6 +286,14 @@ def _sample_elite_config(
     theme = ctrls.get("theme") or "pressure,mask,survival"
     if isinstance(theme, list):
         theme = ",".join(str(t) for t in theme)
+    lm_raw = int(ctrls.get("lm_budget", 0))
+    line_lm_raw = int(ctrls.get("line_lm_budget", 0))
+    lm_budget, line_lm_budget = _clamp_lm_budgets_for_continuous(
+        lm_raw,
+        line_lm_raw,
+        default_lm_budget=default_lm_budget,
+        default_line_lm_budget=default_line_lm_budget,
+    )
     cfg = {
         "arm": ctrls.get("arm") or f"elite_replay_{chosen.get('source_run_id', 'unknown')[:12]}",
         "theme": str(theme),
@@ -186,14 +301,14 @@ def _sample_elite_config(
         "generations": max(int(ctrls.get("generations", 20)), default_generations),
         "scheme": str(ctrls.get("scheme", "AABB")),
         "init": str(ctrls.get("init", "mixed")),
-        "lm_budget": max(int(ctrls.get("lm_budget", 0)), default_lm_budget),
-        "line_lm_budget": max(int(ctrls.get("line_lm_budget", 0)), default_line_lm_budget),
+        "lm_budget": lm_budget,
+        "line_lm_budget": line_lm_budget,
         "archive_mode": default_archive_mode,
         "immigrants": default_immigrants,
     }
     if ctrls.get("seed") is not None:
         cfg["seed"] = int(ctrls["seed"])
-    cfg["seed_from_archive"] = 3
+    cfg["seed_from_archive"] = int(default_seed_from_archive)
     cfg["config_source"] = "elite_replay"
     return cfg
 
@@ -297,6 +412,33 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Max evolution runs in flight (default: 1). Increase for throughput.",
     )
+    parser.add_argument(
+        "--restart-on-plateau",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable adaptive restart runs when recent completed-run fitness plateaus (default: on).",
+    )
+    parser.add_argument(
+        "--plateau-window",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Completed runs window used to detect plateaus (default: 5).",
+    )
+    parser.add_argument(
+        "--plateau-min-improvement",
+        type=float,
+        default=0.005,
+        metavar="F",
+        help="Minimum latest-run best-fitness improvement over prior window max (default: 0.005).",
+    )
+    parser.add_argument(
+        "--plateau-restart-runs",
+        type=int,
+        default=2,
+        metavar="N",
+        help="How many restart-tuned runs to inject after a plateau signal (default: 2).",
+    )
     return parser.parse_args()
 
 
@@ -338,6 +480,8 @@ def _build_evolution_cmd(
         "--archive-mode", cfg.get("archive_mode", "compact_style"),
         "--immigrants", str(cfg.get("immigrants", 20)),
     ])
+    if cfg.get("novelty_weight") is not None:
+        cmd.extend(["--novelty-weight", str(float(cfg["novelty_weight"]))])
     seed_from_archive = cfg.get("seed_from_archive", 0)
     if seed_from_archive and int(seed_from_archive) > 0:
         cmd.extend(["--seed-from-archive", str(int(seed_from_archive))])
@@ -345,6 +489,35 @@ def _build_evolution_cmd(
         cmd.extend(["--arm", str(cfg["arm"])])
     if cfg.get("seed") is not None:
         cmd.extend(["--seed", str(cfg["seed"])])
+    if cfg.get("experiment_id") is not None:
+        cmd.extend(["--experiment-id", str(int(cfg["experiment_id"]))])
+    if cfg.get("arm_id") is not None:
+        cmd.extend(["--arm-id", str(int(cfg["arm_id"]))])
+    if cfg.get("early_stop_stagnant_gens") is not None:
+        cmd.extend(["--early-stop-stagnant-gens", str(int(cfg["early_stop_stagnant_gens"]))])
+    if cfg.get("early_stop_min_delta") is not None:
+        cmd.extend(["--early-stop-min-delta", str(float(cfg["early_stop_min_delta"]))])
+    if cfg.get("min_coherence") is not None:
+        cmd.extend(["--min-coherence", str(float(cfg["min_coherence"]))])
+    if cfg.get("min_rhyme_scheme_score") is not None:
+        cmd.extend(["--min-rhyme-scheme-score", str(float(cfg["min_rhyme_scheme_score"]))])
+    if cfg.get("operator_db_weights"):
+        cmd.append("--operator-db-weights")
+    if cfg.get("seed_max_per_source_run") is not None:
+        cmd.extend(["--seed-max-per-source-run", str(int(cfg["seed_max_per_source_run"]))])
+    if cfg.get("no_seed_diversify"):
+        cmd.append("--no-seed-diversify")
+    if "curriculum_tighten_on_stagnation" in cfg and not cfg.get("curriculum_tighten_on_stagnation"):
+        cmd.append("--no-curriculum-tighten-on-stagnation")
+    for ck, flag in (
+        ("curriculum_tighten_after_stagnant_gens", "--curriculum-tighten-after-stagnant-gens"),
+        ("curriculum_tighten_fluency_step", "--curriculum-tighten-fluency-step"),
+        ("curriculum_tighten_coherence_step", "--curriculum-tighten-coherence-step"),
+        ("curriculum_tighten_fluency_cap", "--curriculum-tighten-fluency-cap"),
+        ("curriculum_tighten_coherence_cap", "--curriculum-tighten-coherence-cap"),
+    ):
+        if cfg.get(ck) is not None:
+            cmd.extend([flag, str(cfg[ck])])
     if policy_mode in ("learned", "explore_mix") and learned_policy_path and learned_policy_path.exists():
         cmd.extend([
             "--policy-mode", policy_mode,
@@ -468,6 +641,8 @@ def _propose_model_config(
     default_generations: int = 40,
     default_archive_mode: str = "compact_style",
     default_immigrants: int = 20,
+    *,
+    default_seed_from_archive: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """Use the control model to propose a config by training on recent DB runs.
 
@@ -514,6 +689,18 @@ def _propose_model_config(
         if isinstance(theme, list):
             theme = ",".join(str(t) for t in theme)
 
+        lm_raw = int(
+            ctrls.get("lm_budget", ctrls.get("lm_mutation_budget_per_gen", 0))
+        )
+        line_lm_raw = int(
+            ctrls.get("line_lm_budget", ctrls.get("line_lm_mutation_budget", 0))
+        )
+        lm_budget, line_lm_budget = _clamp_lm_budgets_for_continuous(
+            lm_raw,
+            line_lm_raw,
+            default_lm_budget=default_lm_budget,
+            default_line_lm_budget=default_line_lm_budget,
+        )
         cfg = {
             "arm": f"model_proposed_{chosen.get('predicted_fitness', 0):.2f}",
             "theme": str(theme),
@@ -521,10 +708,10 @@ def _propose_model_config(
             "generations": max(int(ctrls.get("generations", ctrls.get("num_generations", 20))), default_generations),
             "scheme": str(ctrls.get("scheme", ctrls.get("rhyme_scheme", "AABB"))),
             "init": str(ctrls.get("init", "mixed")),
-            "lm_budget": max(int(ctrls.get("lm_budget", ctrls.get("lm_mutation_budget_per_gen", 0))), default_lm_budget),
-            "line_lm_budget": max(int(ctrls.get("line_lm_budget", ctrls.get("line_lm_mutation_budget", 0))), default_line_lm_budget),
+            "lm_budget": lm_budget,
+            "line_lm_budget": line_lm_budget,
             "config_source": "model_proposed",
-            "seed_from_archive": 3,
+            "seed_from_archive": int(default_seed_from_archive),
             "archive_mode": default_archive_mode,
             "immigrants": default_immigrants,
         }
@@ -549,6 +736,83 @@ def _policy_has_top_configs(learned_policy_path: Path) -> bool:
         return isinstance(top, list) and len(top) > 0
     except Exception:
         return False
+
+
+def _load_db_module() -> Optional[Any]:
+    """Load evo_rhyme.db directly so we can read run metrics without heavy imports."""
+    global _DB_MODULE
+    if _DB_MODULE is not None:
+        return _DB_MODULE
+    db_path = ROOT / "evo_rhyme" / "db.py"
+    if not db_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("evo_rhyme.db", db_path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _DB_MODULE = mod
+        return mod
+    except Exception as e:
+        logger.debug("Failed to load evo_rhyme.db directly: %s", e)
+        return None
+
+
+def _latest_completed_best_fitness() -> Optional[float]:
+    """
+    Return best fitness from the most recently completed run.
+    Uses run_derived when present; falls back to last generation best.
+    """
+    db = _load_db_module()
+    if db is None:
+        return None
+    try:
+        if not getattr(db, "db_enabled", lambda: False)():
+            return None
+        runs = getattr(db, "list_runs")(limit=5, offset=0, status_filter="completed")
+        if not runs:
+            return None
+        for run in runs:
+            derived = run.get("derived") or {}
+            val = derived.get("final_best_fitness")
+            if val is not None:
+                return float(val)
+            rid = run.get("run_id")
+            if rid is not None:
+                gens = getattr(db, "list_generations")(int(rid))
+                if gens:
+                    last = gens[-1]
+                    if last.get("best_fitness") is not None:
+                        return float(last["best_fitness"])
+    except Exception as e:
+        logger.debug("Could not fetch latest completed best_fitness: %s", e)
+    return None
+
+
+def _make_plateau_restart_cfg(base_cfg: Dict[str, Any], run_num: int) -> Dict[str, Any]:
+    """
+    Deterministic restart-tuned variant of a config.
+    This biases toward exploration and quicker feedback while preserving reproducibility.
+    """
+    cfg = dict(base_cfg)
+    cfg["config_source"] = "plateau_restart"
+    cfg["init"] = "mixed"
+    cfg["scheme"] = "AABB"
+    # Shorter probe-like restart to avoid spending full budget during stagnation.
+    gens = int(cfg.get("generations", 20))
+    cfg["generations"] = max(10, int(round(gens * 0.75)))
+    # Increase fresh material and cross-run seeds during restarts.
+    cfg["immigrants"] = min(50, int(cfg.get("immigrants", 20)) + 10)
+    cfg["seed_from_archive"] = max(3, int(cfg.get("seed_from_archive", 0)))
+    # Ensure deterministic seed assignment for restart runs.
+    if cfg.get("seed") is not None:
+        cfg["seed"] = int(cfg["seed"]) + 100000 + run_num
+    else:
+        cfg["seed"] = (run_num * 9973) % 2147483647
+    arm = str(cfg.get("arm", "unknown"))
+    cfg["arm"] = f"{arm}_restart"
+    return cfg
 
 
 def main() -> int:
@@ -587,11 +851,14 @@ def main() -> int:
         else metadata.get("epsilon_decay_factor", 0.98)
     )
     epsilon_decay_cap = getattr(args, "epsilon_decay_cap", None) or metadata.get("epsilon_decay_cap", 50)
+    elite_replay_schemes = metadata.get("elite_replay_schemes") or None
     default_lm = metadata.get("default_lm_budget", 0)
     default_line_lm = metadata.get("default_line_lm_budget", 0)
+    default_seed_from_archive = int(metadata.get("default_seed_from_archive", 0))
     default_gens = metadata.get("default_generations", 40)
     default_archive_mode = metadata.get("default_archive_mode", "compact_style")
     default_immigrants = metadata.get("default_immigrants", 20)
+    default_novelty_weight = metadata.get("default_novelty_weight")
     policy_failure_penalty = getattr(args, "policy_failure_penalty", 0.8)
 
     logger.info(
@@ -634,25 +901,65 @@ def main() -> int:
             logger.warning("Policy auto-bootstrap exited with code %d", rc)
 
     parallel = max(1, getattr(args, "parallel", 1))
+    restart_on_plateau = bool(getattr(args, "restart_on_plateau", True))
+    plateau_window = max(2, int(getattr(args, "plateau_window", 5)))
+    plateau_min_improvement = float(getattr(args, "plateau_min_improvement", 0.005))
+    plateau_restart_runs = max(0, int(getattr(args, "plateau_restart_runs", 2)))
     run_count = 0
     completed_count = 0
     idx = start
     epsilon_base = 0.10  # default for explore_mix
+    recent_completed_fitness: List[float] = []
+    plateau_restart_remaining = 0
 
     if parallel > 1:
         logger.info("Parallel mode: up to %d runs in flight", parallel)
+    if restart_on_plateau:
+        logger.info(
+            "Adaptive restart: window=%d min_improvement=%.4f restart_runs=%d",
+            plateau_window,
+            plateau_min_improvement,
+            plateau_restart_runs,
+        )
 
     # active: proc -> (run_num, cfg) for in-flight runs
     active: Dict[subprocess.Popen, Tuple[int, Dict[str, Any]]] = {}
 
     def _reap_finished() -> None:
-        nonlocal completed_count
+        nonlocal completed_count, plateau_restart_remaining
         done = [p for p in active if p.poll() is not None]
         for proc in done:
             run_num, cfg = active.pop(proc)
             if proc.returncode == 0:
                 completed_count += 1
                 logger.info("Run #%d completed (arm=%s)", run_num, cfg.get("arm", "?"))
+                latest_best = _latest_completed_best_fitness()
+                if latest_best is not None:
+                    recent_completed_fitness.append(latest_best)
+                    if len(recent_completed_fitness) > (plateau_window + 1):
+                        recent_completed_fitness.pop(0)
+                    if restart_on_plateau and len(recent_completed_fitness) >= (plateau_window + 1):
+                        prev_window = recent_completed_fitness[-(plateau_window + 1):-1]
+                        latest = recent_completed_fitness[-1]
+                        prev_max = max(prev_window)
+                        improvement = latest - prev_max
+                        logger.info(
+                            "Plateau check: latest=%.4f prev_max=%.4f improvement=%.4f",
+                            latest,
+                            prev_max,
+                            improvement,
+                        )
+                        if improvement < plateau_min_improvement and plateau_restart_runs > 0:
+                            plateau_restart_remaining = max(
+                                plateau_restart_remaining,
+                                plateau_restart_runs,
+                            )
+                            logger.info(
+                                "Plateau detected (improvement %.4f < %.4f); scheduling %d restart-tuned run(s)",
+                                improvement,
+                                plateau_min_improvement,
+                                plateau_restart_remaining,
+                            )
                 if update_policy_every > 0 and completed_count % update_policy_every == 0:
                     logger.info("Updating learned policy after %d completed runs", completed_count)
                     _run_update_learned_policy(
@@ -691,6 +998,7 @@ def main() -> int:
                         default_generations=default_gens,
                         default_archive_mode=default_archive_mode,
                         default_immigrants=default_immigrants,
+                        default_seed_from_archive=default_seed_from_archive,
                     )
                     if model_cfg is not None:
                         cfg = model_cfg
@@ -702,9 +1010,23 @@ def main() -> int:
                         default_generations=default_gens,
                         default_archive_mode=default_archive_mode,
                         default_immigrants=default_immigrants,
+                        default_seed_from_archive=default_seed_from_archive,
+                        elite_replay_schemes=elite_replay_schemes,
                     )
                     if elite_cfg is not None:
+                        base_slot = configs[idx]
+                        for k in ("experiment_id", "arm_id"):
+                            if base_slot.get(k) is not None:
+                                elite_cfg[k] = base_slot[k]
                         cfg = elite_cfg
+                if default_novelty_weight is not None:
+                    try:
+                        cfg.setdefault("novelty_weight", float(default_novelty_weight))
+                    except (TypeError, ValueError):
+                        pass
+                if restart_on_plateau and plateau_restart_remaining > 0:
+                    cfg = _make_plateau_restart_cfg(cfg, run_count + 1)
+                    plateau_restart_remaining -= 1
 
                 run_count += 1
                 seed_info = f" seed={cfg.get('seed')}" if cfg.get("seed") is not None else ""

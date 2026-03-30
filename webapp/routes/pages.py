@@ -68,16 +68,9 @@ def _sanitize_run_for_template(run: dict) -> dict:
     """Ensure run dict (including config_json) is JSON-safe for Jinja tojson."""
     out = {}
     for k, v in run.items():
-        if k == "created_at":
-            # Normalize to display string so template never calls .strftime on mixed types
-            if v is None:
-                out[k] = None
-            elif hasattr(v, "strftime"):
-                out[k] = v.strftime("%Y-%m-%d %H:%M")
-            elif isinstance(v, str) and len(v) >= 16:
-                out[k] = v[:16].replace("T", " ")
-            else:
-                out[k] = str(v) if v else None
+        if k in ("created_at", "updated_at"):
+            # Always normalize timestamps for templates (avoid Jinja tojson datetime failures).
+            out[k] = _format_created_at(v)
         else:
             out[k] = _make_json_safe(v)
     return out
@@ -124,7 +117,8 @@ def dashboard(request: Request, status: str | None = None, stale_marked: int | N
             r["last_best_fitness"] = stats.get("last_best_fitness")
             r["num_generations"] = stats.get("num_generations", 0)
         r["created_at"] = _format_created_at(r.get("created_at"))
-        enriched.append(_make_json_safe(r))
+        r["updated_at"] = _format_created_at(r.get("updated_at"))
+        enriched.append(_sanitize_run_for_template(r))
     summary_stats = ttl_cached("run_counts_by_status", 10, get_run_counts_by_status)
     return templates.TemplateResponse(
         request,

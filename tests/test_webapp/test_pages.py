@@ -14,8 +14,24 @@ class _RunServiceStub:
         self.list_runs_called = True
         return {
             "runs": [
-                {"run_id": 1, "status": "completed"},
-                {"run_id": 2, "status": "running"},
+                {
+                    "run_id": 1,
+                    "status": "completed",
+                    "script_name": "run_verse_qd",
+                    "theme_keywords": "pressure,mask,survival",
+                    "config_json": {"arm": "theme_pressure_restart", "config_source": "plateau_restart"},
+                    "created_at": datetime(2024, 1, 1, 0, 0, 0),
+                    "updated_at": datetime(2024, 1, 1, 0, 5, 0),
+                },
+                {
+                    "run_id": 2,
+                    "status": "running",
+                    "script_name": "run_verse_qd",
+                    "theme_keywords": "crown,empire,power",
+                    "config_json": {"arm": "theme_crown", "config_source": "yaml"},
+                    "created_at": datetime(2024, 1, 1, 1, 0, 0),
+                    "updated_at": datetime(2024, 1, 1, 1, 2, 0),
+                },
             ],
             "total": 2,
         }
@@ -158,6 +174,17 @@ def test_dashboard_includes_summary_stats(monkeypatch):
     assert "Completed" in resp.text
 
 
+def test_dashboard_marks_plateau_restart_runs(monkeypatch):
+    """Dashboard shows a plateau restart badge for restart-injected runs."""
+    app, _ = _create_app_with_stub(monkeypatch)
+    client = TestClient(app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "plateau restart" in resp.text
+    assert "Restart runs" in resp.text
+    assert "restart-only" in resp.text
+
+
 def test_run_detail_redirects_when_missing(monkeypatch):
     app, _ = _create_app_with_stub(monkeypatch)
     client = TestClient(app)
@@ -242,6 +269,8 @@ def test_run_generations_page_returns_200_when_run_exists(monkeypatch):
     assert resp.status_code == 200
     assert "Generations" in resp.text
     assert "Gen" in resp.text
+    assert "Acceptance rate vs best fitness" in resp.text
+    assert "accept-fitness-chart" in resp.text
 
 
 def test_run_generations_page_redirects_when_run_missing(monkeypatch):

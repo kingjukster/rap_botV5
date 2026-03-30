@@ -1762,6 +1762,60 @@ def get_song_lines(song_id: str) -> List[str]:
     return _execute(_run, default=[])
 
 
+def _diversify_cross_run_candidates(
+    rows: List[Dict[str, Any]],
+    limit: int,
+    *,
+    max_per_source_run: int = 2,
+) -> List[Dict[str, Any]]:
+    """Greedy diversity: cap seeds per source run and skip duplicate line payloads."""
+    if not rows or limit <= 0:
+        return []
+    per_run: Dict[int, int] = {}
+    seen_fp: set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        if len(out) >= limit:
+            break
+        rid = int(r.get("run_id") or 0)
+        if rid <= 0:
+            continue
+        if per_run.get(rid, 0) >= max_per_source_run:
+            continue
+        lines = r.get("lines") or []
+        try:
+            fp = json.dumps(lines, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            fp = str(lines)
+        if fp in seen_fp:
+            continue
+        seen_fp.add(fp)
+        per_run[rid] = per_run.get(rid, 0) + 1
+        out.append(r)
+    if len(out) < limit:
+        for r in rows:
+            if len(out) >= limit:
+                break
+            if r in out:
+                continue
+            rid = int(r.get("run_id") or 0)
+            if rid <= 0:
+                continue
+            if per_run.get(rid, 0) >= max_per_source_run:
+                continue
+            lines = r.get("lines") or []
+            try:
+                fp = json.dumps(lines, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                fp = str(lines)
+            if fp in seen_fp:
+                continue
+            seen_fp.add(fp)
+            per_run[rid] = per_run.get(rid, 0) + 1
+            out.append(r)
+    return out[:limit]
+
+
 def load_top_candidates_cross_run(
     *,
     limit: int = 50,
@@ -1769,10 +1823,14 @@ def load_top_candidates_cross_run(
     candidate_type: Optional[str] = "verse4",
     exclude_run_ids: Optional[List[int]] = None,
     recent_runs: int = 200,
+    diversify: bool = True,
+    max_seeds_per_source_run: int = 2,
 ) -> List[Dict[str, Any]]:
     """Load top candidates across recent completed runs for cross-run seeding.
 
     Returns list of dicts with lines, fitness, scores, run_id, sorted by fitness desc.
+    When diversify=True, over-samples from SQL then applies per-source-run caps and
+    duplicate-line filtering so seeding does not collapse to one prior run.
     """
 
     def _run(conn: Any) -> List[Dict[str, Any]]:
@@ -1784,6 +1842,9 @@ def load_top_candidates_cross_run(
                 placeholders = ",".join(["%s"] * len(exclude_run_ids))
                 run_filter = f" AND r.run_id NOT IN ({placeholders})"
                 params.extend(exclude_run_ids)
+            sql_limit = int(limit)
+            if diversify:
+                sql_limit = min(500, max(sql_limit * 5, sql_limit))
             cur.execute(
                 f"""
                 SELECT c.candidate_id, c.run_id, c.lines_json, c.fitness, c.scores_json
@@ -1800,7 +1861,7 @@ def load_top_candidates_cross_run(
                     [min_fitness]
                     + ([candidate_type] if candidate_type else [])
                     + params
-                    + [limit]
+                    + [sql_limit]
                 ),
             )
             rows = cur.fetchall()
@@ -1833,8 +1894,58 @@ def load_top_candidates_cross_run(
                 else:
                     d["scores"] = None
                 out.append(d)
-            return out
+            if diversify and out:
+                out = _diversify_cross_run_candidates(
+                    out, limit, max_per_source_run=max_seeds_per_source_run
+                )
+            return out[:limit]
         finally:
             cur.close()
 
     return _execute(_run, default=[])
+
+
+def operator_event_counts_recent_runs(max_runs: int = 25) -> Dict[str, int]:
+    """Count operator_events by operator label over the last N completed runs (by run_id)."""
+
+    def _run(conn: Any) -> Dict[str, int]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            # JOIN avoids LIMIT-in-subquery issues with IN (...) on some MySQL setups.
+            cur.execute(
+                """
+                SELECT oe.operator AS op, COUNT(*) AS c
+                FROM operator_events oe
+                INNER JOIN (
+                    SELECT run_id FROM runs
+                    WHERE status = 'completed'
+                    ORDER BY run_id DESC
+                    LIMIT %s
+                ) r ON r.run_id = oe.run_id
+                GROUP BY oe.operator
+                """,
+                (max(1, int(max_runs)),),
+            )
+            rows = cur.fetchall() or []
+            return {str(r["op"]): int(r["c"]) for r in rows if r.get("op")}
+        finally:
+            cur.close()
+
+    return _execute(_run, default={}) or {}
+
+
+def run_status_counts() -> Dict[str, int]:
+    """Return {\"completed\": n, \"running\": n, ...} for all runs."""
+
+    def _run(conn: Any) -> Dict[str, int]:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT status, COUNT(*) AS c FROM runs GROUP BY status"
+            )
+            rows = cur.fetchall() or []
+            return {str(r["status"]): int(r["c"]) for r in rows if r.get("status")}
+        finally:
+            cur.close()
+
+    return _execute(_run, default={}) or {}

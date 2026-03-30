@@ -793,24 +793,40 @@ def _repeated_shell_penalty(
 # Plan 6 (2026-03-24): boost flow/rhythm weights per research ("flow may matter more than meaning").
 # beat_fit 0.05->0.10, flow_alignment 0.10->0.15, flow_continuity_score 0.05->0.10.
 # Budget offset: coherence 0.26->0.22, novelty 0.30->0.27, rhyme_graph_density 0.05->0.03.
+#
+# Plan 7 (2026-03-26): anti-stagnation rebalance. Top verses max out 7+ metrics at 1.0
+# but have coherence=0.56, rhyme_scheme=0.19, novelty=0.18. Shift budget from
+# trivially-saturated metrics to the three discriminative quality signals.
+# Reduced: fluency 0.10->0.04, lexical_validity 0.06->0.02, semantic 0.08->0.03,
+# flow_continuity 0.10->0.05, internal_chain 0.06->0.02, syllable_balance 0.05->0.02,
+# cluster_coeff 0.04->0.01, beat_fit 0.10->0.07, flow_alignment 0.15->0.12.
+# Boosted: coherence 0.22->0.35, rhyme_scheme 0.18->0.28, novelty 0.27->0.30,
+# rhyme_chain_density 0.08->0.10, internal_rhyme 0.07->0.08.
+#
+# Plan 8 (2026-03-27): de-template plateau fix. Runs with strict rhyme/coherence
+# floors still converge to rigid high-rhyme templates (template_penalty ~= 0.4).
+# Increase anti-template pressure and novelty search pressure:
+# template_penalty -0.25->-0.40, novelty 0.30->0.36.
+# Budget offset from less-discriminative positives:
+# global_rhyme_chain 0.08->0.06, flow_alignment 0.12->0.10.
 VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
-    "rhyme_scheme_score": 0.18,
-    "internal_rhyme": 0.07,
-    "rhyme_chain_density": 0.08,
-    "global_rhyme_chain_score": 0.08,
-    "internal_chain_score": 0.06,
+    "rhyme_scheme_score": 0.28,
+    "internal_rhyme": 0.08,
+    "rhyme_chain_density": 0.10,
+    "global_rhyme_chain_score": 0.06,
+    "internal_chain_score": 0.02,
     "rhyme_graph_density": 0.03,
-    "rhyme_graph_cluster_coeff": 0.04,
+    "rhyme_graph_cluster_coeff": 0.01,
     "rhyme_graph_chain_length": 0.04,
-    "syllable_balance": 0.05,
-    "fluency": 0.10,
-    "lm_fluency": 0.02,
-    "semantic": 0.08,
-    "lexical_validity": 0.06,
-    "coherence": 0.22,
+    "syllable_balance": 0.02,
+    "fluency": 0.04,
+    "lm_fluency": 0.01,
+    "semantic": 0.03,
+    "lexical_validity": 0.02,
+    "coherence": 0.35,
     "punchline": 0.04,
     "identical_line_penalty": -0.40,
-    "template_penalty": -0.25,
+    "template_penalty": -0.40,
     "repetition_penalty": -0.12,
     "near_duplicate_penalty": -0.30,
     "filler_line_penalty": -0.30,
@@ -820,10 +836,10 @@ VERSE_DEFAULT_WEIGHTS: Dict[str, float] = {
     "cliche_penalty": -0.25,
     "structural_repetition_penalty": -0.25,
     "cross_verse_repetition_penalty": -0.35,
-    "novelty": 0.27,  # Plan 6: was 0.30
-    "flow_alignment": 0.15,  # Plan 6: was 0.10 -- flow/rhythm are critical in rap
-    "beat_fit": 0.10,  # Plan 6: was 0.05 -- DP beat alignment, performability signal
-    "flow_continuity_score": 0.10,  # Plan 6: was 0.05 -- cross-line syllable consistency
+    "novelty": 0.36,
+    "flow_alignment": 0.10,
+    "beat_fit": 0.07,
+    "flow_continuity_score": 0.05,
     "style_adherence": 0.06,
     "prompt_adherence": 0.05,
     "parent_improvement": 0.08,
@@ -1740,23 +1756,34 @@ def score_verses_batch(
     missing_idxs: List[int] = []
 
     # Stage 1/2: cheap-medium features with cache (L1 in-memory, L2 DB).
+    # Scores that were missing from older cache entries get recomputed below.
+    _BACKFILL_KEYS = {"beat_fit"}
+
     for idx, ind in enumerate(individuals):
         key = _norm_verse_key(ind.lines, scheme)
         cached = _VERSE_SCORE_CACHE.get(key)
         if cached is not None:
-            all_scores[idx] = dict(cached)
-            continue
-        # DB cache lookup (L2)
+            sc_copy = dict(cached)
+            if _BACKFILL_KEYS.issubset(sc_copy.keys()):
+                all_scores[idx] = sc_copy
+                continue
+            # stale cache entry — recompute
+        # DB cache lookup (L2) — skip silently if table is locked / slow.
         try:
             from evo_rhyme import db as _db
             if _db.db_enabled():
                 text = key[1]
                 h = _text_hash(text)
-                cached = _db.score_cache_get(h, "verse", scheme.upper())
+                try:
+                    cached = _db.score_cache_get(h, "verse", scheme.upper())
+                except Exception:
+                    cached = None
                 if cached is not None:
-                    all_scores[idx] = dict(cached)
-                    _VERSE_SCORE_CACHE.set(key, dict(cached))
-                    continue
+                    sc_copy = dict(cached)
+                    if _BACKFILL_KEYS.issubset(sc_copy.keys()):
+                        all_scores[idx] = sc_copy
+                        _VERSE_SCORE_CACHE.set(key, sc_copy)
+                        continue
         except Exception:
             pass
 
@@ -1896,6 +1923,17 @@ def score_verses_batch(
                 except Exception:
                     pass
 
+    # Beat-fit (performability): DP syllable-to-grid alignment.
+    # Previously only computed in single-verse score_verse(); now also in batch path.
+    for idx in missing_idxs:
+        if "beat_fit" not in all_scores[idx]:
+            try:
+                from evo_rhyme.beat import score_verse_lines as _beat_score
+                beat = _beat_score(individuals[idx].lines)
+                all_scores[idx]["beat_fit"] = _normalize_beat_fit(beat.total_score)
+            except Exception:
+                all_scores[idx]["beat_fit"] = 0.5
+
     # Adherence metrics and cache write (L1 in-memory + L2 DB).
     for idx in missing_idxs:
         individuals[idx].scores = all_scores[idx]
@@ -1908,7 +1946,10 @@ def score_verses_batch(
             from evo_rhyme import db as _db
             if _db.db_enabled():
                 h = _text_hash(key[1])
-                _db.score_cache_put(h, "verse", scheme.upper(), all_scores[idx])
+                try:
+                    _db.score_cache_put(h, "verse", scheme.upper(), all_scores[idx])
+                except Exception:
+                    pass
         except Exception:
             pass
 

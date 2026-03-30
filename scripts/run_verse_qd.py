@@ -275,8 +275,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-coherence",
         type=float,
-        default=float(defaults.get("min_coherence", 0.25)),
-        help="Minimum coherence for candidates and archive insertion (default: 0.25)",
+        default=float(defaults.get("min_coherence", 0.30)),
+        help="Minimum coherence for candidates and archive insertion (default: 0.30)",
+    )
+    parser.add_argument(
+        "--min-rhyme-scheme-score",
+        type=float,
+        default=float(defaults.get("min_rhyme_scheme_score", 0.10)),
+        help="Minimum rhyme_scheme_score for candidates (default: 0.10)",
     )
     parser.add_argument(
         "--line-pop",
@@ -432,6 +438,73 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.3,
         help="Minimum fitness for cross-run seed candidates (default: 0.3)",
+    )
+    parser.add_argument(
+        "--seed-max-per-source-run",
+        type=int,
+        default=2,
+        metavar="K",
+        help="Cross-run seeding: max seeds per source run_id when diversifying (default: 2)",
+    )
+    parser.add_argument(
+        "--no-seed-diversify",
+        action="store_true",
+        help="Disable cross-run seed diversification (use raw top-N by fitness only)",
+    )
+    parser.add_argument(
+        "--early-stop-stagnant-gens",
+        type=int,
+        default=None,
+        metavar="K",
+        help="Stop after K generations with no best-fitness improvement (disabled if omitted)",
+    )
+    parser.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=0.005,
+        help="Minimum best-fitness improvement to reset stagnation counter (default: 0.005)",
+    )
+    parser.add_argument(
+        "--curriculum-tighten-on-stagnation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Raise min fluency/coherence floors after prolonged stagnation (default: on)",
+    )
+    parser.add_argument(
+        "--curriculum-tighten-after-stagnant-gens",
+        type=int,
+        default=6,
+        metavar="K",
+        help="Generations of stagnation before tightening curriculum floors (default: 6)",
+    )
+    parser.add_argument(
+        "--curriculum-tighten-fluency-step",
+        type=float,
+        default=0.03,
+        help="Fluency floor increment per tighten step (default: 0.03)",
+    )
+    parser.add_argument(
+        "--curriculum-tighten-coherence-step",
+        type=float,
+        default=0.03,
+        help="Coherence floor increment per tighten step (default: 0.03)",
+    )
+    parser.add_argument(
+        "--curriculum-tighten-fluency-cap",
+        type=float,
+        default=0.55,
+        help="Max min_fluency when tightening (default: 0.55)",
+    )
+    parser.add_argument(
+        "--curriculum-tighten-coherence-cap",
+        type=float,
+        default=0.42,
+        help="Max min_coherence when tightening (default: 0.42)",
+    )
+    parser.add_argument(
+        "--operator-db-weights",
+        action="store_true",
+        help="Blend mutation_weights from recent operator_events in DB (frequency prior)",
     )
 
     args = parser.parse_args()
@@ -713,6 +786,7 @@ def main() -> None:
         lm_mutation_budget_per_gen=args.lm_budget,
         min_fluency=args.min_fluency,
         min_coherence=args.min_coherence,
+        min_rhyme_scheme_score=getattr(args, "min_rhyme_scheme_score", 0.10),
         min_semantic=args.min_semantic,
         archive_novelty_tiebreak=args.archive_novelty_tiebreak,
         semantic_crossover_pairing=args.semantic_crossover_pairing,
@@ -736,6 +810,14 @@ def main() -> None:
         curriculum_switch_gen=args.curriculum_switch_gen,
         enable_controllability_probes=args.enable_controllability_probes,
         coverage_target=args.coverage_target,
+        early_stop_stagnant_gens=args.early_stop_stagnant_gens,
+        early_stop_min_delta=float(args.early_stop_min_delta),
+        curriculum_tighten_on_stagnation=bool(args.curriculum_tighten_on_stagnation),
+        curriculum_tighten_after_stagnant_gens=int(args.curriculum_tighten_after_stagnant_gens),
+        curriculum_tighten_fluency_step=float(args.curriculum_tighten_fluency_step),
+        curriculum_tighten_coherence_step=float(args.curriculum_tighten_coherence_step),
+        curriculum_tighten_fluency_cap=float(args.curriculum_tighten_fluency_cap),
+        curriculum_tighten_coherence_cap=float(args.curriculum_tighten_coherence_cap),
         run_id=run_id if run_id and run_id > 0 else None,
         initial_archive=None,  # Set below if --resume
     )
@@ -791,6 +873,17 @@ def main() -> None:
             logger.info("Loaded fitness weights from %s", wpath)
         else:
             logger.warning("Weights file not found: %s", wpath)
+    if getattr(args, "operator_db_weights", False):
+        try:
+            from evo_rhyme.mutation import MUTATION_WEIGHTS
+            from evo_rhyme.operator_schedule import load_blended_mutation_weights_from_db
+
+            blended = load_blended_mutation_weights_from_db(MUTATION_WEIGHTS, max_runs=25)
+            if blended:
+                qd_config.mutation_weights = blended
+                logger.info("Using DB-blended mutation_weights from operator_events (frequency prior)")
+        except Exception as e:
+            logger.warning("operator-db-weights failed: %s", e)
     # Set emitter-specific config
     qd_config.use_emitters = (args.emitter_strategy == "multi")
     qd_config.novelty_weight = args.novelty_weight
@@ -816,13 +909,20 @@ def main() -> None:
             from evo_rhyme.individual import VerseIndividual
 
             top_cross = db.load_top_candidates_cross_run(
-                limit=args.seed_from_archive,
+                limit=args.seed_from_archive * 3,
                 min_fitness=args.seed_min_fitness,
                 candidate_type="verse4",
+                diversify=not getattr(args, "no_seed_diversify", False),
+                max_seeds_per_source_run=max(1, int(getattr(args, "seed_max_per_source_run", 2))),
             )
+            seen_texts: set[str] = set()
             for row in top_cross:
                 lines = row.get("lines", [])
                 if isinstance(lines, list) and len(lines) == 4:
+                    key = "\n".join(l.strip().lower() for l in lines)
+                    if key in seen_texts:
+                        continue
+                    seen_texts.add(key)
                     ind = VerseIndividual(
                         lines=list(lines),
                         features=None,
@@ -835,6 +935,8 @@ def main() -> None:
                         },
                     )
                     archive_seed_population.append(ind)
+                    if len(archive_seed_population) >= args.seed_from_archive:
+                        break
             if archive_seed_population:
                 logger.info(
                     "Cross-run archive seeding: loaded %d candidates (min_fitness=%.2f)",
@@ -1026,6 +1128,23 @@ def main() -> None:
             db.update_run_status(run_id, "completed")
         except Exception as e:
             logger.warning("DB update_run_status failed: %s", e)
+        try:
+            from evo_rhyme import db as _db
+            patch: Dict[str, Any] = {}
+            es_reason = getattr(qd_config, "early_stop_reason", None)
+            if es_reason:
+                patch["early_stop_reason"] = es_reason
+                patch["early_stop_gen"] = getattr(qd_config, "early_stop_gen", None)
+                patch["planned_generations"] = int(args.generations)
+            if patch:
+                run_row = _db.get_run(run_id)
+                cfgj = (run_row or {}).get("config_json") or {}
+                if not isinstance(cfgj, dict):
+                    cfgj = {}
+                cfgj.update(patch)
+                _db.update_run_config(run_id, cfgj)
+        except Exception as e:
+            logger.warning("DB early_stop metadata merge failed: %s", e)
 
     # ---- 16-bar composition (when --num-lines 16) --------------------
     if args.num_lines == 16:
@@ -1135,6 +1254,13 @@ def main() -> None:
             "prompt_llm_fraction": args.prompt_llm_fraction,
             "curriculum_switch_gen": args.curriculum_switch_gen,
             "enable_controllability_probes": args.enable_controllability_probes,
+            "early_stop_stagnant_gens": args.early_stop_stagnant_gens,
+            "early_stop_min_delta": args.early_stop_min_delta,
+            "early_stop_reason": getattr(qd_config, "early_stop_reason", None),
+            "early_stop_gen": getattr(qd_config, "early_stop_gen", None),
+            "operator_db_weights": bool(getattr(args, "operator_db_weights", False)),
+            "seed_diversify": not getattr(args, "no_seed_diversify", False),
+            "seed_max_per_source_run": int(getattr(args, "seed_max_per_source_run", 2)),
         },
         "archive_summary": archive.summary(),
         "archive_dimensions": {

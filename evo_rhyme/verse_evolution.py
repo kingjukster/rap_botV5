@@ -125,8 +125,9 @@ class QDEvolutionConfig:
 
     min_fluency: float = 0.4
     min_lm_fluency: float = 0.4
-    min_coherence: float = 0.25
+    min_coherence: float = 0.30
     min_semantic: float = 0.0
+    min_rhyme_scheme_score: float = 0.10
 
     max_offspring_attempts: int = 200
     crossover_rate: float = 0.6
@@ -185,6 +186,21 @@ class QDEvolutionConfig:
 
     # Hierarchical evolution: structural mutations at 4-bar level
     use_structural_mutations: bool = False
+
+    # Optional per-operator mutation weights (keys match MUTATION_WEIGHTS); None = use defaults
+    mutation_weights: Optional[Dict[str, float]] = None
+
+    # Early stop: stop after K generations without best-fitness improvement (disabled if None)
+    early_stop_stagnant_gens: Optional[int] = None
+    early_stop_min_delta: float = 0.005
+
+    # Tighten quality floors when best fitness stagnates (anti-plateau curriculum)
+    curriculum_tighten_on_stagnation: bool = True
+    curriculum_tighten_after_stagnant_gens: int = 6
+    curriculum_tighten_fluency_step: float = 0.03
+    curriculum_tighten_coherence_step: float = 0.03
+    curriculum_tighten_fluency_cap: float = 0.55
+    curriculum_tighten_coherence_cap: float = 0.42
 
 
 def _cull_near_duplicates(
@@ -975,6 +991,7 @@ class VerseQDRunLogger:
         best_fitness: float,
         mean_fitness: float,
         occupied_niches: int,
+        acceptance_rate: Optional[float] = None,
         runtime: Optional[Dict[str, Any]] = None,
         archive: Optional[MAPElitesArchive] = None,
     ) -> None:
@@ -984,6 +1001,7 @@ class VerseQDRunLogger:
             "best_fitness": best_fitness,
             "mean_fitness": mean_fitness,
             "occupied_niches": occupied_niches,
+            "acceptance_rate": acceptance_rate,
         }
         if runtime:
             row.update(runtime)
@@ -1004,7 +1022,7 @@ class VerseQDRunLogger:
                 if _db.db_enabled():
                     _db.insert_generation(
                         self.run_id, gen, best_fitness, mean_fitness,
-                        archive_coverage, None,
+                        archive_coverage, acceptance_rate,
                         {"occupied_niches": occupied_niches, "runtime": runtime},
                     )
                     # Insert top candidates each gen so runs page shows progress even if run crashes later
@@ -1103,7 +1121,7 @@ def evolve_verse_qd(
     """
     scheme = config.rhyme_scheme or "AABB"
     weights = config.fitness_weights or VERSE_DEFAULT_WEIGHTS
-    mut_weights = MUTATION_WEIGHTS
+    mut_weights = config.mutation_weights if getattr(config, "mutation_weights", None) else MUTATION_WEIGHTS
 
     theme_keywords = config.theme_keywords or []
     kw = set(w.lower() for w in theme_keywords) if theme_keywords else None
@@ -1190,6 +1208,10 @@ def evolve_verse_qd(
     _prev_best_fitness = -1.0
     _stagnation_threshold = 3
     _stagnation_boost_gens = 0
+    _early_stop_best = -1.0
+    _early_stop_stagnant = 0
+    es_delta = float(getattr(config, "early_stop_min_delta", 0.005) or 0.005)
+    es_k = getattr(config, "early_stop_stagnant_gens", None)
 
     for gen in range(config.num_generations):
         # Keep the operator tracer aware of current generation (if active)
@@ -1371,6 +1393,7 @@ def evolve_verse_qd(
                 evolved_candidates.append(child)
 
         candidates.extend(evolved_candidates)
+        evolved_acceptance_rate = (len(evolved_candidates) / max(1, attempts)) if evolved_target > 0 else 0.0
 
         # --- Phase 2: Batch-score all candidates (one GPU pass) ---
         if candidates:
@@ -1440,6 +1463,7 @@ def evolve_verse_qd(
 
         # --- Phase 4: Filter by quality thresholds ---
         filtered: List[VerseIndividual] = []
+        min_rhyme = getattr(config, "min_rhyme_scheme_score", 0.0)
         for cand in candidates:
             sc = cand.scores or {}
             if config.min_fluency > 0 and sc.get("fluency", 0.0) < config.min_fluency:
@@ -1447,6 +1471,8 @@ def evolve_verse_qd(
             if config.min_lm_fluency > 0 and sc.get("lm_fluency", 0.0) < config.min_lm_fluency:
                 continue
             if config.min_coherence > 0 and sc.get("coherence", 0.0) < config.min_coherence:
+                continue
+            if min_rhyme > 0 and sc.get("rhyme_scheme_score", 0.0) < min_rhyme:
                 continue
             if sc.get("garbled_line_penalty", 0.0) > 0.25:
                 continue
@@ -1472,6 +1498,8 @@ def evolve_verse_qd(
                 cand.scores["parent_improvement"] = compute_parent_improvement(
                     cand.scores, parent_fit, weights,
                 )
+            else:
+                cand.scores.setdefault("parent_improvement", 0.5)
             cand.fitness = compute_verse_fitness(cand.scores, weights)
 
         all_offspring = sorted(filtered, key=lambda c: c.fitness or 0.0, reverse=True)[:target]
@@ -1558,9 +1586,34 @@ def evolve_verse_qd(
                 logger.info("Stagnation detected at gen %d (best=%.4f unchanged for %d gens) -- activating boost",
                             gen, best_fit, _stagnation_threshold)
 
+        if best_fit > _early_stop_best + es_delta:
+            _early_stop_best = best_fit
+            _early_stop_stagnant = 0
+        else:
+            _early_stop_stagnant += 1
+
+        if getattr(config, "curriculum_tighten_on_stagnation", False):
+            thr_t = max(1, int(getattr(config, "curriculum_tighten_after_stagnant_gens", 6)))
+            if _early_stop_stagnant >= thr_t:
+                nf_cap = float(getattr(config, "curriculum_tighten_fluency_cap", 0.55))
+                nc_cap = float(getattr(config, "curriculum_tighten_coherence_cap", 0.42))
+                nf_step = float(getattr(config, "curriculum_tighten_fluency_step", 0.03))
+                nc_step = float(getattr(config, "curriculum_tighten_coherence_step", 0.03))
+                new_f = min(nf_cap, float(config.min_fluency) + nf_step)
+                new_c = min(nc_cap, float(config.min_coherence) + nc_step)
+                if new_f > float(config.min_fluency) + 1e-6 or new_c > float(config.min_coherence) + 1e-6:
+                    logger.info(
+                        "Curriculum tighten at gen %d: min_fluency %.3f->%.3f min_coherence %.3f->%.3f (stagnant=%d)",
+                        gen, config.min_fluency, new_f, config.min_coherence, new_c, _early_stop_stagnant,
+                    )
+                    config.min_fluency = new_f
+                    config.min_coherence = new_c
+                _early_stop_stagnant = 0
+
         if run_logger:
             run_logger.log_generation(
                 gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+                acceptance_rate=evolved_acceptance_rate,
                 archive=archive,
             )
 
@@ -1603,6 +1656,12 @@ def evolve_verse_qd(
             )
         except Exception:
             pass
+
+        if es_k is not None and int(es_k) > 0 and _early_stop_stagnant >= int(es_k):
+            setattr(config, "early_stop_reason", f"stagnation_{int(es_k)}_gens_delta_{es_delta}")
+            setattr(config, "early_stop_gen", int(gen))
+            logger.info("Early stop at gen %d: %s", gen, config.early_stop_reason)
+            break
 
     if run_logger:
         run_logger.flush(archive)
@@ -1748,6 +1807,11 @@ def evolve_verse_qd_emitters(
         emitter_config["corpus_vocab"] = config.corpus_vocab
     emitters, scheduler = create_emitters(emitter_config)
 
+    _early_stop_best = -1.0
+    _early_stop_stagnant = 0
+    es_delta = float(getattr(config, "early_stop_min_delta", 0.005) or 0.005)
+    es_k = getattr(config, "early_stop_stagnant_gens", None)
+
     def batch_score(candidates):
         for c in candidates:
             if c.features is None:
@@ -1815,10 +1879,14 @@ def evolve_verse_qd_emitters(
             "niches_per_sec": gen_stats.get("new_niches", 0) / elapsed_s,
             "candidates_per_sec": gen_stats.get("total_candidates", 0) / elapsed_s,
         }
+        total_cand = int(gen_stats.get("total_candidates", 0) or 0)
+        inserted = int(gen_stats.get("inserted", 0) or 0)
+        acceptance_rate = (inserted / max(1, total_cand)) if total_cand > 0 else 0.0
 
         if run_logger:
             run_logger.log_generation(
                 gen, archive.coverage(), best_fit, mean_fit, archive.occupied_niches(),
+                acceptance_rate=acceptance_rate,
                 runtime=runtime,
                 archive=archive,
             )
@@ -1856,6 +1924,36 @@ def evolve_verse_qd_emitters(
                 audit_population_fitness(population, weights, log_results=True)
             except Exception:
                 logger.debug("Fitness audit skipped", exc_info=True)
+
+        if best_fit > _early_stop_best + es_delta:
+            _early_stop_best = best_fit
+            _early_stop_stagnant = 0
+        else:
+            _early_stop_stagnant += 1
+
+        if getattr(config, "curriculum_tighten_on_stagnation", False):
+            thr_t = max(1, int(getattr(config, "curriculum_tighten_after_stagnant_gens", 6)))
+            if _early_stop_stagnant >= thr_t:
+                nf_cap = float(getattr(config, "curriculum_tighten_fluency_cap", 0.55))
+                nc_cap = float(getattr(config, "curriculum_tighten_coherence_cap", 0.42))
+                nf_step = float(getattr(config, "curriculum_tighten_fluency_step", 0.03))
+                nc_step = float(getattr(config, "curriculum_tighten_coherence_step", 0.03))
+                new_f = min(nf_cap, float(config.min_fluency) + nf_step)
+                new_c = min(nc_cap, float(config.min_coherence) + nc_step)
+                if new_f > float(config.min_fluency) + 1e-6 or new_c > float(config.min_coherence) + 1e-6:
+                    logger.info(
+                        "Curriculum tighten at gen %d: min_fluency %.3f->%.3f min_coherence %.3f->%.3f (stagnant=%d)",
+                        gen, config.min_fluency, new_f, config.min_coherence, new_c, _early_stop_stagnant,
+                    )
+                    config.min_fluency = new_f
+                    config.min_coherence = new_c
+                _early_stop_stagnant = 0
+
+        if es_k is not None and int(es_k) > 0 and _early_stop_stagnant >= int(es_k):
+            setattr(config, "early_stop_reason", f"stagnation_{int(es_k)}_gens_delta_{es_delta}")
+            setattr(config, "early_stop_gen", int(gen))
+            logger.info("Early stop at gen %d: %s", gen, config.early_stop_reason)
+            break
 
     if run_logger:
         run_logger.flush(archive)

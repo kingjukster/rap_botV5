@@ -20,6 +20,7 @@ from webapp.services.compare_service import compare_runs as svc_compare_runs
 from webapp.services.insight_service import get_run_insights, get_global_insights
 from webapp.services.run_service import (
     list_runs as svc_list_runs,
+    get_db_metrics_summary,
     mark_stale_runs_failed,
     get_run,
     get_run_generations,
@@ -42,6 +43,12 @@ from webapp.services.run_service import (
 )
 
 router = APIRouter()
+
+
+@router.get("/metrics/summary")
+def api_metrics_summary():
+    """Run counts by status when DB is available."""
+    return get_db_metrics_summary()
 
 
 @router.get("/analysis")
