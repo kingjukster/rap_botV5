@@ -11,10 +11,11 @@ import difflib
 import hashlib
 import math
 import random
-from collections import Counter
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from collections import Counter, defaultdict
 
 from evo_rhyme.individual import CoupletIndividual, LineFeatures, VerseIndividual, VerseFeatures
 from evo_rhyme.phonetics import (
@@ -863,55 +864,87 @@ def _normalize_beat_fit(raw_total: float) -> float:
         return 0.5
 
 
+def _repeat_scheme_to_n_lines(scheme: str, n: int) -> str:
+    s = (scheme or "AABB").upper().replace(" ", "")
+    if not s:
+        s = "AABB"
+    if n <= 0:
+        return ""
+    if len(s) >= n:
+        return s[:n]
+    reps = (n + len(s) - 1) // len(s)
+    return (s * reps)[:n]
+
+
 def _score_verse_rhyme_scheme(
     features: Optional[VerseFeatures],
     scheme: str,
 ) -> float:
     """
     Rhyme scheme score [0,1].
-    Supported schemes: AABB, ABAB, ABBA, ABCB, AABA, AAAA.
+    Supported schemes: AABB, ABAB, ABBA, ABCB, AABA, AAAA (repeated for N != 4).
     """
-    if not features or len(features.end_tails) != 4:
+    if not features:
+        return 0.0
+    n = len(features.end_tails)
+    if n < 2:
         return 0.0
     tails = features.end_tails
-    scheme = (scheme or "AABB").upper()
+    scheme_u = (scheme or "AABB").upper().replace(" ", "")
 
     def _lf(idx: int) -> LineFeatures:
         return LineFeatures("", [], [], 0, [], tails[idx], [])
 
-    if scheme == "AABB":
-        pair1 = _score_end_rhyme(_lf(0), _lf(1))
-        pair2 = _score_end_rhyme(_lf(2), _lf(3))
-        return (pair1 + pair2) / 2.0
-    if scheme == "ABAB":
-        pair1 = _score_end_rhyme(_lf(0), _lf(2))
-        pair2 = _score_end_rhyme(_lf(1), _lf(3))
-        return (pair1 + pair2) / 2.0
-    if scheme == "ABBA":
-        pair1 = _score_end_rhyme(_lf(0), _lf(3))
-        pair2 = _score_end_rhyme(_lf(1), _lf(2))
-        return (pair1 + pair2) / 2.0
-    if scheme == "ABCB":
-        return _score_end_rhyme(_lf(1), _lf(3))
-    if scheme == "AABA":
-        p01 = _score_end_rhyme(_lf(0), _lf(1))
-        p03 = _score_end_rhyme(_lf(0), _lf(3))
-        p13 = _score_end_rhyme(_lf(1), _lf(3))
-        return (p01 + p03 + p13) / 3.0
-    if scheme == "AAAA":
-        total = 0.0
-        count = 0
-        for i in range(4):
-            for j in range(i + 1, 4):
-                total += _score_end_rhyme(_lf(i), _lf(j))
-                count += 1
-        return total / count
-    return 0.0
+    # N == 4: preserve legacy special-cases for exact backward compatibility
+    if n == 4 and scheme_u in ("AABB", "ABAB", "ABBA", "ABCB", "AABA", "AAAA"):
+        if scheme_u == "AABB":
+            pair1 = _score_end_rhyme(_lf(0), _lf(1))
+            pair2 = _score_end_rhyme(_lf(2), _lf(3))
+            return (pair1 + pair2) / 2.0
+        if scheme_u == "ABAB":
+            pair1 = _score_end_rhyme(_lf(0), _lf(2))
+            pair2 = _score_end_rhyme(_lf(1), _lf(3))
+            return (pair1 + pair2) / 2.0
+        if scheme_u == "ABBA":
+            pair1 = _score_end_rhyme(_lf(0), _lf(3))
+            pair2 = _score_end_rhyme(_lf(1), _lf(2))
+            return (pair1 + pair2) / 2.0
+        if scheme_u == "ABCB":
+            return _score_end_rhyme(_lf(1), _lf(3))
+        if scheme_u == "AABA":
+            p01 = _score_end_rhyme(_lf(0), _lf(1))
+            p03 = _score_end_rhyme(_lf(0), _lf(3))
+            p13 = _score_end_rhyme(_lf(1), _lf(3))
+            return (p01 + p03 + p13) / 3.0
+        if scheme_u == "AAAA":
+            total = 0.0
+            count = 0
+            for i in range(4):
+                for j in range(i + 1, 4):
+                    total += _score_end_rhyme(_lf(i), _lf(j))
+                    count += 1
+            return total / count
+
+    full = _repeat_scheme_to_n_lines(scheme_u, n)
+    groups: Dict[str, List[int]] = defaultdict(list)
+    for i, ch in enumerate(full):
+        if ch.isalpha():
+            groups[ch].append(i)
+    pair_scores: List[float] = []
+    for indices in groups.values():
+        if len(indices) < 2:
+            continue
+        for ii in range(len(indices)):
+            for jj in range(ii + 1, len(indices)):
+                pair_scores.append(_score_end_rhyme(_lf(indices[ii]), _lf(indices[jj])))
+    if not pair_scores:
+        return 0.0
+    return sum(pair_scores) / len(pair_scores)
 
 
 def _score_verse_internal_rhyme_simple(features: Optional[VerseFeatures]) -> float:
-    """Internal rhyme density across all 4 lines."""
-    if not features or len(features.tokens_per_line) != 4:
+    """Internal rhyme density across all lines."""
+    if not features or len(features.tokens_per_line) < 1:
         return 0.0
     all_tails: List[Optional[PhoneticFeature]] = []
     for i, tokens in enumerate(features.tokens_per_line):
@@ -935,18 +968,14 @@ def _score_verse_internal_rhyme_simple(features: Optional[VerseFeatures]) -> flo
 
 
 def _score_verse_syllable_balance(features: Optional[VerseFeatures]) -> float:
-    """Balance across 4 lines: max pairwise diff <= 2 ideal."""
-    if not features or len(features.syllable_counts) != 4:
+    """Balance across lines: penalize max pairwise syllable count difference."""
+    if not features or len(features.syllable_counts) < 2:
         return 0.0
     counts = features.syllable_counts
-    diffs = [
-        abs(counts[0] - counts[1]),
-        abs(counts[1] - counts[2]),
-        abs(counts[2] - counts[3]),
-        abs(counts[0] - counts[2]),
-        abs(counts[1] - counts[3]),
-    ]
-    max_diff = max(diffs) if diffs else 0
+    max_diff = 0
+    for i in range(len(counts)):
+        for j in range(i + 1, len(counts)):
+            max_diff = max(max_diff, abs(counts[i] - counts[j]))
     return max(0.0, 1.0 - max_diff / 6.0)
 
 
@@ -1043,9 +1072,10 @@ def _score_prompt_adherence(individual: VerseIndividual) -> float:
 def _score_verse_fluency(individual: VerseIndividual) -> float:
     """Fluency: syllable flow + valid word ratio across all lines."""
     f = individual.features
-    if not f or len(f.syllable_counts) != 4:
+    if not f or len(f.syllable_counts) < 1:
         return 0.5
-    in_range = sum(1 for s in f.syllable_counts if 6 <= s <= 18) / 4.0
+    n = len(f.syllable_counts)
+    in_range = sum(1 for s in f.syllable_counts if 6 <= s <= 18) / float(n)
     balance = _score_verse_syllable_balance(f)
     flow = 0.6 * in_range + 0.4 * balance
     from evo_rhyme.phonetics import phones_for_word
@@ -1495,7 +1525,7 @@ def score_verse(
     include_graph_metrics: bool = True,
     graph_edge_mode: str = "phonetic",
 ) -> Dict[str, float]:
-    """Compute all component scores for a 4-line verse."""
+    """Compute all component scores for an N-line verse (N >= 1 with features)."""
     f = individual.features
     kw = set(w.lower() for w in (prompt_keywords or [])) if prompt_keywords else None
     scores: Dict[str, float] = {

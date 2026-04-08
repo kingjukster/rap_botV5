@@ -82,8 +82,14 @@ class TestAnalyzeVerseIndividual:
         assert len(verse.features.tokens_per_line) == 4
         assert len(verse.features.end_tails) == 4
 
-    def test_analyze_verse_individual_wrong_line_count_unchanged(self):
-        verse = VerseIndividual(lines=["one", "two"])
+    def test_analyze_verse_individual_two_lines_populates_features(self):
+        verse = VerseIndividual(lines=["one line here", "two lines there"])
+        analyze_verse_individual(verse)
+        assert verse.features is not None
+        assert len(verse.features.syllable_counts) == 2
+
+    def test_analyze_verse_individual_empty_lines_skipped(self):
+        verse = VerseIndividual(lines=[])
         analyze_verse_individual(verse)
         assert verse.features is None
 

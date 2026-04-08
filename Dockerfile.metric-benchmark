@@ -1,0 +1,23 @@
+# Minimal image: baseline CSV filter + verse JSONL build (stdlib / no PyTorch).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Only files required for metric_benchmark CSV → JSONL pipeline
+COPY scripts/metric_benchmark/filter_kaggle_baseline.py /app/scripts/metric_benchmark/
+COPY scripts/metric_benchmark/build_dataset.py /app/scripts/metric_benchmark/
+COPY evo_rhyme/metric_benchmark/baseline_artists.py /app/evo_rhyme/metric_benchmark/
+COPY evo_rhyme/metric_benchmark/protocol.py /app/evo_rhyme/metric_benchmark/
+COPY evo_rhyme/metric_benchmark/segmentation.py /app/evo_rhyme/metric_benchmark/
+COPY evo_rhyme/metric_benchmark/synthetic.py /app/evo_rhyme/metric_benchmark/
+
+# AI labeling (OpenAI API; no torch)
+RUN pip install --no-cache-dir "openai>=1.0,<2"
+COPY scripts/metric_benchmark/label_with_ai.py /app/scripts/metric_benchmark/
+COPY evo_rhyme/metric_benchmark/schema.py /app/evo_rhyme/metric_benchmark/
+
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Default: show help (override in compose)
+CMD ["python", "/app/scripts/metric_benchmark/filter_kaggle_baseline.py", "--help"]

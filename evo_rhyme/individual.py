@@ -47,7 +47,7 @@ class CoupletIndividual:
 
 @dataclass
 class VerseFeatures:
-    """Phonetic and structural features for a 4-line verse."""
+    """Phonetic and structural features for an N-line verse."""
     tokens_per_line: List[List[str]]
     phonemes: List[List[str]]
     syllable_counts: List[int]
@@ -101,7 +101,7 @@ class VerseStructure:
 
 @dataclass
 class VerseIndividual:
-    """A verse (4 lines) with features and scores."""
+    """A verse (N lines, typically 4 in evolution) with features and scores."""
     lines: List[str]
     structure: Optional[VerseStructure] = None
     features: Optional[VerseFeatures] = None
@@ -157,10 +157,10 @@ def analyze_individual(individual: CoupletIndividual) -> CoupletIndividual:
 
 def analyze_verse_individual(individual: VerseIndividual) -> VerseIndividual:
     """
-    Populate features from phonetics for all 4 lines.
+    Populate features from phonetics for all lines (any length >= 1).
     Mutates the individual in place and returns it.
     """
-    if len(individual.lines) != 4:
+    if not individual.lines:
         return individual
     line_features = [_analyze_line(line) for line in individual.lines]
     individual.features = VerseFeatures(
@@ -179,7 +179,7 @@ def create_verse_individual(
     roles: Optional[List[str]] = None,
 ) -> VerseIndividual:
     """Create a VerseIndividual with structure metadata."""
-    structure = VerseStructure(scheme=scheme)
+    structure = VerseStructure.for_scheme(scheme, num_lines=len(lines))
     if roles:
         structure.roles = roles
     if not structure.callbacks:

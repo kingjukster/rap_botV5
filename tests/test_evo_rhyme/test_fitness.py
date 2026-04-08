@@ -244,6 +244,22 @@ class TestScoreVerse:
             assert k in scores, f"missing key {k}"
             assert isinstance(scores[k], (int, float))
 
+    def test_score_verse_six_lines(self):
+        lines = [
+            "First bar is steady when I step into the zone",
+            "Second bar connects with a measured solid tone",
+            "Third bar accelerates the syllables align",
+            "Fourth bar pivots with a sharper sharper line",
+            "Fifth bar compresses every vowel into place",
+            "Sixth bar lands clean and finishes the phrase",
+        ]
+        verse = VerseIndividual(lines=lines)
+        analyze_verse_individual(verse)
+        scores = score_verse(verse, include_graph_metrics=False)
+        assert scores["rhyme_scheme_score"] >= 0.0
+        assert 0 <= scores["fluency"] <= 1
+        assert len(verse.features.syllable_counts) == 6
+
 
 class TestComputeVerseFitness:
     """compute_verse_fitness and verse weight dict."""

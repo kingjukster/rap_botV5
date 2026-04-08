@@ -1,0 +1,134 @@
+# Metric benchmark: stratify Kaggle CSV by baseline artists, then segment to verse JSONL.
+#
+# Mount your Kaggle export as ./data/songs.csv (or set INPUT_CSV).
+#
+# Usage:
+#   export INPUT_CSV=/data/songs.csv   # path inside container
+#   docker compose -f docker-compose.metric-benchmark.yml run --rm filter
+#   docker compose -f docker-compose.metric-benchmark.yml run --rm build-verses
+#
+# Or one-shot:
+#   docker compose -f docker-compose.metric-benchmark.yml run --rm filter-and-build
+#
+# Filter uses --backfill-to-total so sparse tiers (e.g. control) still yield TOTAL_ROWS tracks.
+# To require strict tier quotas only, override command and omit --backfill-to-total.
+#
+# Label verses (requires OPENAI_API_KEY; compose reads project .env for ${OPENAI_API_KEY}):
+#   docker compose -f docker-compose.metric-benchmark.yml run --rm label-ai
+# Smoke (50 verses): LABEL_LIMIT=50 docker compose -f docker-compose.metric-benchmark.yml run --rm label-ai
+# Resume after quota/crash: LABEL_RESUME=1 docker compose -f docker-compose.metric-benchmark.yml run --rm label-ai
+# Tier order + stop early: LABEL_STOP_AFTER_STRATUM=semantic LABEL_LABEL_ORDER=stratum docker compose ... run --rm label-ai
+
+services:
+  filter:
+    build:
+      context: .
+      dockerfile: Dockerfile.metric-benchmark
+    volumes:
+      - ./data:/data
+    environment:
+      INPUT_CSV: ${INPUT_CSV:-/data/songs.csv}
+      FILTER_OUT: ${FILTER_OUT:-/data/metric_benchmark/baseline_filtered.csv}
+      TOTAL_ROWS: ${TOTAL_ROWS:-2000}
+    command:
+      - python
+      - /app/scripts/metric_benchmark/filter_kaggle_baseline.py
+      - --input
+      - ${INPUT_CSV:-/data/songs.csv}
+      - --output
+      - ${FILTER_OUT:-/data/metric_benchmark/baseline_filtered.csv}
+      - --total-rows
+      - ${TOTAL_ROWS:-2000}
+      - --backfill-to-total
+
+  build-verses:
+    build:
+      context: .
+      dockerfile: Dockerfile.metric-benchmark
+    volumes:
+      - ./data:/data
+    environment:
+      FILTER_OUT: ${FILTER_OUT:-/data/metric_benchmark/baseline_filtered.csv}
+      VERSES_OUT: ${VERSES_OUT:-/data/metric_benchmark/master_verses.jsonl}
+      MAX_CSV_ROWS: ${MAX_CSV_ROWS:-50000}
+      SYNTHETIC: ${SYNTHETIC:-25}
+    command:
+      - python
+      - /app/scripts/metric_benchmark/build_dataset.py
+      - --csv
+      - ${FILTER_OUT:-/data/metric_benchmark/baseline_filtered.csv}
+      - --out
+      - ${VERSES_OUT:-/data/metric_benchmark/master_verses.jsonl}
+      - --max-rows
+      - ${MAX_CSV_ROWS:-50000}
+      - --synthetic-count
+      - ${SYNTHETIC:-25}
+      - --seed
+      - "42"
+
+  filter-and-build:
+    build:
+      context: .
+      dockerfile: Dockerfile.metric-benchmark
+    volumes:
+      - ./data:/data
+    environment:
+      INPUT_CSV: ${INPUT_CSV:-/data/songs.csv}
+      FILTER_OUT: ${FILTER_OUT:-/data/metric_benchmark/baseline_filtered.csv}
+      VERSES_OUT: ${VERSES_OUT:-/data/metric_benchmark/master_verses.jsonl}
+      TOTAL_ROWS: ${TOTAL_ROWS:-2000}
+      MAX_CSV_ROWS: ${MAX_CSV_ROWS:-50000}
+      SYNTHETIC: ${SYNTHETIC:-25}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        python /app/scripts/metric_benchmark/filter_kaggle_baseline.py \
+          --input "$$INPUT_CSV" \
+          --output "$$FILTER_OUT" \
+          --total-rows "$$TOTAL_ROWS" \
+          --backfill-to-total
+        python /app/scripts/metric_benchmark/build_dataset.py \
+          --csv "$$FILTER_OUT" \
+          --out "$$VERSES_OUT" \
+          --max-rows "$$MAX_CSV_ROWS" \
+          --synthetic-count "$$SYNTHETIC" \
+          --seed 42
+        echo "Done: $$FILTER_OUT -> $$VERSES_OUT"
+
+  label-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.metric-benchmark
+    volumes:
+      - ./data:/data
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LABEL_INPUT: ${LABEL_INPUT:-/data/metric_benchmark/master_verses.jsonl}
+      LABEL_OUTPUT: ${LABEL_OUTPUT:-/data/metric_benchmark/master_labeled.jsonl}
+      LABEL_MODEL: ${LABEL_MODEL:-gpt-4o-mini}
+      LABEL_LIMIT: ${LABEL_LIMIT:-0}
+      LABEL_MAX_RETRIES: ${LABEL_MAX_RETRIES:-10}
+      LABEL_SLEEP_AFTER_REQUEST: ${LABEL_SLEEP_AFTER_REQUEST:-0.15}
+      LABEL_RESUME: ${LABEL_RESUME:-0}
+      LABEL_LABEL_ORDER: ${LABEL_LABEL_ORDER:-stratum}
+      LABEL_STOP_AFTER_STRATUM: ${LABEL_STOP_AFTER_STRATUM:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        R=""
+        if [ "$$LABEL_RESUME" = "1" ]; then R="--resume"; fi
+        STOP=""
+        if [ -n "$$LABEL_STOP_AFTER_STRATUM" ]; then STOP="--stop-after-stratum $$LABEL_STOP_AFTER_STRATUM"; fi
+        exec python /app/scripts/metric_benchmark/label_with_ai.py \
+          --input "$$LABEL_INPUT" \
+          --output "$$LABEL_OUTPUT" \
+          --protocol /data/metric_benchmark/protocol_defaults.json \
+          --model "$$LABEL_MODEL" \
+          --limit "$$LABEL_LIMIT" \
+          --max-retries "$$LABEL_MAX_RETRIES" \
+          --sleep-after-request "$$LABEL_SLEEP_AFTER_REQUEST" \
+          --label-order "$$LABEL_LABEL_ORDER" \
+          $$STOP \
+          $$R
